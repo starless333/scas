@@ -5,7 +5,8 @@
 // int(f,0,1)
 // sum(f,0,10) == sum_{x=0}^{10} f(x)
 
-enum TokenType {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TokenType {
         // Single-character punctuation
         LEFT_PAREN, RIGHT_PAREN, // done
         LEFT_BRACKET, RIGHT_BRACKET, // matrices?
@@ -28,11 +29,11 @@ enum TokenType {
         PIPE, // done
         XOR,
         TILDE, // done
-        SHIFT_LEFT, 
+        SHIFT_LEFT,
         SHIFT_RIGHT,
         SHIFT_LEFT_EQUAL,
         SHIFT_RIGHT_EQUAL,
-        
+
         // Assignment
         EQUAL, // done
         PLUS_EQUAL, // done

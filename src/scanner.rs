@@ -1,8 +1,9 @@
-mod error_handling;
-mod token_type;
-mod token;
-use error_handling::*;
+use crate::error_handling::*;
+use crate::token::Token;
+use crate::token_type::TokenType;
+use crate::literal::Literal;
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 pub struct Scanner {
         source    : Vec<char>, // source code
@@ -13,27 +14,33 @@ pub struct Scanner {
         has_error : bool,
 }
 
-const keywords : HashMap = HashMap::from ([
-        ("and", TokenType::AND),
-        ("else",   TokenType::ELSE),
-        ("false",  TokenType::FALSE),
-        ("for",    TokenType::FOR),
-        ("fn",    TokenType::FN),
-        ("if",     TokenType::IF),
-        ("nil",    TokenType::NIL),
-        ("or",     TokenType::OR),
-        ("print",  TokenType::PRINT),
-        ("return", TokenType::RETURN),
-        ("true",   TokenType::TRUE),
-        ("let",    TokenType::LET),
-        ("while",  TokenType::WHILE),
-        ("nil",    TokenType::NIL),
-        ("exit",   TokenType::EXIT),
-        ("help",   TokenType::HELP),
-        ("clear",  TokenType::CLEAR),
-        ("break",  TokenType::BREAK),
-        ("continue",  TokenType::CONTINUE),
-]);
+static KEYWORDS_CELL : OnceLock<HashMap<&'static str, TokenType>> = OnceLock::new ();
+
+fn keywords () -> &'static HashMap<&'static str, TokenType> {
+        KEYWORDS_CELL.get_or_init (|| {
+                HashMap::from ([
+                        ("and",      TokenType::AND),
+                        ("else",     TokenType::ELSE),
+                        ("false",    TokenType::FALSE),
+                        ("for",      TokenType::FOR),
+                        ("fn",       TokenType::FN),
+                        ("if",       TokenType::IF),
+                        ("nil",      TokenType::NIL),
+                        ("or",       TokenType::OR),
+                        ("print",    TokenType::PRINT),
+                        ("return",   TokenType::RETURN),
+                        ("true",     TokenType::TRUE),
+                        ("let",      TokenType::LET),
+                        ("while",    TokenType::WHILE),
+                        ("exit",     TokenType::EXIT),
+                        ("help",     TokenType::HELP),
+                        ("clear",    TokenType::CLEAR),
+                        ("break",    TokenType::BREAK),
+                        ("continue", TokenType::CONTINUE),
+                        ("xor"     , TokenType::XOR),
+                ])
+        })
+}
 
 impl Scanner {
         pub fn new(input: &str) -> Self {
@@ -46,9 +53,9 @@ impl Scanner {
                         has_error: false,
                 }
         }
-        
+
         // scans tokens of source input
-        pub fn scan_tokens (&mut self) {
+        pub fn scan_tokens (&mut self) -> &Vec<Token> {
                 while !self.is_end () {
                         self.start = self.current;
                         self.scan_token ();
@@ -59,11 +66,15 @@ impl Scanner {
                         literal    : None,
                         line       : self.line,
                 } );
+                &self.tokens
         }
 
-        // TODO : make sure that we gracefully crash if the user throws in nasty chars.
+        pub fn had_error (&self) -> bool {
+                self.has_error
+        }
+
         fn is_end (&self) -> bool {
-                return self.current >= self.source.len() as i32;
+                self.current >= self.source.len ()
         }
 
         fn scan_token (&mut self) {
@@ -73,50 +84,52 @@ impl Scanner {
                         ')' => self.add_token (TokenType::RIGHT_PAREN),
                         '{' => self.add_token (TokenType::LEFT_BRACE),
                         '}' => self.add_token (TokenType::RIGHT_BRACE),
+                        '[' => self.add_token (TokenType::LEFT_BRACKET),
+                        ']' => self.add_token (TokenType::RIGHT_BRACKET),
                         ';' => self.add_token (TokenType::SEMICOLON),
                         ',' => self.add_token (TokenType::COMMA),
                         '.' => self.add_token (TokenType::DOT),
                         ':' => self.add_token (TokenType::COLON),
                         '=' => {
-                                if check ('=') {
+                                if self.check ('=') {
                                         self.add_token (TokenType::EQUAL_EQUAL);
                                 } else {
                                         self.add_token (TokenType::EQUAL);
                                 }
                         },
                         '!' => {
-                                if check ('=') {
+                                if self.check ('=') {
                                         self.add_token (TokenType::BANG_EQUAL);
                                 } else {
                                         self.add_token (TokenType::BANG);
                                 }
                         },
                         '+' => {
-                                if check ('=') {
+                                if self.check ('=') {
                                         self.add_token (TokenType::PLUS_EQUAL);
                                 } else {
                                         self.add_token (TokenType::PLUS);
                                 }
                         },
                         '-' => {
-                                if check ('=') {
+                                if self.check ('=') {
                                         self.add_token (TokenType::MINUS_EQUAL);
                                 } else {
                                         self.add_token (TokenType::MINUS);
                                 }
                         },
                         '*' => {
-                                if check ('=') {
+                                if self.check ('=') {
                                         self.add_token (TokenType::STAR_EQUAL);
                                 } else {
                                         self.add_token (TokenType::STAR);
                                 }
                         },
                         '/' => {
-                                if check ('=') {
+                                if self.check ('=') {
                                         self.add_token (TokenType::SLASH_EQUAL);
-                                } else if check ('/') { // comment case
-                                        while self.peek () != '\n' && !self.is_end() {
+                                } else if self.check ('/') { // comment case
+                                        while self.peek () != '\n' && !self.is_end () {
                                                 self.advance ();
                                         }
                                 } else {
@@ -124,35 +137,35 @@ impl Scanner {
                                 }
                         },
                         '%' => {
-                                if check ('=') {
+                                if self.check ('=') {
                                         self.add_token (TokenType::MOD_EQUAL);
                                 } else {
                                         self.add_token (TokenType::MOD);
                                 }
                         },
                         '^' => {
-                                if check ('=') {
+                                if self.check ('=') {
                                         self.add_token (TokenType::POW_EQUAL);
                                 } else {
                                         self.add_token (TokenType::POW);
                                 }
                         },
                         '&' => {
-                                if check ('=') {
+                                if self.check ('=') {
                                         self.add_token (TokenType::AMPERSAND_EQUAL);
                                 } else {
                                         self.add_token (TokenType::AMPERSAND);
                                 }
                         },
                         '|' => {
-                                if check ('=') {
+                                if self.check ('=') {
                                         self.add_token (TokenType::PIPE_EQUAL);
                                 } else {
                                         self.add_token (TokenType::PIPE);
                                 }
                         },
                         '~' => {
-                                if check ('=') {
+                                if self.check ('=') {
                                         self.add_token (TokenType::TILDE_EQUAL);
                                 } else {
                                         self.add_token (TokenType::TILDE);
@@ -165,49 +178,47 @@ impl Scanner {
                         '\r' => {},
                         '\t' => {},
                         '"'  => { self.string (); },
-                        '0'  => {
-                                if is_digit (self.peek()) || self.peek () == '.' {
-                                        self.number ();
-                                } else {
-                                        self.bin_number();
-                                }
-                        },
                         '<' => {
                                 if self.check ('=') {
                                         self.add_token (TokenType::LESS_EQUAL);
-                                } else {
-                                        if self.check ('<') {
-                                                if self.check ('=') {
-                                                        self.add_token (TokenType::SHIFT_LEFT_EQUAL);
-                                                } else {
-                                                        self.add_token (TokenType::SHIFT_LEFT);
-                                                }
+                                } else if self.check ('<') {
+                                        if self.check ('=') {
+                                                self.add_token (TokenType::SHIFT_LEFT_EQUAL);
                                         } else {
-                                                self.add_token (TokenType::LESS);
+                                                self.add_token (TokenType::SHIFT_LEFT);
                                         }
+                                } else {
+                                        self.add_token (TokenType::LESS);
                                 }
                         },
                         '>' => {
                                 if self.check ('=') {
                                         self.add_token (TokenType::GREATER_EQUAL);
-                                } else {
-                                        if self.check ('>') {
-                                                if self.check ('=') {
-                                                        self.add_token (TokenType::SHIFT_RIGHT_EQUAL);
-                                                } else {
-                                                        self.add_token (TokenType::SHIFT_RIGHT);
-                                                }
+                                } else if self.check ('>') {
+                                        if self.check ('=') {
+                                                self.add_token (TokenType::SHIFT_RIGHT_EQUAL);
                                         } else {
-                                                self.add_token (TokenType::GREATER);
+                                                self.add_token (TokenType::SHIFT_RIGHT);
                                         }
+                                } else {
+                                        self.add_token (TokenType::GREATER);
+                                }
+                        },
+                        '0' => {
+                                if self.peek () == 'b' || self.peek () == 'x' || self.peek () == 'o' {
+                                        self.bin_number ();
+                                } else if Self::is_digit (self.peek ()) || self.peek () == '.' {
+                                        self.number ();
+                                } else {
+                                        self.add_token2 (TokenType::NUMBER, Some (Literal::INT (0)));
                                 }
                         },
                         _  => {
-                                if is_digit (c) {
+                                if Self::is_digit (c) {
                                         self.number ();
-                                } else if is_alpha (c) {
+                                } else if Self::is_alpha (c) {
                                         self.identifier ();
-                                }else {
+                                } else {
                                         error (self.line, "unexpected character.");
                                         self.has_error = true;
                                 }
@@ -216,84 +227,83 @@ impl Scanner {
         }
 
         fn identifier (&mut self) {
-                while is_alpha_numeric (self.peek ()) || is_greek (self.peek ())  { self.advance (); }
-                let val = self.source[self.start..self.current].to_string ();
-                match keywords.get (val) {
-                        Some (vl) => self.add_token  (vl),
-                        None      => self.add_token2 (TokenType::IDENTIFIER, val),
+                while Self::is_alpha_numeric (self.peek ()) || Self::is_greek (self.peek ()) { self.advance (); }
+                let val : String = self.source[self.start..self.current].iter ().collect ();
+                match keywords ().get (val.as_str ()) {
+                        Some (kw) => self.add_token (kw.clone ()),
+                        None      => self.add_token2 (TokenType::IDENTIFIER, Some (Literal::STRING (val))),
                 };
         }
 
         fn is_greek (c : char) -> bool {
-                matches!(c, '\u{0370}'..='\u{03FF}' | '\u{1F00}'..='\u{1FFF}')
+                matches! (c, '\u{0370}'..='\u{03FF}' | '\u{1F00}'..='\u{1FFF}')
         }
 
+        // handles 0b / 0x / 0o prefixed integer literals (the leading '0' has
+        // already been consumed by scan_token when this is called).
         fn bin_number (&mut self) {
-                let c = self.peek ();
-                self.advance();
-                if c == 'b' || c == 'x' || c == 'o' {
-                        while is_digit (self.peek()) { self.advance (); }
-                        self.add_token2 (TokenType::NUMBER,self.source[self.start..self.current].to_string());
-                } else {
-                        error (self.line, "invalid number representation");
-                }
+                self.advance (); // consume 'b' / 'x' / 'o'
+                while Self::is_alpha_numeric (self.peek ()) { self.advance (); }
+                let text : String = self.source[self.start..self.current].iter ().collect ();
+                self.add_token2 (TokenType::NUMBER, Some (Literal::STRING (text)));
         }
-        
+
         fn number (&mut self) {
-                while is_digit (self.peek ()) { self.advance ();}
-                
-                
-                if self.peek () == '.' && is_digit (self.peekn (2)) {
+                while Self::is_digit (self.peek ()) { self.advance (); }
+
+                if self.peek () == '.' && Self::is_digit (self.npeek (2)) {
                         self.advance ();
-                        while (is_digit (self.peek ())) { self.advance ();}
+                        while Self::is_digit (self.peek ()) { self.advance (); }
                 }
 
                 if self.peek () == 'E' || self.peek () == 'e' {
                         self.advance ();
-                        if is_digit (self.peek()) || self.peek() == '-' {
+                        if Self::is_digit (self.peek ()) || self.peek () == '-' {
                                 self.advance ();
-                                while is_digit (self.peek ()) { self.advance ();}
+                                while Self::is_digit (self.peek ()) { self.advance (); }
                         }
                 }
-                
-                self.add_token2 (TokenType::NUMBER,self.source[self.start..self.current].to_string());
+
+                let text : String = self.source[self.start..self.current].iter ().collect ();
+                self.add_token2 (TokenType::NUMBER, Some (Literal::STRING (text)));
         }
-        
+
         fn string (&mut self) {
                 while self.peek () != '"' && !self.is_end () {
                         if self.peek () == '\n' {
                                 self.line += 1;
-                                self.advance ();
                         }
+                        self.advance ();
                 }
 
                 if self.is_end () {
                         error (self.line, "unterminated string");
+                        self.has_error = true;
                         return;
                 }
-                self.advance ();
-                let val = self.source[(self.start + 1)..(self.current - 1)].to_string ();
-                self.add_token2 (TokenType::STRING, val);
+                self.advance (); // consume the closing '"'
+                let val : String = self.source[(self.start + 1)..(self.current - 1)].iter ().collect ();
+                self.add_token2 (TokenType::STRING, Some (Literal::STRING (val)));
         }
 
         fn is_digit (c : char) -> bool {
-                return c >= '0' && c <= '9';
+                c >= '0' && c <= '9'
         }
 
         fn is_alpha (c : char) -> bool {
-                return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_';
+                (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_'
         }
 
         fn is_alpha_numeric (c : char) -> bool {
-                return is_digit (c) || is_alpha (c);
+                Self::is_digit (c) || Self::is_alpha (c)
         }
-        
+
         // move up one char
         // requires : current is in a valid domain.
         fn advance (&mut self) -> char {
                 let c = self.source[self.current];
                 self.current += 1;
-                return c;
+                c
         }
 
         fn add_token (&mut self, token : TokenType) {
@@ -301,8 +311,8 @@ impl Scanner {
         }
 
         // more general add_token function
-        fn add_token2 (&mut self, token : TokenType, literal : Literal) {
-                let lexeme = (&self.source[start..current]).to_string ();
+        fn add_token2 (&mut self, token : TokenType, literal : Option<Literal>) {
+                let lexeme : String = self.source[self.start..self.current].iter ().collect ();
                 self.tokens.push ( Token {
                         token_type : token,
                         lexeme     : lexeme,
@@ -311,7 +321,7 @@ impl Scanner {
                 } );
         }
 
-        // checks if next character matches expected, and if it does advances, else it returns false.
+        // checks if next character matches expected, and if it does advances, else returns false.
         fn check (&mut self, c : char) -> bool {
                 if self.is_end () {
                         return false;
@@ -320,25 +330,24 @@ impl Scanner {
                         return false;
                 }
                 self.current += 1;
-                return true;
+                true
         }
 
         // looks one character ahead.
         fn peek (&self) -> char {
                 if self.is_end () {
-                        return '\0';
+                        '\0'
                 } else {
-                        return self.source[self.current];
+                        self.source[self.current]
                 }
         }
 
         // looks n characters ahead. n = 1 corresponds to normal peek
-        fn peekn (&self, n : usize) -> char {
+        fn npeek (&self, n : usize) -> char {
                 if self.current + n - 1 >= self.source.len () {
-                        return '\0';
+                        '\0'
                 } else {
-                        return self.source[current + n - 1];
+                        self.source[self.current + n - 1]
                 }
         }
-        
 }

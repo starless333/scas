@@ -1,8 +1,10 @@
+use crate::token_type::TokenType;
+use crate::literal::Literal;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Token {
-        token_type   : TokenType,
-        lexeme       : String,
-        literal      : Option<Literal>,
-        line         : usize,
+        pub token_type : TokenType,
+        pub lexeme     : String,
+        pub literal    : Option<Literal>,
+        pub line       : usize,
 }
-
