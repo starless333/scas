@@ -1,0 +1,7 @@
+fn identity(x) = x
+fn calc(a, b, c) = a * b + c
+
+let x = 10;
+x += 5;
+x *= 2;
+x ^= 3;

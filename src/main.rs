@@ -8,28 +8,43 @@ pub mod lexer {
         pub mod symbol;
 }
 
+pub mod parser {
+        pub mod parser;
+}
+
+pub mod ast {
+        pub mod expr;
+        pub mod statement;
+        pub mod assign_op;
+        pub mod binary_op;
+        pub mod unary_op;
+}
+
 use crate::lexer::scanner::Scanner;
+use crate::parser::parser::Parser;
+use std::io::{self, Read};
 
 fn main() {
-        let source = r#"
-                let x = 10.5e-3
-                let name = "hello world"
-                fn add(a, b) { return a + b }
-                if x >= 5 { print("big") } else { print("small") }
-                let y = 0;
-                // a comment
-                0xFF 0b101 0o17 0
-                alpha_beta
-        "#;
+        // Read all of stdin into a String.
+        let mut input = String::new();
+        std::io::stdin().read_to_string(&mut input).unwrap();
 
+        // Borrow it as a &str.
+        let source: &str = &input;
+        
         let mut sc = Scanner::new(source);
         let tokens = sc.scan_tokens();
 
-        for t in tokens {
-                println!("{:?}", t);
-        }
+        let mut parser = Parser::new (tokens.clone ());
+        let ast = parser.parse ();
+        
+        // for t in tokens {
+        //         println!("{:?}", t);
+        // }
 
-        if sc.had_error() {
-                eprintln!("scanning finished with errors");
+        for st in ast {
+                println! ("{:?}", st);
+                println! ();
         }
+        
 }
