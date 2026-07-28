@@ -1,6 +1,6 @@
 #[derive(Debug, Clone, PartialEq)]
 pub enum Literal {
-        INT(i64),
-        RATIONAL(f64),
-        STRING(String),
+        Int(i64),
+        Rational(f64),
+        Str(String),
 }

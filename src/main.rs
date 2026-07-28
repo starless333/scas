@@ -11,6 +11,7 @@ fn main() {
                 let name = "hello world"
                 fn add(a, b) { return a + b }
                 if x >= 5 { print("big") } else { print("small") }
+                let y = 0;
                 // a comment
                 0xFF 0b101 0o17 0
                 alpha_beta
