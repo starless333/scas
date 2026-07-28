@@ -1,9 +1,14 @@
 mod error_handling;
-mod literal;
-mod token;
-mod token_type;
-mod scanner;
-use scanner::Scanner;
+
+pub mod lexer {
+        pub mod literal;
+        pub mod token;
+        pub mod token_type;
+        pub mod scanner;
+        pub mod symbol;
+}
+
+use crate::lexer::scanner::Scanner;
 
 fn main() {
         let source = r#"

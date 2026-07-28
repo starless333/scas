@@ -1,13 +1,15 @@
 use crate::error_handling::*;
-use crate::token::Token;
-use crate::token_type::TokenType;
-use crate::literal::Literal;
+use crate::lexer::token::Token;
+use crate::lexer::token_type::TokenType;
+use crate::lexer::literal::Literal;
+use crate::lexer::symbol::{Symbol, SymbolTable};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
 pub struct Scanner {
         source    : Vec<char>, // source code
         tokens    : Vec<Token>,
+        symbols   : SymbolTable, // interns every token's lexeme
         start     : usize, // 0
         current   : usize, // 0
         line      : usize, // line starts at 1
@@ -47,6 +49,22 @@ impl Scanner {
                 Self {
                         source: input.chars().collect(),
                         tokens: Vec::new(),
+                        symbols: SymbolTable::new(),
+                        start: 0,
+                        current: 0,
+                        line: 1,
+                        has_error: false,
+                }
+        }
+
+        /// Scan using an existing symbol table rather than starting a fresh
+        /// one — e.g. a REPL that wants identifier symbols to stay stable
+        /// across successive lines of input.
+        pub fn with_symbols(input: &str, symbols: SymbolTable) -> Self {
+                Self {
+                        source: input.chars().collect(),
+                        tokens: Vec::new(),
+                        symbols,
                         start: 0,
                         current: 0,
                         line: 1,
@@ -60,9 +78,10 @@ impl Scanner {
                         self.start = self.current;
                         self.scan_token ();
                 }
+                let eof_symbol = self.symbols.intern ("");
                 self.tokens.push ( Token {
                         token_type : TokenType::Eof,
-                        lexeme     : String::from (""),
+                        symbol     : eof_symbol,
                         literal    : None,
                         line       : self.line,
                 } );
@@ -71,6 +90,19 @@ impl Scanner {
 
         pub fn had_error (&self) -> bool {
                 self.has_error
+        }
+
+        /// Read-only access to the table while still scanning (e.g. to
+        /// resolve a symbol for an error message).
+        pub fn symbols (&self) -> &SymbolTable {
+                &self.symbols
+        }
+
+        /// Hand back ownership of the interned symbol table once scanning
+        /// is done, so the parser (or a later REPL line, via
+        /// `with_symbols`) can keep using the same interning.
+        pub fn into_symbols (self) -> SymbolTable {
+                self.symbols
         }
 
         fn is_end (&self) -> bool {
@@ -207,12 +239,13 @@ impl Scanner {
                         '0' => {
                                 if self.peek () == 'b' || self.peek () == 'x' || self.peek () == 'o' {
                                         self.bin_number ();
-                                } else if Self::is_digit (self.peek ()) || self.peek () == '.' {
-                                        self.number ();
                                 } else {
                                         self.number ();
                                 }
                         },
+                        '∘' => {
+                                self.add_token (TokenType::FlowOperator);
+                        }
                         _  => {
                                 if Self::is_digit (c) {
                                         self.number ();
@@ -228,10 +261,15 @@ impl Scanner {
 
         fn identifier (&mut self) {
                 while Self::is_alpha_numeric (self.peek ()) || Self::is_greek (self.peek ()) { self.advance (); }
-                let val : String = self.source[self.start..self.current].iter ().collect ();
-                match keywords ().get (val.as_str ()) {
+                // Only needed to look the lexeme up in the keyword table --
+                // for a plain identifier, the name itself is *not*
+                // duplicated into `literal`; it's recovered later via
+                // `symbols.resolve(token.symbol)`, since that's exactly
+                // what interning already stored.
+                let text : String = self.source[self.start..self.current].iter ().collect ();
+                match keywords ().get (text.as_str ()) {
                         Some (kw) => self.add_token (kw.clone ()),
-                        None      => self.add_token2 (TokenType::Identifier, Some (Literal::Str (val))),
+                        None      => self.add_token (TokenType::Identifier),
                 };
         }
 
@@ -244,6 +282,14 @@ impl Scanner {
         fn bin_number (&mut self) {
                 self.advance (); // consume 'b' / 'x' / 'o'
                 while Self::is_alpha_numeric (self.peek ()) { self.advance (); }
+                // The CAS needs the *exact* source text to parse this
+                // number without precision loss later (arbitrary-precision
+                // int/rational parsing happens downstream, not here) -- so
+                // it's stored directly in `literal`, not just left to be
+                // recovered via the symbol table. `add_token2` will also
+                // intern this same span into `symbol` like every other
+                // token, but `literal` is what the number-parsing stage
+                // should actually read from.
                 let text : String = self.source[self.start..self.current].iter ().collect ();
                 self.add_token2 (TokenType::Number, Some (Literal::Str (text)));
         }
@@ -264,6 +310,9 @@ impl Scanner {
                         }
                 }
 
+                // Same reasoning as `bin_number`: raw text preserved
+                // verbatim in `literal` so nothing downstream has to
+                // round-trip through the symbol table to parse it exactly.
                 let text : String = self.source[self.start..self.current].iter ().collect ();
                 self.add_token2 (TokenType::Number, Some (Literal::Str (text)));
         }
@@ -282,6 +331,9 @@ impl Scanner {
                         return;
                 }
                 self.advance (); // consume the closing '"'
+                // `symbol` (interned by add_token2) covers the full lexeme
+                // including the quotes; `literal` holds the unquoted
+                // contents, which is what an evaluator actually wants.
                 let val : String = self.source[(self.start + 1)..(self.current - 1)].iter ().collect ();
                 self.add_token2 (TokenType::Str, Some (Literal::Str (val)));
         }
@@ -310,12 +362,14 @@ impl Scanner {
                 self.add_token2 (token, None);
         }
 
-        // more general add_token function
+        // more general add_token function -- interns the lexeme into the
+        // symbol table instead of storing it as an owned String per token.
         fn add_token2 (&mut self, token : TokenType, literal : Option<Literal>) {
                 let lexeme : String = self.source[self.start..self.current].iter ().collect ();
+                let symbol : Symbol = self.symbols.intern (&lexeme);
                 self.tokens.push ( Token {
                         token_type : token,
-                        lexeme     : lexeme,
+                        symbol     : symbol,
                         literal    : literal,
                         line       : self.line,
                 } );

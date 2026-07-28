@@ -15,7 +15,8 @@ pub enum TokenType {
         Dot, // done
         Colon, // done
         Semicolon, // done
-
+        FlowOperator,
+        
         // Arithmetic
         Plus, // done
         Minus, // done
