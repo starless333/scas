@@ -1,8 +1,8 @@
 let max_limit = 100;
 let message = "Testing parser...";
 
-fn add(a, b) = a + b
-fn square(x) = x ^ 2
+fn add(a, b) = a + b;
+fn square(x) = x ^ 2;
 
 let sum = 0;
 for let i = 0; i < 10; i += 1 {
@@ -12,6 +12,8 @@ for let i = 0; i < 10; i += 1 {
         continue;
     }
 }
+
+print (sum);
 
 let counter = 5;
 while counter > 0 and true {
@@ -25,4 +27,3 @@ while counter > 0 and true {
 let is_valid = true or false and !nil;
 let bitwise_result = (1 << 2) | (8 & 4) xor ~1;
 
-return add(sum, max_limit);

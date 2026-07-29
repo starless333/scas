@@ -1,29 +1,7 @@
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinaryOp {
-        // Arithmetic
-        Add,
-        Sub,
-        Mul,
-        Div,
-        Mod,
-        Pow,
-
-        // Comparison
-        Eq,
-        Ne,
-        Lt,
-        Le,
-        Gt,
-        Ge,
-
-        // Logical
-        And,
-        Or,
-
-        // Bitwise
-        BitAnd,
-        BitOr,
-        BitXor,
-        Shl,
-        Shr,
+        Add, Sub, Mul, Div, Mod, Pow,
+        Eq, Ne, Lt, Le, Gt, Ge,
+        And, Or,
+        BitAnd, BitOr, BitXor, Shl, Shr,
 }

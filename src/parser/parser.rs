@@ -1,10 +1,11 @@
+use crate::ast::assign_op::*;
+use crate::ast::binary_op::*;
+use crate::ast::expr::*;
+use crate::ast::statement::*;
+use crate::ast::unary_op::*;
+use crate::lexer::literal::Literal;
 use crate::lexer::token::Token;
 use crate::lexer::token_type::TokenType;
-use crate::ast::expr::*;
-use crate::ast::unary_op::*;
-use crate::ast::binary_op::*;
-use crate::ast::statement::*;
-use crate::ast::assign_op::*;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Parser {
@@ -68,8 +69,9 @@ impl Parser {
         }
 
         fn variable_declaration(&mut self) -> Statement {
-                let name_token = self.consume(TokenType::Identifier, "Expected variable name.");
-                let name = name_token.symbol.to_string(); // Assuming symbol represents the text
+                // `.symbol` is a `Copy` u32 id from the interner -- no
+                // allocation, no need to touch the symbol table here.
+                let name = self.consume(TokenType::Identifier, "Expected variable name.").symbol;
 
                 let mut value = None;
                 if self.match_token(&[TokenType::Equal]) {
@@ -81,14 +83,13 @@ impl Parser {
         }
 
         fn function_declaration(&mut self) -> Statement {
-                //self.consume (TokenType::Fn, "Expected fn before function declaration.");
-                let name = self.consume(TokenType::Identifier, "Expected function name.").symbol.to_string();
+                let name = self.consume(TokenType::Identifier, "Expected function name.").symbol;
                 self.consume(TokenType::LeftParen, "Expected '(' after function name.");
-                
+
                 let mut params = Vec::new();
                 if !self.check(TokenType::RightParen) {
                         loop {
-                                params.push(self.consume(TokenType::Identifier, "Expected parameter name.").symbol.to_string());
+                                params.push(self.consume(TokenType::Identifier, "Expected parameter name.").symbol);
                                 if !self.match_token(&[TokenType::Comma]) {
                                         break;
                                 }
@@ -96,17 +97,18 @@ impl Parser {
                 }
                 self.consume(TokenType::RightParen, "Expected ')' after parameters.");
                 self.consume(TokenType::Equal, "Expected '=' before function body.");
-                
+
                 let body = self.expression();
+                self.consume(TokenType::Semicolon, "Expected ';' after function body.");
                 Statement::Function { name, params, body }
         }
 
         fn if_statement(&mut self) -> Statement {
                 let condition = self.expression();
-                
+
                 self.consume(TokenType::LeftBrace, "Expected '{' before 'if' body.");
                 let then_branch = Box::new(Statement::Block(self.block()));
-                
+
                 let mut else_branch = None;
                 if self.match_token(&[TokenType::Else]) {
                         self.consume(TokenType::LeftBrace, "Expected '{' before 'else' body.");
@@ -120,7 +122,7 @@ impl Parser {
                 let condition = self.expression();
                 self.consume(TokenType::LeftBrace, "Expected '{' before 'while' body.");
                 let body = Box::new(Statement::Block(self.block()));
-                
+
                 Statement::While { condition, body }
         }
 
@@ -133,16 +135,16 @@ impl Parser {
 
                 let condition = self.expression();
                 self.consume(TokenType::Semicolon, "Expected ';' after for loop condition.");
-                
+
                 // Parse the update (e.g., i += 1) WITHOUT expecting a semicolon afterwards
-                let update = Box::new(self.parse_assignment_or_expr()); 
-                
+                let update = Box::new(self.parse_assignment_or_expr());
+
                 self.consume(TokenType::LeftBrace, "Expected '{' before 'for' body.");
                 let body = Box::new(Statement::Block(self.block()));
 
                 Statement::For { init, condition, update, body }
         }
-        
+
         fn return_statement(&mut self) -> Statement {
                 let value = if !self.check(TokenType::Semicolon) {
                         Some(self.expression())
@@ -171,22 +173,21 @@ impl Parser {
         /// This is crucial because `for` loop updates don't have semicolons, but normal statements do.
         fn parse_assignment_or_expr(&mut self) -> Statement {
                 // Lookahead to check if this is an assignment statement (Identifier Operator Expr)
-                if self.check(TokenType::Identifier) && self.current + 1 < self.tokens.len() {
-                        let next_type = self.tokens[self.current + 1].token_type;
-                        if let Some(op) = self.get_assign_op(next_type) {
-                                let name = self.advance().symbol.to_string(); // Consume Identifier
-                                self.advance(); // Consume Op
-                                let value = self.expression();
-                                
-                                // Assuming your AST uses Statement::Assign { name, op, value }
-                                return Statement::Assign { name, op, value }; 
+                if self.check(TokenType::Identifier) {
+                        if let Some(next) = self.tokens.get(self.current + 1) {
+                                if let Some(op) = self.get_assign_op(next.token_type) {
+                                        let name = self.advance().symbol; // Consume Identifier
+                                        self.advance(); // Consume Op
+                                        let value = self.expression();
+                                        return Statement::Assign { name, op, value };
+                                }
                         }
                 }
-                
+
                 // If it's not an assignment, it's just a normal expression
                 Statement::Expr(self.expression())
         }
-        
+
         fn block(&mut self) -> Vec<Statement> {
                 let mut statements = Vec::new();
                 while !self.check(TokenType::RightBrace) && !self.is_at_end() {
@@ -199,113 +200,89 @@ impl Parser {
         // ==========================================
         //                EXPRESSIONS
         // ==========================================
+        //
+        // Binary operators are parsed with a single precedence-climbing
+        // loop (`parse_binary`) driven by `infix_precedence`, rather than
+        // one hand-written function per precedence level. The original
+        // logical_or -> logical_and -> equality -> comparison ->
+        // bitwise_or -> bitwise_xor -> bitwise_and -> shift -> additive ->
+        // multiplicative chain meant *every* atom -- even a bare `5` --
+        // walked through 10 nested function calls before reaching
+        // `unary`/`primary`. That's 10 stack frames of pure overhead per
+        // token in the common case, and every new operator meant writing
+        // a whole new near-identical function. The loop below does the
+        // same parse in one function, with recursion only where the
+        // grammar actually requires it (parsing the right-hand operand of
+        // a tighter-binding operator).
+
         fn expression(&mut self) -> Expr {
-                // Assignments are now handled cleanly at the statement level, 
-                // so the base expression is just the lowest precedence operator!
-                self.logical_or()
-        }
-        
-        fn logical_or(&mut self) -> Expr {
-                let mut expr = self.logical_and();
-                while self.match_token(&[TokenType::Or]) {
-                        let right = Box::new(self.logical_and());
-                        expr = Expr::Binary { left: Box::new(expr), op: BinaryOp::Or, right };
-                }
-                expr
+                // Assignments are handled at the statement level, so the
+                // lowest-precedence expression form starts at `Or`.
+                self.parse_binary(Self::PREC_OR)
         }
 
-        fn logical_and(&mut self) -> Expr {
-                let mut expr = self.equality();
-                while self.match_token(&[TokenType::And]) {
-                        let right = Box::new(self.equality());
-                        expr = Expr::Binary { left: Box::new(expr), op: BinaryOp::And, right };
-                }
-                expr
+        const PREC_OR: u8 = 1;
+        const PREC_AND: u8 = 2;
+        const PREC_EQUALITY: u8 = 3;
+        const PREC_COMPARISON: u8 = 4;
+        const PREC_BIT_OR: u8 = 5;
+        const PREC_BIT_XOR: u8 = 6;
+        const PREC_BIT_AND: u8 = 7;
+        const PREC_SHIFT: u8 = 8;
+        const PREC_ADDITIVE: u8 = 9;
+        const PREC_MULTIPLICATIVE: u8 = 10;
+
+        /// Every binary operator's left-associative precedence, or `None`
+        /// if `token_type` isn't an infix operator at all (which is how
+        /// the climbing loop knows where to stop).
+        fn infix_precedence(token_type: TokenType) -> Option<(u8, BinaryOp)> {
+                use TokenType::*;
+                Some(match token_type {
+                        Or => (Self::PREC_OR, BinaryOp::Or),
+                        And => (Self::PREC_AND, BinaryOp::And),
+                        EqualEqual => (Self::PREC_EQUALITY, BinaryOp::Eq),
+                        BangEqual => (Self::PREC_EQUALITY, BinaryOp::Ne),
+                        Less => (Self::PREC_COMPARISON, BinaryOp::Lt),
+                        LessEqual => (Self::PREC_COMPARISON, BinaryOp::Le),
+                        Greater => (Self::PREC_COMPARISON, BinaryOp::Gt),
+                        GreaterEqual => (Self::PREC_COMPARISON, BinaryOp::Ge),
+                        Pipe => (Self::PREC_BIT_OR, BinaryOp::BitOr),
+                        Xor => (Self::PREC_BIT_XOR, BinaryOp::BitXor),
+                        Ampersand => (Self::PREC_BIT_AND, BinaryOp::BitAnd),
+                        ShiftLeft => (Self::PREC_SHIFT, BinaryOp::Shl),
+                        ShiftRight => (Self::PREC_SHIFT, BinaryOp::Shr),
+                        Plus => (Self::PREC_ADDITIVE, BinaryOp::Add),
+                        Minus => (Self::PREC_ADDITIVE, BinaryOp::Sub),
+                        Star => (Self::PREC_MULTIPLICATIVE, BinaryOp::Mul),
+                        Slash => (Self::PREC_MULTIPLICATIVE, BinaryOp::Div),
+                        Mod => (Self::PREC_MULTIPLICATIVE, BinaryOp::Mod),
+                        _ => return None,
+                })
         }
 
-        fn equality(&mut self) -> Expr {
-                let mut expr = self.comparison();
-                while self.match_token(&[TokenType::EqualEqual, TokenType::BangEqual]) {
-                        let operator = self.get_binary_op(self.previous().token_type);
-                        let right = Box::new(self.comparison());
-                        expr = Expr::Binary { left: Box::new(expr), op: operator, right };
-                }
-                expr
-        }
+        fn parse_binary(&mut self, min_prec: u8) -> Expr {
+                let mut left = self.unary();
 
-        fn comparison(&mut self) -> Expr {
-                let mut expr = self.bitwise_or();
-                while self.match_token(&[TokenType::Greater, TokenType::GreaterEqual, TokenType::Less, TokenType::LessEqual]) {
-                        let operator = self.get_binary_op(self.previous().token_type);
-                        let right = Box::new(self.bitwise_or());
-                        expr = Expr::Binary { left: Box::new(expr), op: operator, right };
+                while let Some((prec, op)) = Self::infix_precedence(self.peek().token_type) {
+                        if prec < min_prec {
+                                break;
+                        }
+                        self.advance(); // consume the operator
+                                         // Left-associative: the right operand only accepts
+                                         // strictly tighter-binding operators.
+                        let right = Box::new(self.parse_binary(prec + 1));
+                        left = Expr::Binary { left: Box::new(left), op, right };
                 }
-                expr
-        }
 
-        fn bitwise_or(&mut self) -> Expr {
-                let mut expr = self.bitwise_xor();
-                while self.match_token(&[TokenType::Pipe]) {
-                        let right = Box::new(self.bitwise_xor());
-                        expr = Expr::Binary { left: Box::new(expr), op: BinaryOp::BitOr, right };
-                }
-                expr
-        }
-
-        fn bitwise_xor(&mut self) -> Expr {
-                let mut expr = self.bitwise_and();
-                while self.match_token(&[TokenType::Xor]) {
-                        let right = Box::new(self.bitwise_and());
-                        expr = Expr::Binary { left: Box::new(expr), op: BinaryOp::BitXor, right };
-                }
-                expr
-        }
-
-        fn bitwise_and(&mut self) -> Expr {
-                let mut expr = self.shift();
-                while self.match_token(&[TokenType::Ampersand]) {
-                        let right = Box::new(self.shift());
-                        expr = Expr::Binary { left: Box::new(expr), op: BinaryOp::BitAnd, right };
-                }
-                expr
-        }
-
-        fn shift(&mut self) -> Expr {
-                let mut expr = self.additive();
-                while self.match_token(&[TokenType::ShiftLeft, TokenType::ShiftRight]) {
-                        let operator = self.get_binary_op(self.previous().token_type);
-                        let right = Box::new(self.additive());
-                        expr = Expr::Binary { left: Box::new(expr), op: operator, right };
-                }
-                expr
-        }
-
-        fn additive(&mut self) -> Expr {
-                let mut expr = self.multiplicative();
-                while self.match_token(&[TokenType::Plus, TokenType::Minus]) {
-                        let operator = self.get_binary_op(self.previous().token_type);
-                        let right = Box::new(self.multiplicative());
-                        expr = Expr::Binary { left: Box::new(expr), op: operator, right };
-                }
-                expr
-        }
-
-        fn multiplicative(&mut self) -> Expr {
-                let mut expr = self.unary();
-                while self.match_token(&[TokenType::Star, TokenType::Slash, TokenType::Mod]) {
-                        let operator = self.get_binary_op(self.previous().token_type);
-                        let right = Box::new(self.unary());
-                        expr = Expr::Binary { left: Box::new(expr), op: operator, right };
-                }
-                expr
+                left
         }
 
         fn unary(&mut self) -> Expr {
                 if self.match_token(&[TokenType::Bang, TokenType::Minus, TokenType::Tilde]) {
                         let op = match self.previous().token_type {
                                 TokenType::Minus => UnaryOp::Neg,
-                                TokenType::Bang  => UnaryOp::Not,
-                                TokenType::Tilde => UnaryOp::BitNot, // Or Tilde depending on mapping
+                                TokenType::Bang => UnaryOp::Not,
+                                TokenType::Tilde => UnaryOp::BitNot,
                                 _ => unreachable!(),
                         };
                         let right = Box::new(self.unary());
@@ -317,7 +294,7 @@ impl Parser {
         fn exponent(&mut self) -> Expr {
                 let mut expr = self.postfix();
                 if self.match_token(&[TokenType::Pow]) {
-                        let right = Box::new(self.exponent());
+                        let right = Box::new(self.exponent()); // right-associative
                         expr = Expr::Binary { left: Box::new(expr), op: BinaryOp::Pow, right };
                 }
                 expr
@@ -342,18 +319,30 @@ impl Parser {
         }
 
         fn primary(&mut self) -> Expr {
-                if self.match_token(&[TokenType::False]) { return Expr::Bool(false); }
-                if self.match_token(&[TokenType::True]) { return Expr::Bool(true); }
-                if self.match_token(&[TokenType::Nil]) { return Expr::Nil; }
+                if self.match_token(&[TokenType::False]) {
+                        return Expr::Bool(false);
+                }
+                if self.match_token(&[TokenType::True]) {
+                        return Expr::Bool(true);
+                }
+                if self.match_token(&[TokenType::Nil]) {
+                        return Expr::Nil;
+                }
 
                 if self.match_token(&[TokenType::Number]) {
-                        return Expr::Number(self.previous().symbol.to_string());
+                        // The scanner always attaches the exact raw source
+                        // text as `Literal::Str` on Number tokens -- read
+                        // that directly rather than resolving `symbol`,
+                        // since it's already sitting right there and this
+                        // is precisely the string the CAS can't afford to
+                        // round anything off of.
+                        return Expr::Number(Self::literal_text(self.previous()));
                 }
                 if self.match_token(&[TokenType::Str]) {
-                        return Expr::String(self.previous().symbol.to_string());
+                        return Expr::String(Self::literal_text(self.previous()));
                 }
                 if self.match_token(&[TokenType::Identifier]) {
-                        return Expr::Variable(self.previous().symbol.to_string());
+                        return Expr::Variable(self.previous().symbol);
                 }
                 if self.match_token(&[TokenType::LeftParen]) {
                         let expr = self.expression();
@@ -362,6 +351,16 @@ impl Parser {
                 }
 
                 panic!("Expected expression at {:?}", self.peek());
+        }
+
+        fn literal_text(token: &Token) -> String {
+                match &token.literal {
+                        Some(Literal::Str(s)) => s.clone(),
+                        None => panic!(
+                                "internal error: {:?} token missing its Literal payload from the scanner",
+                                token.token_type
+                        ),
+                }
         }
 
         // ==========================================
@@ -378,9 +377,16 @@ impl Parser {
                 false
         }
 
-        fn consume(&mut self, token_type: TokenType, message: &str) -> Token {
+        /// Returns a borrow of the consumed token rather than a clone --
+        /// the original cloned `Token` on every call, which meant a fresh
+        /// heap allocation (copying the inner `String` out of
+        /// `Literal::Str`) for every single token consumed, including
+        /// every punctuation and keyword token that never needed it.
+        /// Callers here only ever pull a `Copy` field (`symbol`) or read
+        /// `literal` immediately, so nothing is lost by borrowing instead.
+        fn consume(&mut self, token_type: TokenType, message: &str) -> &Token {
                 if self.check(token_type) {
-                        return self.advance().clone();
+                        return self.advance();
                 }
                 panic!("Parse error: {}", message); // In a real parser, return a Result/Error
         }
@@ -409,26 +415,6 @@ impl Parser {
 
         fn previous(&self) -> &Token {
                 &self.tokens[self.current - 1]
-        }
-
-        fn get_binary_op(&self, token_type: TokenType) -> BinaryOp {
-                match token_type {
-                        TokenType::Plus => BinaryOp::Add,
-                        TokenType::Minus => BinaryOp::Sub,
-                        TokenType::Star => BinaryOp::Mul,
-                        TokenType::Slash => BinaryOp::Div,
-                        TokenType::Mod => BinaryOp::Mod,
-                        TokenType::Pow => BinaryOp::Pow,
-                        TokenType::EqualEqual => BinaryOp::Eq,
-                        TokenType::BangEqual => BinaryOp::Ne,
-                        TokenType::Less => BinaryOp::Lt,
-                        TokenType::LessEqual => BinaryOp::Le,
-                        TokenType::Greater => BinaryOp::Gt,
-                        TokenType::GreaterEqual => BinaryOp::Ge,
-                        TokenType::ShiftLeft => BinaryOp::Shl,
-                        TokenType::ShiftRight => BinaryOp::Shr,
-                        _ => unreachable!(),
-                }
         }
 
         fn get_assign_op(&self, token_type: TokenType) -> Option<AssignOp> {
