@@ -9,6 +9,13 @@ numeric and bitwise operators.
 
 - Rust 1.79 or newer with Cargo ([install Rust](https://rustup.rs/))
 
+## Installation
+
+Install from source with `cargo install --git https://github.com/starless333/scas`,
+or download the versioned archive for Linux, macOS, or Windows from GitHub
+Releases. Release archives include SHA-256 checksums and GitHub build-provenance
+attestations. After installation, run `scas --version` to verify the executable.
+
 ## Running a program
 
 Running SCAS in a terminal starts an interactive REPL. Definitions remain
@@ -191,8 +198,35 @@ adjacency; a numeric value is not callable, so `2(x)` is multiplication.
 
 The experimental self-documenting grammar recognizes `///` prose, shared-scope
 render blocks `\{ ... \}`, render lines `\[ expression \]`, and the `=>`
-show-result marker. These forms execute today; the LaTeX assembly backend is
-tracked separately in [`docs/DOCUMENTER.md`](docs/DOCUMENTER.md).
+show-result marker. These forms execute today. The source-expression renderer
+is available as a library API, while whole-document assembly and evaluated
+`=>` output remain tracked in [`docs/DOCUMENTER.md`](docs/DOCUMENTER.md).
+
+```rust
+use scas::ast::StatementKind;
+use scas::latex::LatexRenderer;
+use scas::lexer::Scanner;
+use scas::parser::Parser;
+
+let mut scanner = Scanner::new("print(integral(sin(2x), x));");
+let tokens = scanner.scan_tokens().clone();
+let symbols = scanner.into_symbols();
+let program = Parser::new(tokens).parse().unwrap();
+let StatementKind::Print(expression) = &program[0].kind else {
+    unreachable!();
+};
+
+assert_eq!(
+    LatexRenderer::new(&symbols).expression(expression),
+    r"\int \sin\left(2x\right)\,dx",
+);
+```
+
+Rendering writes directly into one output buffer without intermediate
+expression strings. `expression_into` accepts a caller-owned `String` so a live
+preview can reuse its allocation. The renderer currently covers precedence,
+fractions, powers, roots, implicit products, calculus notation, Greek names,
+subscripts, vectors, matrices, and raw LaTeX strings.
 
 ## Values and operators
 
@@ -330,6 +364,11 @@ persistent session can use the public `Scanner`, `Parser`, and `Interpreter`
 types directly. Interpreter output is injected through a `Write`
 implementation; it never relies on global standard output.
 
+SCAS follows Semantic Versioning. While the crate is `0.x`, public library APIs
+may change in a minor release; breaking changes are called out in the changelog
+and receive a deprecation cycle when practical. Patch releases preserve the
+public API, and MSRV changes are documented as minor-version changes.
+
 ## Development
 
 The same checks enforced in CI can be run locally with:
@@ -338,6 +377,9 @@ The same checks enforced in CI can be run locally with:
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
+cargo bench --bench baselines
+cargo +nightly fuzz run scanner -- -max_total_time=30
+cargo +nightly fuzz run parser -- -max_total_time=30
 ```
 
 CI runs these checks on the minimum supported Rust release (1.79) and the
@@ -352,3 +394,5 @@ The symbolic simplification roadmap is documented in
 [`docs/algebraic_identities.md`](docs/algebraic_identities.md).
 See also the [language reference](docs/language.md), [error guide](docs/errors.md),
 [architecture notes](docs/architecture.md), and [contribution guide](CONTRIBUTING.md).
+Measured development baselines are recorded in
+[`docs/performance.md`](docs/performance.md).

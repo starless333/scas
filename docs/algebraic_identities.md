@@ -109,6 +109,13 @@ A future assumptions system should track facts such as `real(x)`, `x > 0`, and
 - [x] Product, quotient, power, and elementary chain rules
 - [x] Simplify derivatives immediately after constructing them
 - [x] Recognize polynomial, reciprocal, exponential, sine, and cosine antiderivatives
+- [x] Pull constant factors through integrals and recognize affine substitution
+  for powers, reciprocals, exponentials, sine, cosine, and tangent
+- [x] Differentiate general powers plus inverse-trigonometric and hyperbolic functions
+- [ ] Add bounded integration by parts for polynomial-times-exponential and
+  polynomial-times-trigonometric forms
+- [ ] Integrate rational functions through partial-fraction decomposition
+- [ ] Add common trigonometric identities and trigonometric substitution rules
 - [x] Keep unevaluated derivative/integral nodes when no rule applies
 - [x] Definite constants/assumptions are not invented; indefinite results omit `+ C` by convention
 

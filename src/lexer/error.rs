@@ -23,11 +23,7 @@ impl ScanError {
         crate::render_diagnostic(
             "lexical",
             &self.message,
-            SourceSpan {
-                line: self.line,
-                column: self.column,
-                length: self.length,
-            },
+            SourceSpan::diagnostic(self.line, self.column, self.length),
             source,
             source_name,
             None,

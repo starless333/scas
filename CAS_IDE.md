@@ -2,7 +2,7 @@
 
 A prioritized roadmap for the Rust CAS, its **explicit-markup self-documenter** (`///` prose, `\{ \}` render blocks, `\[ \]` render lines), and the IDE built around it. Work top to bottom. Do not start a phase until the previous one is solid.
 
-See `DOCUMENTER_SPEC.md` for the full design of the documenter.
+See `docs/DOCUMENTER.md` for the full design of the documenter.
 
 > **Change from the previous version:** the documenter no longer guesses what to render. The user marks it explicitly, so the old `// Question:` convention, automatic question/answer detection, and "question and code disagree" linting are replaced by `///` prose, render markers, and `#{ }` interpolation. Step-by-step solutions and AI features are now opt-in extras, not the default path.
 
@@ -11,30 +11,30 @@ See `DOCUMENTER_SPEC.md` for the full design of the documenter.
 ## Phase 0: Foundations
 
 ### Language core readiness
-- [ ] Lexer and parser attach **source spans** to every token and AST node
-- [ ] Parser has **error recovery**: a half-typed line yields a partial AST plus diagnostics
-- [ ] Interpreter is exposed as a **library crate** (no `println!` or `exit`; returns structured `Result` errors)
-- [ ] Evaluation runs **without global side effects**, so the editor can re-run on every change
-- [ ] Symbolic engine has stable **canonical forms** and a working `simplify`
+- [x] Lexer and parser attach **source spans** to every token and AST node
+- [x] Parser has **error recovery**: a half-typed line yields a partial AST plus diagnostics
+- [x] Interpreter is exposed as a **library crate** (no `println!` or `exit`; returns structured `Result` errors)
+- [x] Evaluation runs **without global side effects**, so the editor can re-run on every change
+- [x] Symbolic engine has stable **canonical forms** and a working `simplify`
 
 ### Grammar fixes (these directly affect what users write inside render blocks)
-- [ ] `3x^2` binds correctly (implicit product takes an `exponent` operand)
-- [ ] Add `else if`
-- [ ] Matrix literal rule (`[1 2; 3 4]`) with a decided whitespace/minus rule (`[1 -1]`)
-- [ ] Multi-index `A[i, j]`
-- [ ] Decide identifier rules for subscripts (`x_1`) and Greek names
+- [x] `3x^2` binds correctly (implicit product takes an `exponent` operand)
+- [x] Add `else if`
+- [x] Matrix literals require comma-separated columns (`[1, 2; 3, 4]`), so `[1 -1]` remains subtraction
+- [x] Multi-index `A[i, j]`
+- [x] Decide identifier rules for subscripts (`x_1`) and Greek names
 
 ### Project structure
 - [ ] **Cargo workspace**: `core` (lexer/parser/AST), `eval`, `latex` (renderer), `doc` (documenter), `lsp`, `gui`, `cli`
-- [ ] **CI** (GitHub Actions): build, test, `clippy`, `fmt --check`
-- [ ] Baseline **test suite** (parser, evaluator)
-- [ ] License, `.gitignore`, README stub
+- [x] **CI** (GitHub Actions): build, test, `clippy`, `fmt --check`
+- [x] Baseline **test suite** (parser, evaluator)
+- [x] License, `.gitignore`, README stub
 
 ### Decisions to record in `docs/decisions.md`
-- [ ] Render marker syntax (`\{ \}` / `\[ \]` versus alternatives)
-- [ ] Render block scope (shared versus new)
-- [ ] Interpolation delimiter (`#{ }`)
-- [ ] Raw LaTeX escape hatch syntax
+- [x] Render marker syntax (`\{ \}` / `\[ \]` versus alternatives)
+- [x] Render block scope (shared versus new)
+- [x] Interpolation delimiter (`#{ }`)
+- [x] Raw LaTeX escape hatch syntax
 - [ ] GUI framework, text buffer approach, math rendering approach
 - [ ] Theme file format
 
@@ -43,28 +43,28 @@ See `DOCUMENTER_SPEC.md` for the full design of the documenter.
 ## Phase 1: Documenter core (the heart of the project)
 
 ### Lexing and parsing
-- [ ] `DocComment` token for `///` (with spans); `//` stays trivia
-- [ ] Tokens for `\{`, `\}`, `\[`, `\]`, and `=>`
-- [ ] Merge consecutive `///` lines into paragraphs; blank `///` is a paragraph break
-- [ ] Locate `#{ expr }` interpolations inside prose (brace-depth aware)
-- [ ] Grammar: `render_block`, `render_line`, `show_stmt`
-- [ ] Parser recovery for unterminated render markers
+- [x] `DocComment` token for `///` (with spans); `//` stays trivia
+- [x] Tokens for `\{`, `\}`, `\[`, `\]`, and `=>`
+- [x] Merge consecutive `///` lines into paragraphs; blank `///` is a paragraph break
+- [x] Locate `#{ expr }` interpolations inside prose (brace-depth aware)
+- [x] Grammar: `render_block`, `render_line`, `show_stmt`
+- [x] Parser recovery for unterminated render markers
 
 ### Semantics
-- [ ] Execute render blocks in source order with the decided scoping
+- [x] Execute render blocks in source order with the decided scoping
 - [ ] `expr;` typesets as written; `expr =>;` typesets `expr = value`
 - [ ] Interpolation evaluates in current scope; errors render a visible placeholder
 - [ ] Silent execution of control flow inside render blocks, with an info diagnostic
 
 ### Renderer (AST and values to LaTeX)
-- [ ] **Total** renderer (exhaustive `match`; new nodes fail to compile without a rule)
-- [ ] Precedence-aware parenthesization
-- [ ] `\frac`, `^{}`, `\sqrt`, implicit multiplication as juxtaposition
+- [x] **Total** source-expression renderer (exhaustive `match`; new nodes fail to compile without a rule)
+- [x] Precedence-aware parenthesization
+- [x] `\frac`, `^{}`, `\sqrt`, implicit multiplication as juxtaposition
 - [ ] **User-extensible function template table** (TOML), with `\operatorname` fallback
 - [ ] Values: integers, rationals, floats, booleans, strings, `nil`
-- [ ] Matrices and vectors as `pmatrix`
+- [x] Source matrices and vectors as `pmatrix`
 - [ ] Identifier mapping (Greek names, subscripts), overridable
-- [ ] Raw LaTeX escape hatch
+- [x] Raw LaTeX string escape hatch in the source-expression renderer
 
 ### Assembly
 - [ ] Emit fragments in source order, each tagged with its **source span**
@@ -111,11 +111,11 @@ See `DOCUMENTER_SPEC.md` for the full design of the documenter.
 
 ## Phase 4: Engineering credibility
 
-- [ ] **Property tests** on the simplifier (idempotence)
-- [ ] **Fuzz** the lexer and parser (`cargo fuzz`), especially doc comments and `#{ }`
+- [x] **Property tests** on the simplifier (idempotence)
+- [x] **Fuzz** the lexer and parser (`cargo fuzz`), especially doc comments and `#{ }`
 - [ ] **Incremental parsing / evaluation caching**
-- [ ] **Benchmarks** (`criterion`) with numbers you can quote
-- [ ] **Release pipeline**: prebuilt binaries for Linux, macOS, Windows
+- [x] **Benchmarks** (dependency-free harness) with numbers you can quote
+- [x] **Release pipeline**: prebuilt binaries for Linux, macOS, Windows
 - [ ] **WASM build** and a **public web playground**
 
 ---

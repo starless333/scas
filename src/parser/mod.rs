@@ -3,4 +3,4 @@ pub mod error;
 mod syntax;
 
 pub use error::ParseError;
-pub use syntax::Parser;
+pub use syntax::{ParseReport, Parser};

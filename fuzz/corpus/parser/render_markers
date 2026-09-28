@@ -1,0 +1,3 @@
+/// value: #{ x }
+\{ f(x) = 3x^2; derivative(f(x), x) =>; \}
+\[ solve(x^2 - 1, x) => \]

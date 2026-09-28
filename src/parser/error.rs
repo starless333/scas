@@ -44,11 +44,7 @@ impl ParseError {
         crate::render_diagnostic(
             "syntax",
             &self.message,
-            SourceSpan {
-                line: self.line,
-                column: self.column,
-                length: marker_width,
-            },
+            SourceSpan::diagnostic(self.line, self.column, marker_width),
             source,
             source_name,
             Some(&label),

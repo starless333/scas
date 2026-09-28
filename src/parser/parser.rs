@@ -1,6 +1,7 @@
 use crate::ast::assign_op::*;
 use crate::ast::binary_op::*;
 use crate::ast::expr::*;
+use crate::ast::span::SourceSpan;
 use crate::ast::statement::*;
 use crate::ast::unary_op::*;
 use crate::lexer::literal::Literal;
@@ -9,6 +10,12 @@ use crate::lexer::token_type::TokenType;
 use crate::parser::error::ParseError;
 
 type ParseResult<T> = Result<T, ParseError>;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParseReport {
+    pub statements: Vec<Statement>,
+    pub errors: Vec<ParseError>,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Parser {
@@ -30,21 +37,72 @@ impl Parser {
         Ok(statements)
     }
 
+    /// Parse as much input as possible, retaining successfully parsed
+    /// statements and collecting diagnostics after synchronization points.
+    /// Editors use this for half-typed buffers; batch execution keeps the
+    /// fail-fast `parse` behavior.
+    pub fn parse_recovering(&mut self) -> ParseReport {
+        let mut statements = Vec::new();
+        let mut errors = Vec::new();
+        while !self.is_at_end() {
+            match self.statement() {
+                Ok(statement) => statements.push(statement),
+                Err(error) => {
+                    errors.push(error);
+                    self.synchronize();
+                }
+            }
+        }
+        ParseReport { statements, errors }
+    }
+
+    fn synchronize(&mut self) {
+        while !self.is_at_end() {
+            if self.current > 0 && self.previous().token_type == TokenType::Semicolon {
+                return;
+            }
+            if matches!(
+                self.peek().token_type,
+                TokenType::Let
+                    | TokenType::Fn
+                    | TokenType::If
+                    | TokenType::While
+                    | TokenType::For
+                    | TokenType::Print
+                    | TokenType::Return
+                    | TokenType::DocComment
+                    | TokenType::RenderLeftBrace
+                    | TokenType::RenderLeftBracket
+            ) {
+                return;
+            }
+            self.advance();
+        }
+    }
+
     // ==========================================
     //                STATEMENTS
     // ==========================================
 
     fn statement(&mut self) -> ParseResult<Statement> {
-        let span = self.peek_span();
+        let start = self.peek_span();
         let kind = self.statement_kind()?;
-        Ok(Statement::new(span, kind))
+        Ok(Statement::new(start.through(self.previous_span()), kind))
     }
 
     fn statement_kind(&mut self) -> ParseResult<StatementKind> {
         if self.match_token(&[TokenType::DocComment]) {
-            return Ok(StatementKind::DocComment(Self::literal_text(
-                self.previous(),
-            )?));
+            let mut prose = Self::literal_text(self.previous())?;
+            while !prose.is_empty()
+                && self.check(TokenType::DocComment)
+                && self.peek().line == self.previous().line + 1
+                && !Self::literal_text(self.peek())?.is_empty()
+            {
+                self.advance();
+                prose.push('\n');
+                prose.push_str(&Self::literal_text(self.previous())?);
+            }
+            return Ok(StatementKind::DocComment(prose));
         }
         if self.match_token(&[TokenType::RenderLeftBrace]) {
             let mut statements = Vec::new();
@@ -189,21 +247,29 @@ impl Parser {
         let condition = self.expression()?;
 
         self.consume(TokenType::LeftBrace, "expected `{` before `if` body")?;
+        let branch_start = self.previous_span();
+        let branch_kind = StatementKind::Block(self.block()?);
         let then_branch = Box::new(Statement::new(
-            self.previous_span(),
-            StatementKind::Block(self.block()?),
+            branch_start.through(self.previous_span()),
+            branch_kind,
         ));
 
         let mut else_branch = None;
         if self.match_token(&[TokenType::Else]) {
             let span = self.peek_span();
             if self.match_token(&[TokenType::If]) {
-                else_branch = Some(Box::new(Statement::new(span, self.if_statement()?)));
+                let kind = self.if_statement()?;
+                else_branch = Some(Box::new(Statement::new(
+                    span.through(self.previous_span()),
+                    kind,
+                )));
             } else {
                 self.consume(TokenType::LeftBrace, "expected `if` or `{` after `else`")?;
+                let branch_start = self.previous_span();
+                let branch_kind = StatementKind::Block(self.block()?);
                 else_branch = Some(Box::new(Statement::new(
-                    self.previous_span(),
-                    StatementKind::Block(self.block()?),
+                    branch_start.through(self.previous_span()),
+                    branch_kind,
                 )));
             }
         }
@@ -218,9 +284,11 @@ impl Parser {
     fn while_statement(&mut self) -> ParseResult<StatementKind> {
         let condition = self.expression()?;
         self.consume(TokenType::LeftBrace, "expected `{` before `while` body")?;
+        let body_start = self.previous_span();
+        let body_kind = StatementKind::Block(self.block()?);
         let body = Box::new(Statement::new(
-            self.previous_span(),
-            StatementKind::Block(self.block()?),
+            body_start.through(self.previous_span()),
+            body_kind,
         ));
 
         Ok(StatementKind::While { condition, body })
@@ -228,13 +296,14 @@ impl Parser {
 
     fn for_statement(&mut self) -> ParseResult<StatementKind> {
         let init_span = self.peek_span();
+        let init_kind = if self.match_token(&[TokenType::Let]) {
+            self.variable_declaration()? // This consumes its own ';'
+        } else {
+            self.expression_statement()? // This consumes its own ';'
+        };
         let init = Box::new(Statement::new(
-            init_span,
-            if self.match_token(&[TokenType::Let]) {
-                self.variable_declaration()? // This consumes its own ';'
-            } else {
-                self.expression_statement()? // This consumes its own ';'
-            },
+            init_span.through(self.previous_span()),
+            init_kind,
         ));
 
         let condition = self.expression()?;
@@ -245,15 +314,18 @@ impl Parser {
 
         // Parse the update (e.g., i += 1) WITHOUT expecting a semicolon afterwards
         let update_span = self.peek_span();
+        let update_kind = self.parse_assignment_or_expr()?;
         let update = Box::new(Statement::new(
-            update_span,
-            self.parse_assignment_or_expr()?,
+            update_span.through(self.previous_span()),
+            update_kind,
         ));
 
         self.consume(TokenType::LeftBrace, "expected `{` before `for` body")?;
+        let body_start = self.previous_span();
+        let body_kind = StatementKind::Block(self.block()?);
         let body = Box::new(Statement::new(
-            self.previous_span(),
-            StatementKind::Block(self.block()?),
+            body_start.through(self.previous_span()),
+            body_kind,
         ));
 
         Ok(StatementKind::For {
@@ -412,11 +484,16 @@ impl Parser {
             // Left-associative: the right operand only accepts
             // strictly tighter-binding operators.
             let right = Box::new(self.parse_binary(prec + 1)?);
-            left = Expr::Binary {
-                left: Box::new(left),
-                op,
-                right,
-            };
+            let span = left.span.through(right.span);
+            left = Expr::new(
+                span,
+                ExprKind::Binary {
+                    left: Box::new(left),
+                    op,
+                    right,
+                    implicit: !explicit,
+                },
+            );
         }
 
         Ok(left)
@@ -424,6 +501,7 @@ impl Parser {
 
     fn unary(&mut self) -> ParseResult<Expr> {
         if self.match_token(&[TokenType::Bang, TokenType::Minus, TokenType::Tilde]) {
+            let start = self.previous_span();
             let op = match self.previous().token_type {
                 TokenType::Minus => UnaryOp::Neg,
                 TokenType::Bang => UnaryOp::Not,
@@ -431,7 +509,10 @@ impl Parser {
                 _ => return Err(self.error("internal parser error: invalid unary operator")),
             };
             let right = Box::new(self.unary()?);
-            return Ok(Expr::Unary { op, expr: right });
+            return Ok(Expr::new(
+                start.through(right.span),
+                ExprKind::Unary { op, expr: right },
+            ));
         }
         self.exponent()
     }
@@ -442,11 +523,16 @@ impl Parser {
             // Parsing the RHS through unary keeps exponentiation
             // right-associative while accepting `2 ^ -3`.
             let right = Box::new(self.unary()?);
-            expr = Expr::Binary {
-                left: Box::new(expr),
-                op: BinaryOp::Pow,
-                right,
-            };
+            let span = expr.span.through(right.span);
+            expr = Expr::new(
+                span,
+                ExprKind::Binary {
+                    left: Box::new(expr),
+                    op: BinaryOp::Pow,
+                    right,
+                    implicit: false,
+                },
+            );
         }
         Ok(expr)
     }
@@ -455,8 +541,8 @@ impl Parser {
         let mut expr = self.primary()?;
         loop {
             let callable = matches!(
-                expr,
-                Expr::Variable(_) | Expr::Call { .. } | Expr::Index { .. }
+                expr.kind,
+                ExprKind::Variable(_) | ExprKind::Call { .. } | ExprKind::Index { .. }
             );
             if callable && self.match_token(&[TokenType::LeftParen]) {
                 let mut args = Vec::new();
@@ -468,22 +554,34 @@ impl Parser {
                         }
                     }
                 }
-                self.consume(TokenType::RightParen, "expected `)` after arguments")?;
-                expr = Expr::Call {
-                    callee: Box::new(expr),
-                    args,
-                };
+                let end = SourceSpan::from_token(
+                    self.consume(TokenType::RightParen, "expected `)` after arguments")?,
+                );
+                let span = expr.span.through(end);
+                expr = Expr::new(
+                    span,
+                    ExprKind::Call {
+                        callee: Box::new(expr),
+                        args,
+                    },
+                );
             } else if self.match_token(&[TokenType::LeftBracket]) {
                 let mut indices = vec![self.expression()?];
                 while self.match_token(&[TokenType::Comma]) {
                     indices.push(self.expression()?);
                 }
-                self.consume(TokenType::RightBracket, "expected `]` after array index")?;
+                let end = SourceSpan::from_token(
+                    self.consume(TokenType::RightBracket, "expected `]` after array index")?,
+                );
                 for index in indices {
-                    expr = Expr::Index {
-                        target: Box::new(expr),
-                        index: Box::new(index),
-                    };
+                    let span = expr.span.through(end);
+                    expr = Expr::new(
+                        span,
+                        ExprKind::Index {
+                            target: Box::new(expr),
+                            index: Box::new(index),
+                        },
+                    );
                 }
             } else {
                 break;
@@ -494,13 +592,13 @@ impl Parser {
 
     fn primary(&mut self) -> ParseResult<Expr> {
         if self.match_token(&[TokenType::False]) {
-            return Ok(Expr::Bool(false));
+            return Ok(Expr::new(self.previous_span(), ExprKind::Bool(false)));
         }
         if self.match_token(&[TokenType::True]) {
-            return Ok(Expr::Bool(true));
+            return Ok(Expr::new(self.previous_span(), ExprKind::Bool(true)));
         }
         if self.match_token(&[TokenType::Nil]) {
-            return Ok(Expr::Nil);
+            return Ok(Expr::new(self.previous_span(), ExprKind::Nil));
         }
 
         if self.match_token(&[TokenType::Number]) {
@@ -510,15 +608,25 @@ impl Parser {
             // since it's already sitting right there and this
             // is precisely the string the CAS can't afford to
             // round anything off of.
-            return Ok(Expr::Number(Self::literal_text(self.previous())?));
+            return Ok(Expr::new(
+                self.previous_span(),
+                ExprKind::Number(Self::literal_text(self.previous())?),
+            ));
         }
         if self.match_token(&[TokenType::Str]) {
-            return Ok(Expr::String(Self::literal_text(self.previous())?));
+            return Ok(Expr::new(
+                self.previous_span(),
+                ExprKind::String(Self::literal_text(self.previous())?),
+            ));
         }
         if self.match_token(&[TokenType::Identifier]) {
-            return Ok(Expr::Variable(self.previous().symbol));
+            return Ok(Expr::new(
+                self.previous_span(),
+                ExprKind::Variable(self.previous().symbol),
+            ));
         }
         if self.match_token(&[TokenType::LeftBracket]) {
+            let start = self.previous_span();
             let mut rows = vec![Vec::new()];
             if !self.check(TokenType::RightBracket) {
                 loop {
@@ -535,20 +643,43 @@ impl Parser {
                     }
                 }
             }
-            self.consume(TokenType::RightBracket, "expected `]` after array literal")?;
+            let end = SourceSpan::from_token(
+                self.consume(TokenType::RightBracket, "expected `]` after array literal")?,
+            );
+            let span = start.through(end);
             if rows.len() == 1 {
-                return Ok(Expr::Array(rows.pop().expect("single array row")));
+                return Ok(Expr::new(
+                    span,
+                    ExprKind::Array(rows.pop().expect("single array row")),
+                ));
             }
             let columns = rows[0].len();
             if columns == 0 || rows.iter().any(|row| row.len() != columns) {
                 return Err(self.error("matrix rows must have the same non-zero length"));
             }
-            return Ok(Expr::Array(rows.into_iter().map(Expr::Array).collect()));
+            let rows = rows
+                .into_iter()
+                .map(|elements| {
+                    let row_span = elements
+                        .first()
+                        .expect("matrix rows are non-empty")
+                        .span
+                        .through(elements.last().expect("matrix rows are non-empty").span);
+                    Expr::new(row_span, ExprKind::Array(elements))
+                })
+                .collect();
+            return Ok(Expr::new(span, ExprKind::Array(rows)));
         }
         if self.match_token(&[TokenType::LeftParen]) {
+            let start = self.previous_span();
             let expr = self.expression()?;
-            self.consume(TokenType::RightParen, "expected `)` after expression")?;
-            return Ok(Expr::Group(Box::new(expr)));
+            let end = SourceSpan::from_token(
+                self.consume(TokenType::RightParen, "expected `)` after expression")?,
+            );
+            return Ok(Expr::new(
+                start.through(end),
+                ExprKind::Group(Box::new(expr)),
+            ));
         }
 
         Err(self.error("expected an expression"))
@@ -626,21 +757,11 @@ impl Parser {
     }
 
     fn peek_span(&self) -> SourceSpan {
-        let token = self.peek();
-        SourceSpan {
-            line: token.line,
-            column: token.column,
-            length: token.length.max(1),
-        }
+        SourceSpan::from_token(self.peek())
     }
 
     fn previous_span(&self) -> SourceSpan {
-        let token = self.previous();
-        SourceSpan {
-            line: token.line,
-            column: token.column,
-            length: token.length.max(1),
-        }
+        SourceSpan::from_token(self.previous())
     }
 
     fn get_assign_op(&self, token_type: TokenType) -> Option<AssignOp> {
@@ -721,5 +842,83 @@ mod tests {
 
         let error = parse_error("for let i = 0, i < 3, i += 1 { }");
         assert!(error.message.contains("expected `;`"));
+    }
+
+    #[test]
+    fn recovering_parse_keeps_valid_statements_after_an_error() {
+        let mut scanner = Scanner::new("let first = 1; print(1 + ); let last = 2;");
+        let tokens = scanner.scan_tokens().clone();
+        let report = Parser::new(tokens).parse_recovering();
+        assert_eq!(report.errors.len(), 1);
+        assert_eq!(report.statements.len(), 2);
+        assert!(matches!(
+            report.statements[0].kind,
+            StatementKind::Let { .. }
+        ));
+        assert!(matches!(
+            report.statements[1].kind,
+            StatementKind::Let { .. }
+        ));
+    }
+
+    #[test]
+    fn consecutive_doc_comments_form_one_prose_item() {
+        let mut scanner =
+            Scanner::new("/// First line\n/// second line\n///\n/// New paragraph\nlet x = 1;");
+        let tokens = scanner.scan_tokens().clone();
+        let program = Parser::new(tokens).parse().unwrap();
+        assert!(matches!(
+            &program[0].kind,
+            StatementKind::DocComment(text) if text == "First line\nsecond line"
+        ));
+        assert!(matches!(
+            &program[1].kind,
+            StatementKind::DocComment(text) if text.is_empty()
+        ));
+        assert!(matches!(
+            &program[2].kind,
+            StatementKind::DocComment(text) if text == "New paragraph"
+        ));
+    }
+
+    #[test]
+    fn expressions_and_statements_cover_their_exact_source_ranges() {
+        let source = "print(α + 2x);";
+        let mut scanner = Scanner::new(source);
+        let tokens = scanner.scan_tokens().clone();
+        let program = Parser::new(tokens).parse().unwrap();
+
+        assert_eq!(
+            &source[program[0].span.byte_start..program[0].span.byte_end],
+            source
+        );
+        let StatementKind::Print(expression) = &program[0].kind else {
+            panic!("expected print statement");
+        };
+        assert_eq!(
+            &source[expression.span.byte_start..expression.span.byte_end],
+            "α + 2x"
+        );
+        let ExprKind::Binary { left, right, .. } = &expression.kind else {
+            panic!("expected addition");
+        };
+        assert_eq!(&source[left.span.byte_start..left.span.byte_end], "α");
+        assert_eq!(&source[right.span.byte_start..right.span.byte_end], "2x");
+        let ExprKind::Binary {
+            left: coefficient,
+            right: variable,
+            ..
+        } = &right.kind
+        else {
+            panic!("expected implicit multiplication");
+        };
+        assert_eq!(
+            &source[coefficient.span.byte_start..coefficient.span.byte_end],
+            "2"
+        );
+        assert_eq!(
+            &source[variable.span.byte_start..variable.span.byte_end],
+            "x"
+        );
     }
 }

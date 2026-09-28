@@ -1,7 +1,9 @@
 //! Reusable scanner, parser, and interpreter pipeline for SCAS.
 
 pub mod ast;
+pub mod document;
 pub mod interpreter;
+pub mod latex;
 pub mod lexer;
 pub mod number;
 pub mod parser;
@@ -207,11 +209,7 @@ pub fn execute_with_options<W: Write>(
                 "source exceeds the {} character limit",
                 limits.max_source_chars
             ),
-            Some(SourceSpan {
-                line: 1,
-                column: 1,
-                length: 1,
-            }),
+            Some(SourceSpan::diagnostic(1, 1, 1)),
         )));
     }
     let mut scanner = Scanner::new(source);
@@ -222,11 +220,7 @@ pub fn execute_with_options<W: Write>(
     if tokens.len() > limits.max_tokens {
         return Err(ExecutionError::Runtime(RuntimeError::limit(
             format!("program exceeds the {} token limit", limits.max_tokens),
-            tokens.last().map(|token| SourceSpan {
-                line: token.line,
-                column: token.column,
-                length: token.length.max(1),
-            }),
+            tokens.last().map(SourceSpan::from_token),
         )));
     }
     let mut nesting = 0usize;
@@ -240,11 +234,7 @@ pub fn execute_with_options<W: Write>(
                 if nesting > limits.max_nesting {
                     return Err(ExecutionError::Runtime(RuntimeError::limit(
                         format!("input exceeds the nesting limit of {}", limits.max_nesting),
-                        Some(SourceSpan {
-                            line: token.line,
-                            column: token.column,
-                            length: token.length.max(1),
-                        }),
+                        Some(SourceSpan::from_token(token)),
                     )));
                 }
             }

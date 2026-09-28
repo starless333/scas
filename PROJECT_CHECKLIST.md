@@ -119,21 +119,21 @@ tests or acceptance criteria are also complete.
 
 ## P3 — hardening, performance, and distribution
 
-- [ ] Add fuzzing for the scanner/parser and property-based differential tests
+- [x] Add fuzzing for the scanner/parser and property-based differential tests
   for numeric and symbolic evaluation; preserve every discovered crash as a
   regression test.
-- [ ] Add benchmarks for scanning, parsing, large-number arithmetic, symbolic
+- [x] Add benchmarks for scanning, parsing, large-number arithmetic, symbolic
   normalization, function calls, and representative end-to-end programs.
-- [ ] Profile before optimizing, then set documented performance and memory
+- [x] Profile before optimizing, then set documented performance and memory
   baselines so regressions are visible in CI.
-- [ ] Add release automation, signed/versioned artifacts, checksums, and
+- [x] Add release automation, signed/versioned artifacts, checksums, and
   installation instructions for supported platforms.
-- [ ] Generate API documentation for the library and publish it once the public
+- [x] Generate API documentation for the library and publish it once the public
   API has stability expectations.
 
 ## Current verification snapshot
 
-- [x] `cargo test --all-targets --all-features` passes (43 tests).
+- [x] `cargo test --all-targets --all-features` passes (53 tests).
 - [x] `cargo fmt --all -- --check` passes.
 - [x] `cargo clippy --all-targets --all-features -- -D warnings` passes.
 - [x] File-based pass/fail fixtures are exercised by `cargo test`.

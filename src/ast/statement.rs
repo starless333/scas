@@ -1,16 +1,7 @@
 use crate::ast::assign_op::AssignOp;
 use crate::ast::expr::Expr;
+use crate::ast::span::SourceSpan;
 use crate::lexer::symbol::Symbol;
-
-/// Source location of a statement. Runtime diagnostics use this span so an
-/// execution failure points back into the same source text as scan and parse
-/// failures.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SourceSpan {
-    pub line: usize,
-    pub column: usize,
-    pub length: usize,
-}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FunctionBody {

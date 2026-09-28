@@ -55,6 +55,7 @@ fn substitution_solving_and_calculus_have_safe_fallbacks() {
             print(subs(x^2 + y, x, 3));
             print(solve(x^2 - 1, x));
             print(derivative(x^3 + 2x + sin(x), x));
+            print(derivative(sin(x) + tan(x), x));
             print(integral(x^2 + 2, x));
             print(integral(sqrt(x), x));
             "#,
@@ -64,8 +65,37 @@ fn substitution_solving_and_calculus_have_safe_fallbacks() {
             "y + 9\n",
             "[-1, 1]\n",
             "2 + 3 * x ^ 2 + cos(x)\n",
-            "x ^ 3 / 3 + 2 * x\n",
+            "cos(x) + sec(x) ^ 2\n",
+            "(x ^ 3 + 6 * x) / 3\n",
             "integral(sqrt(x), x)\n",
+        ),
+    );
+}
+
+#[test]
+fn calculus_handles_general_derivatives_and_linear_substitution() {
+    assert_eq!(
+        output(
+            r#"
+            print(derivative(x^x, x));
+            print(derivative(asin(2x), x));
+            print(derivative(sec(x), x));
+            print(integral(3 * x^2, x));
+            print(integral((2x + 1)^3, x));
+            print(integral(1 / (2x + 1), x));
+            print(integral(sin(3x), x));
+            print(integral(tan(2x), x));
+            "#,
+        ),
+        concat!(
+            "(1 / x * x + ln(x)) * x ^ x\n",
+            "1 / sqrt(-(4 * x ^ 2) + 1) * 2\n",
+            "sec(x) * tan(x)\n",
+            "x ^ 3\n",
+            "(2 * x + 1) ^ 4 / 4 / 2\n",
+            "ln(2 * x + 1) / 2\n",
+            "-cos(3 * x) / 3\n",
+            "-ln(cos(2 * x)) / 2\n",
         ),
     );
 }

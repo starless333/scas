@@ -1,4 +1,5 @@
 use crate::ast::binary_op::BinaryOp;
+use crate::ast::span::SourceSpan;
 use crate::ast::unary_op::UnaryOp;
 use crate::lexer::symbol::Symbol;
 
@@ -7,7 +8,19 @@ use crate::lexer::symbol::Symbol;
 /// Hamiltonians -- that's a separate concern layered on top of this one,
 /// e.g. via a builtin `Call` to a CAS function).
 #[derive(Debug, Clone, PartialEq)]
-pub enum Expr {
+pub struct Expr {
+    pub span: SourceSpan,
+    pub kind: ExprKind,
+}
+
+impl Expr {
+    pub fn new(span: SourceSpan, kind: ExprKind) -> Self {
+        Self { span, kind }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExprKind {
     Bool(bool),
     Nil,
 
@@ -47,6 +60,10 @@ pub enum Expr {
         left: Box<Expr>,
         op: BinaryOp,
         right: Box<Expr>,
+        /// Whether multiplication was written by adjacency (`2x`) rather
+        /// than with an explicit operator (`2 * x`). Always false for
+        /// non-multiplication operators.
+        implicit: bool,
     },
 
     Unary {

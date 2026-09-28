@@ -1,8 +1,10 @@
 # Architecture
 
 The scanner interns lexemes and emits spanned tokens. The recursive-descent
-parser produces a spanned statement AST. The interpreter walks that AST against
-linked lexical environments and writes through an injected `Write` target.
+parser gives every statement and expression node a source span with a
+Unicode-aware line/column and a half-open UTF-8 byte range. The interpreter
+walks that AST against linked lexical environments and writes through an
+injected `Write` target.
 Runtime flow (`return`, loop control, and errors) uses one internal propagation
 type.
 
