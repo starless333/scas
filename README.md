@@ -57,16 +57,26 @@ runtime failures are written to standard error and exit with status 1. Syntax
 diagnostics include the source line and exact failing span:
 
 ```text
-error: expected an expression
+syntax error: expected an expression
   --> <stdin>:1:11
    |
  1 | print(1 + );
    |           ^ unexpected `)`
 ```
 
+Scanning reports all lexical errors found in one pass. Parsing and execution
+stop at the first syntax or runtime error. Diagnostics have stable phase labels:
+`lexical error`, `syntax error`, `runtime error`, and `limit error`. Runtime
+diagnostics point to the statement that failed.
+
 ## Language basics
 
 Most simple statements end with a semicolon. Line comments begin with `//`.
+Declarations, assignments, `print`, `return`, `break`, `continue`, expression
+statements, and expression-bodied functions require a trailing semicolon.
+Blocks do not. A `for` header uses C-style semicolon separators:
+`for initializer; condition; update { ... }`; the update is not followed by a
+fourth semicolon.
 
 ```scas
 // Variables and values
@@ -149,6 +159,19 @@ print(total);
 Blocks create a new scope. A variable declared inside `{ ... }` is not
 available outside that block.
 
+Conditions use value truthiness: `false` and `nil` are false; every other value
+is true. `and` and `or` short-circuit and return one of their operands. Equality
+is structural for arrays and exact across numeric representations (for
+example, `1 / 2 == 0.5`). Functions and blocks use lexical scope.
+
+Exponentiation is right-associative; all other binary operators are
+left-associative. From tightest to loosest, precedence is postfix operations,
+exponentiation, unary operators, multiplication/division/remainder, addition/
+subtraction, shifts, bitwise `&`, `xor`, bitwise `|`, comparisons, equality,
+`and`, then `or`. Adjacency (`2x`, `2(x + 1)`, `(x + 1)y`) means
+multiplication. A named function call such as `f(x)` takes precedence over
+adjacency; a numeric value is not callable, so `2(x)` is multiplication.
+
 ## Values and operators
 
 SCAS has integers, rationals, decimals, symbolic expressions, arrays, strings,
@@ -171,6 +194,18 @@ rational arithmetic is exact. Decimal addition, subtraction, multiplication,
 and positive integral powers preserve all digits. Division and negative decimal
 powers use the active significant-digit precision, which defaults to 100 and
 can be changed in the REPL with `:precision N`.
+
+## Resource limits
+
+Batch execution uses deterministic defaults to prevent runaway programs:
+1,000,000 source characters, 250,000 tokens, 256 nested delimiters, 1,000,000
+evaluation steps, 256 nested function calls, exponent magnitude 100,000, shift
+amount 1,000,000, decimal precision 10,000 digits, decimal scale 100,000, and
+numeric values 8,000,000 bits. Crossing a budget
+returns a `limit error`; it never terminates the process by panic. Embedders can
+override every value with `execute_with_limits(source, output, Limits { ... })`.
+The REPL applies the same execution, recursion, numeric, and precision defaults
+to each submission.
 
 ## Standard mathematics and algebra
 

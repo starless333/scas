@@ -8,9 +8,23 @@ fn output(source: &str) -> String {
 
 fn runtime_error(source: &str) -> String {
     match execute(source, Vec::new()).expect_err("program should fail") {
-        ExecutionError::Runtime(message) => message,
+        ExecutionError::Runtime(error) => error.message,
         error => panic!("expected runtime error, got {error:?}"),
     }
+}
+
+#[test]
+fn randomized_safe_symbolic_collection_identity_holds() {
+    let mut state = 0xcafe_babe_u64;
+    let mut source = String::new();
+    for _ in 0..250 {
+        state = state
+            .wrapping_mul(2_862_933_555_777_941_757)
+            .wrapping_add(3_037_000_493);
+        let a = (state % 51) as i64;
+        source.push_str(&format!("print(({a} * x + 0) == {a} * x);\n"));
+    }
+    assert_eq!(output(&source), "true\n".repeat(250));
 }
 
 #[test]

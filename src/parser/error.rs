@@ -1,3 +1,4 @@
+use crate::ast::SourceSpan;
 use crate::lexer::token::Token;
 use crate::lexer::token_type::TokenType;
 use std::fmt;
@@ -33,13 +34,6 @@ impl ParseError {
         let start = self.column.saturating_sub(1).min(line_chars.len());
         let available = line_chars.len().saturating_sub(start);
         let marker_width = self.length.max(1).min(available.max(1));
-        let gutter_width = self.line.to_string().len();
-
-        let mut indentation = String::new();
-        for c in line_chars.iter().take(start) {
-            indentation.push(if *c == '\t' { '\t' } else { ' ' });
-        }
-
         let label = if self.found == TokenType::Eof {
             "unexpected end of input".to_owned()
         } else {
@@ -47,20 +41,17 @@ impl ParseError {
             format!("unexpected `{lexeme}`")
         };
 
-        format!(
-            "error: {}\n {:>gutter_width$}--> {}:{}:{}\n {:>gutter_width$} |\n {:>gutter_width$} | {}\n {:>gutter_width$} | {}{} {}",
-            self.message,
-            "",
+        crate::render_diagnostic(
+            "syntax",
+            &self.message,
+            SourceSpan {
+                line: self.line,
+                column: self.column,
+                length: marker_width,
+            },
+            source,
             source_name,
-            self.line,
-            self.column,
-            "",
-            self.line,
-            source_line,
-            "",
-            indentation,
-            "^".repeat(marker_width),
-            label,
+            Some(&label),
         )
     }
 }

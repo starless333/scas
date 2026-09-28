@@ -270,7 +270,7 @@ impl Scanner {
             _ => {
                 if Self::is_digit(c) {
                     self.number();
-                } else if Self::is_alpha(c) {
+                } else if Self::is_alpha(c) || Self::is_greek(c) {
                     self.identifier();
                 } else {
                     self.errors.push(ScanError::new(
@@ -458,5 +458,40 @@ impl Scanner {
         } else {
             self.source[self.current + n - 1]
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tokens_keep_unicode_aware_lines_columns_and_lengths() {
+        let mut scanner = Scanner::new("let α = 12;\nprint(α);");
+        let tokens = scanner.scan_tokens();
+        assert_eq!(tokens[0].token_type, TokenType::Let);
+        assert_eq!(
+            (tokens[1].line, tokens[1].column, tokens[1].length),
+            (1, 5, 1)
+        );
+        assert_eq!(
+            (tokens[5].line, tokens[5].column, tokens[5].length),
+            (2, 1, 5)
+        );
+        assert_eq!(
+            (tokens.last().unwrap().line, tokens.last().unwrap().column),
+            (2, 10)
+        );
+    }
+
+    #[test]
+    fn scanner_collects_multiple_lexical_errors() {
+        let mut scanner = Scanner::new("@ #");
+        scanner.scan_tokens();
+        assert_eq!(scanner.errors().len(), 2);
+        assert_eq!(
+            (scanner.errors()[1].line, scanner.errors()[1].column),
+            (1, 3)
+        );
     }
 }

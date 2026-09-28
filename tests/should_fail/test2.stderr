@@ -1,4 +1,4 @@
-error: expected `=` or `{` before function body
+syntax error: expected `=` or `{` before function body
   --> <stdin>:1:14
    |
  1 | fn add(a, b) a + b;

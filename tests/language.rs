@@ -1,7 +1,7 @@
 use scas::interpreter::Interpreter;
 use scas::lexer::Scanner;
 use scas::parser::Parser;
-use scas::{execute, ExecutionError};
+use scas::{execute, execute_with_limits, ExecutionError, Limits};
 use std::num::NonZeroU64;
 
 fn output(source: &str) -> String {
@@ -12,7 +12,7 @@ fn output(source: &str) -> String {
 
 fn runtime_error(source: &str) -> String {
     match execute(source, Vec::new()).expect_err("program should fail") {
-        ExecutionError::Runtime(message) => message,
+        ExecutionError::Runtime(error) => error.message,
         other => panic!("expected a runtime error, got {other:?}"),
     }
 }
@@ -24,7 +24,9 @@ fn output_with_precision(source: &str, precision: u64) -> String {
     let symbols = scanner.into_symbols();
     let program = Parser::new(tokens).parse().expect("program should parse");
     let mut interpreter = Interpreter::new(symbols, Vec::new());
-    interpreter.set_decimal_precision(NonZeroU64::new(precision).unwrap());
+    interpreter
+        .set_decimal_precision(NonZeroU64::new(precision).unwrap())
+        .unwrap();
     interpreter.run(&program).expect("program should execute");
     String::from_utf8(std::mem::take(interpreter.output_mut())).unwrap()
 }
@@ -161,7 +163,7 @@ fn runtime_failures_have_stable_messages() {
         ),
         (
             "print(2 ^ 9223372036854775808);",
-            "exponent is too large to evaluate (maximum magnitude is 2^63 - 1)",
+            "exponent magnitude exceeds the limit of 100000",
         ),
         (
             "print(0 ^ -1);",
@@ -216,4 +218,73 @@ fn numeric_promotion_exactness_and_decimal_precision_are_stable() {
         output_with_precision("print(1.0 / 7);", 12),
         "0.142857142857\n"
     );
+}
+
+#[test]
+fn resource_limits_stop_runaway_and_expensive_programs() {
+    let limits = Limits {
+        max_steps: 30,
+        max_call_depth: 8,
+        max_exponent: 12,
+        max_shift: 12,
+        max_decimal_precision: 12,
+        max_decimal_scale: 12,
+        max_number_bits: 8,
+        ..Limits::default()
+    };
+
+    let failures = [
+        ("while true { }", "execution exceeded the 30 step limit"),
+        (
+            "fn recurse() = recurse(); recurse();",
+            "function calls exceeded the depth limit of 8",
+        ),
+        (
+            "print(2 ^ 13);",
+            "exponent magnitude exceeds the limit of 12",
+        ),
+        ("print(1 << 13);", "shift amount exceeds the limit of 12"),
+        ("print(1e-13);", "decimal scale exceeds the limit of 12"),
+        (
+            "print(255 * 255);",
+            "numeric result exceeds the 8 bit limit",
+        ),
+    ];
+    for (source, expected) in failures {
+        let error = execute_with_limits(source, Vec::new(), limits).unwrap_err();
+        let ExecutionError::Runtime(error) = error else {
+            panic!("expected limit error for {source}");
+        };
+        assert!(error.is_limit, "source: {source}");
+        assert_eq!(error.message, expected);
+        assert!(error.span.is_some());
+    }
+
+    let mut scanner = Scanner::new("print(1);");
+    let tokens = scanner.scan_tokens().clone();
+    let symbols = scanner.into_symbols();
+    let mut interpreter = Interpreter::with_limits(symbols, Vec::new(), limits);
+    assert!(
+        interpreter
+            .set_decimal_precision(NonZeroU64::new(13).unwrap())
+            .unwrap_err()
+            .is_limit
+    );
+    interpreter
+        .run(&Parser::new(tokens).parse().unwrap())
+        .unwrap();
+}
+
+#[test]
+fn deeply_nested_input_is_rejected_before_recursive_parsing() {
+    let limits = Limits {
+        max_nesting: 4,
+        ..Limits::default()
+    };
+    let error = execute_with_limits("print(((((1)))));", Vec::new(), limits).unwrap_err();
+    let ExecutionError::Runtime(error) = error else {
+        panic!("expected a limit error")
+    };
+    assert!(error.is_limit);
+    assert_eq!(error.message, "input exceeds the nesting limit of 4");
 }

@@ -232,3 +232,20 @@ impl Value {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use num_bigint::BigInt;
+
+    #[test]
+    fn value_equality_is_structural_and_type_aware() {
+        let one = Value::Number(Number::Integer(BigInt::from(1)));
+        let left = Value::Array(Rc::new(vec![one.clone(), Value::Bool(true)]));
+        let right = Value::Array(Rc::new(vec![one, Value::Bool(true)]));
+        assert!(left.equals(&right));
+        assert!(!Value::Bool(true).equals(&Value::Number(Number::Integer(1.into()))));
+        assert_eq!(left.type_name(), "array");
+        assert!(!Value::Nil.is_truthy());
+    }
+}

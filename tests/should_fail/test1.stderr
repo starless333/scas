@@ -1,4 +1,4 @@
-error: expected `{` before `if` body
+syntax error: expected `{` before `if` body
   --> <stdin>:1:10
    |
  1 | if x > 5 print(x);

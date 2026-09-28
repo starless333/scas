@@ -1,3 +1,4 @@
+use crate::ast::SourceSpan;
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,34 +20,17 @@ impl ScanError {
     }
 
     pub fn render(&self, source: &str, source_name: &str) -> String {
-        let source_line = source
-            .split('\n')
-            .nth(self.line.saturating_sub(1))
-            .unwrap_or("");
-        let line_chars: Vec<char> = source_line.chars().collect();
-        let start = self.column.saturating_sub(1).min(line_chars.len());
-        let available = line_chars.len().saturating_sub(start);
-        let marker_width = self.length.max(1).min(available.max(1));
-        let indentation: String = line_chars
-            .iter()
-            .take(start)
-            .map(|character| if *character == '\t' { '\t' } else { ' ' })
-            .collect();
-        let gutter_width = self.line.to_string().len();
-
-        format!(
-            "error: {}\n {:>gutter_width$}--> {}:{}:{}\n {:>gutter_width$} |\n {:>gutter_width$} | {}\n {:>gutter_width$} | {}{}",
-            self.message,
-            "",
+        crate::render_diagnostic(
+            "lexical",
+            &self.message,
+            SourceSpan {
+                line: self.line,
+                column: self.column,
+                length: self.length,
+            },
+            source,
             source_name,
-            self.line,
-            self.column,
-            "",
-            self.line,
-            source_line,
-            "",
-            indentation,
-            "^".repeat(marker_width),
+            None,
         )
     }
 }

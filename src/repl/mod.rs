@@ -39,14 +39,14 @@ fn run_with_io<R: BufRead, W: Write>(mut input: R, mut output: W) -> io::Result<
                     .ok()
                     .and_then(NonZeroU64::new)
                 {
-                    Some(precision) => {
-                        interpreter.set_decimal_precision(precision);
-                        writeln!(
+                    Some(precision) => match interpreter.set_decimal_precision(precision) {
+                        Ok(()) => writeln!(
                             output,
                             "decimal precision: {} digits",
                             interpreter.decimal_precision()
-                        )?;
-                    }
+                        )?,
+                        Err(error) => writeln!(output, "limit error: {error}")?,
+                    },
                     None => writeln!(output, "usage: :precision N (N must be greater than zero)")?,
                 }
                 continue;

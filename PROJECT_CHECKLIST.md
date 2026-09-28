@@ -53,26 +53,26 @@ tests or acceptance criteria are also complete.
     printing or terminating the process.
   - Inject output into the interpreter so tests and embedders do not depend on
     global `println!`.
-- [ ] Make diagnostics consistent across scanner, parser, interpreter, REPL,
+- [x] Make diagnostics consistent across scanner, parser, interpreter, REPL,
   and batch mode.
   - Attach source spans to tokens and AST errors and render source snippets.
   - Use stable diagnostic categories/messages that integration tests can
     verify.
   - Define whether execution stops at the first error or recovers to report
     more errors.
-- [ ] Reconcile the grammar, implementation, examples, and fixtures.
+- [x] Reconcile the grammar, implementation, examples, and fixtures.
   - Choose and document the `for` separator syntax; `src/grammar.org` uses
     commas while the parser and README use semicolons.
   - Remove or implement grammar-only syntax (for example `~=`), and document
     implementation-only behavior.
   - Specify semicolon rules, implicit-multiplication ambiguities, operator
     associativity, scope, truthiness, equality, and numeric conversion.
-- [ ] Add focused unit and property tests below the REPL layer.
+- [x] Add focused unit and property tests below the REPL layer.
   - Test scanner tokens/spans, parser ASTs, environments, numeric operations,
     value equality/formatting, and symbolic normalization independently.
   - Add randomized invariants for exact arithmetic and safe algebraic
     identities, including zero and negative boundary cases.
-- [ ] Define and enforce resource limits.
+- [x] Define and enforce resource limits.
   - Handle excessive recursion, deeply nested input, huge exponents/shifts,
     enormous decimal precision, and non-terminating programs without stack
     overflows or accidental unbounded allocation.
@@ -133,7 +133,7 @@ tests or acceptance criteria are also complete.
 
 ## Current verification snapshot
 
-- [x] `cargo test --all-targets --all-features` passes (27 tests).
+- [x] `cargo test --all-targets --all-features` passes (37 tests).
 - [x] `cargo fmt --all -- --check` passes.
 - [x] `cargo clippy --all-targets --all-features -- -D warnings` passes.
 - [x] File-based pass/fail fixtures are exercised by `cargo test`.

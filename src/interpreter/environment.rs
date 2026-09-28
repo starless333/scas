@@ -74,3 +74,36 @@ impl Environment {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::interpreter::value::Value;
+    use crate::lexer::SymbolTable;
+
+    #[test]
+    fn lookup_and_assignment_follow_lexical_scope() {
+        let mut symbols = SymbolTable::new();
+        let outer_name = symbols.intern("outer");
+        let local_name = symbols.intern("local");
+        let root = Environment::new();
+        root.borrow_mut().define(outer_name, Value::Bool(false));
+        let child = Environment::child(&root);
+        child.borrow_mut().define(local_name, Value::Nil);
+
+        assert!(matches!(
+            Environment::get(&child, outer_name),
+            Some(Value::Bool(false))
+        ));
+        assert!(Environment::assign(&child, outer_name, Value::Bool(true)));
+        assert!(matches!(
+            Environment::get(&root, outer_name),
+            Some(Value::Bool(true))
+        ));
+        assert!(!Environment::assign(
+            &child,
+            symbols.intern("missing"),
+            Value::Nil
+        ));
+    }
+}

@@ -125,7 +125,7 @@ fn lexical_errors_fail_on_stderr() {
     assert_eq!(text(&output.stdout), "");
     assert_eq!(
         text(&output.stderr),
-        "error: unexpected character `@`\n  --> <stdin>:1:13\n   |\n 1 | let value = @;\n   |             ^\n",
+        "lexical error: unexpected character `@`\n  --> <stdin>:1:13\n   |\n 1 | let value = @;\n   |             ^\n",
     );
 }
 
@@ -137,7 +137,7 @@ fn runtime_errors_fail_on_stderr() {
     assert_eq!(text(&output.stdout), "");
     assert_eq!(
         text(&output.stderr),
-        "runtime error: division by zero in '/'\n"
+        "runtime error: division by zero in '/'\n  --> <stdin>:1:1\n   |\n 1 | print(1 / 0);\n   | ^^^^^\n"
     );
 }
 

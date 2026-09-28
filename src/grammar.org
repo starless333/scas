@@ -41,9 +41,12 @@ if_stmt         ::= "if" expression block ("else" block)?
 
 while_stmt      ::= "while" expression block
 
-for_stmt        ::= "for" for_initializer "," expression "," assignment_expr block
+(* The two separators are semicolons. The update has no trailing semicolon. *)
+for_stmt        ::= "for" for_initializer ";" expression ";" for_update block
 
-for_initializer ::= "let" IDENTIFIER "=" expression | assignment_expr
+for_initializer ::= "let" IDENTIFIER ("=" expression)? | assignment_expr | expression
+
+for_update     ::= assignment_expr | expression
 
 (* ========================================== *)
 (*              OTHER STATEMENTS              *)
@@ -53,7 +56,7 @@ assignment_stmt ::= assignment_expr ";"
 
 assignment_expr ::= IDENTIFIER assignment_operator expression
 
-assignment_operator ::= "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "^=" | "&=" | "|=" | "~="
+assignment_operator ::= "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "^=" | "&=" | "|="
 
 print_stmt      ::= "print" "(" expression ")" ";"
 

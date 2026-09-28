@@ -162,3 +162,45 @@ impl fmt::Display for Number {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exact_rational_arithmetic_obeys_randomized_inverse_invariants() {
+        // A deterministic generator keeps this property test reproducible and
+        // dependency-free while covering zero and negative boundaries.
+        let mut state = 0x5eed_u64;
+        for _ in 0..2_000 {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            let a = (state as i64 % 2_001) - 1_000;
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            let mut b = (state as i64 % 2_001) - 1_000;
+            if b == 0 {
+                b = 1;
+            }
+            let value = BigRational::new(BigInt::from(a), BigInt::from(b));
+            assert_eq!((&value + &value) - &value, value);
+            if !value.is_zero() {
+                assert_eq!(&value * value.recip(), BigRational::one());
+            }
+        }
+    }
+
+    #[test]
+    fn equality_and_formatting_cross_numeric_representations() {
+        let half = Number::from_rational(BigRational::new(1.into(), 2.into()));
+        let decimal = Number::Decimal("0.5".parse().unwrap());
+        assert_eq!(half, decimal);
+        assert_eq!(half.to_string(), "1/2");
+        assert_eq!(
+            Number::from_rational(BigRational::new(6.into(), 3.into())).to_string(),
+            "2"
+        );
+    }
+}

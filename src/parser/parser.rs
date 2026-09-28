@@ -35,6 +35,12 @@ impl Parser {
     // ==========================================
 
     fn statement(&mut self) -> ParseResult<Statement> {
+        let span = self.peek_span();
+        let kind = self.statement_kind()?;
+        Ok(Statement::new(span, kind))
+    }
+
+    fn statement_kind(&mut self) -> ParseResult<StatementKind> {
         if self.match_token(&[TokenType::Let]) {
             return self.variable_declaration();
         }
@@ -58,23 +64,23 @@ impl Parser {
         }
         if self.match_token(&[TokenType::Break]) {
             self.consume(TokenType::Semicolon, "expected `;` after `break`")?;
-            return Ok(Statement::Break);
+            return Ok(StatementKind::Break);
         }
         if self.match_token(&[TokenType::Continue]) {
             self.consume(TokenType::Semicolon, "expected `;` after `continue`")?;
-            return Ok(Statement::Continue);
+            return Ok(StatementKind::Continue);
         }
         if self.match_token(&[TokenType::Print]) {
             return self.print_statement();
         }
         if self.match_token(&[TokenType::LeftBrace]) {
-            return Ok(Statement::Block(self.block()?));
+            return Ok(StatementKind::Block(self.block()?));
         }
 
         self.expression_statement()
     }
 
-    fn variable_declaration(&mut self) -> ParseResult<Statement> {
+    fn variable_declaration(&mut self) -> ParseResult<StatementKind> {
         // `.symbol` is a `Copy` u32 id from the interner -- no
         // allocation, no need to touch the symbol table here.
         let name = self
@@ -90,10 +96,10 @@ impl Parser {
             TokenType::Semicolon,
             "expected `;` after variable declaration",
         )?;
-        Ok(Statement::Let { name, value })
+        Ok(StatementKind::Let { name, value })
     }
 
-    fn function_declaration(&mut self) -> ParseResult<Statement> {
+    fn function_declaration(&mut self) -> ParseResult<StatementKind> {
         let name = self
             .consume(TokenType::Identifier, "expected a function name")?
             .symbol;
@@ -121,7 +127,7 @@ impl Parser {
         } else {
             return Err(self.error("expected `=` or `{` before function body"));
         };
-        Ok(Statement::Function { name, params, body })
+        Ok(StatementKind::Function { name, params, body })
     }
 
     /// Recognizes the CAS-style shorthand `f(x, y) = expression` without
@@ -151,39 +157,52 @@ impl Parser {
         }
     }
 
-    fn if_statement(&mut self) -> ParseResult<Statement> {
+    fn if_statement(&mut self) -> ParseResult<StatementKind> {
         let condition = self.expression()?;
 
         self.consume(TokenType::LeftBrace, "expected `{` before `if` body")?;
-        let then_branch = Box::new(Statement::Block(self.block()?));
+        let then_branch = Box::new(Statement::new(
+            self.previous_span(),
+            StatementKind::Block(self.block()?),
+        ));
 
         let mut else_branch = None;
         if self.match_token(&[TokenType::Else]) {
             self.consume(TokenType::LeftBrace, "expected `{` before `else` body")?;
-            else_branch = Some(Box::new(Statement::Block(self.block()?)));
+            else_branch = Some(Box::new(Statement::new(
+                self.previous_span(),
+                StatementKind::Block(self.block()?),
+            )));
         }
 
-        Ok(Statement::If {
+        Ok(StatementKind::If {
             condition,
             then_branch,
             else_branch,
         })
     }
 
-    fn while_statement(&mut self) -> ParseResult<Statement> {
+    fn while_statement(&mut self) -> ParseResult<StatementKind> {
         let condition = self.expression()?;
         self.consume(TokenType::LeftBrace, "expected `{` before `while` body")?;
-        let body = Box::new(Statement::Block(self.block()?));
+        let body = Box::new(Statement::new(
+            self.previous_span(),
+            StatementKind::Block(self.block()?),
+        ));
 
-        Ok(Statement::While { condition, body })
+        Ok(StatementKind::While { condition, body })
     }
 
-    fn for_statement(&mut self) -> ParseResult<Statement> {
-        let init = Box::new(if self.match_token(&[TokenType::Let]) {
-            self.variable_declaration()? // This consumes its own ';'
-        } else {
-            self.expression_statement()? // This consumes its own ';'
-        });
+    fn for_statement(&mut self) -> ParseResult<StatementKind> {
+        let init_span = self.peek_span();
+        let init = Box::new(Statement::new(
+            init_span,
+            if self.match_token(&[TokenType::Let]) {
+                self.variable_declaration()? // This consumes its own ';'
+            } else {
+                self.expression_statement()? // This consumes its own ';'
+            },
+        ));
 
         let condition = self.expression()?;
         self.consume(
@@ -192,12 +211,19 @@ impl Parser {
         )?;
 
         // Parse the update (e.g., i += 1) WITHOUT expecting a semicolon afterwards
-        let update = Box::new(self.parse_assignment_or_expr()?);
+        let update_span = self.peek_span();
+        let update = Box::new(Statement::new(
+            update_span,
+            self.parse_assignment_or_expr()?,
+        ));
 
         self.consume(TokenType::LeftBrace, "expected `{` before `for` body")?;
-        let body = Box::new(Statement::Block(self.block()?));
+        let body = Box::new(Statement::new(
+            self.previous_span(),
+            StatementKind::Block(self.block()?),
+        ));
 
-        Ok(Statement::For {
+        Ok(StatementKind::For {
             init,
             condition,
             update,
@@ -205,25 +231,25 @@ impl Parser {
         })
     }
 
-    fn return_statement(&mut self) -> ParseResult<Statement> {
+    fn return_statement(&mut self) -> ParseResult<StatementKind> {
         let value = if !self.check(TokenType::Semicolon) {
             Some(self.expression()?)
         } else {
             None
         };
         self.consume(TokenType::Semicolon, "expected `;` after return value")?;
-        Ok(Statement::Return(value))
+        Ok(StatementKind::Return(value))
     }
 
-    fn print_statement(&mut self) -> ParseResult<Statement> {
+    fn print_statement(&mut self) -> ParseResult<StatementKind> {
         self.consume(TokenType::LeftParen, "expected `(` after `print`")?;
         let value = self.expression()?;
         self.consume(TokenType::RightParen, "expected `)` after print expression")?;
         self.consume(TokenType::Semicolon, "expected `;` after value")?;
-        Ok(Statement::Print(value))
+        Ok(StatementKind::Print(value))
     }
 
-    fn expression_statement(&mut self) -> ParseResult<Statement> {
+    fn expression_statement(&mut self) -> ParseResult<StatementKind> {
         let stmt = self.parse_assignment_or_expr()?;
         self.consume(TokenType::Semicolon, "expected `;` after statement")?;
         Ok(stmt)
@@ -231,7 +257,7 @@ impl Parser {
 
     /// Helper to parse either an assignment OR an expression, without consuming a trailing semicolon.
     /// This is crucial because `for` loop updates don't have semicolons, but normal statements do.
-    fn parse_assignment_or_expr(&mut self) -> ParseResult<Statement> {
+    fn parse_assignment_or_expr(&mut self) -> ParseResult<StatementKind> {
         // Lookahead to check if this is an assignment statement (Identifier Operator Expr)
         if self.check(TokenType::Identifier) {
             if let Some(next) = self.tokens.get(self.current + 1) {
@@ -239,13 +265,13 @@ impl Parser {
                     let name = self.advance().symbol; // Consume Identifier
                     self.advance(); // Consume Op
                     let value = self.expression()?;
-                    return Ok(Statement::Assign { name, op, value });
+                    return Ok(StatementKind::Assign { name, op, value });
                 }
             }
         }
 
         // If it's not an assignment, it's just a normal expression
-        Ok(Statement::Expr(self.expression()?))
+        Ok(StatementKind::Expr(self.expression()?))
     }
 
     fn block(&mut self) -> ParseResult<Vec<Statement>> {
@@ -543,6 +569,24 @@ impl Parser {
         &self.tokens[self.current - 1]
     }
 
+    fn peek_span(&self) -> SourceSpan {
+        let token = self.peek();
+        SourceSpan {
+            line: token.line,
+            column: token.column,
+            length: token.length.max(1),
+        }
+    }
+
+    fn previous_span(&self) -> SourceSpan {
+        let token = self.previous();
+        SourceSpan {
+            line: token.line,
+            column: token.column,
+            length: token.length.max(1),
+        }
+    }
+
     fn get_assign_op(&self, token_type: TokenType) -> Option<AssignOp> {
         match token_type {
             TokenType::Equal => Some(AssignOp::Assign),
@@ -608,5 +652,18 @@ mod tests {
         assert_eq!(error.message, "expected a variable name");
         assert_eq!((error.line, error.column), (1, 5));
         assert_eq!(error.found, TokenType::Equal);
+    }
+
+    #[test]
+    fn for_headers_require_semicolon_separators() {
+        let mut scanner = Scanner::new("for let i = 0; i < 3; i += 1 { print(i); }");
+        let tokens = scanner.scan_tokens().clone();
+        let program = Parser::new(tokens)
+            .parse()
+            .expect("semicolon form should parse");
+        assert!(matches!(program[0].kind, StatementKind::For { .. }));
+
+        let error = parse_error("for let i = 0, i < 3, i += 1 { }");
+        assert!(error.message.contains("expected `;`"));
     }
 }

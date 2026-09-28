@@ -6,18 +6,94 @@ pub mod lexer;
 pub mod number;
 pub mod parser;
 
+use ast::SourceSpan;
 use interpreter::Interpreter;
 use lexer::{ScanError, Scanner};
 use parser::{ParseError, Parser};
 use std::fmt;
 use std::io::Write;
 
+/// Resource budget for one program execution. All limits are deterministic;
+/// exceeding one returns a normal `limit error` rather than panicking or
+/// attempting an unbounded allocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limits {
+    pub max_source_chars: usize,
+    pub max_tokens: usize,
+    pub max_nesting: usize,
+    pub max_steps: u64,
+    pub max_call_depth: usize,
+    pub max_exponent: u32,
+    pub max_shift: usize,
+    pub max_decimal_precision: u64,
+    pub max_decimal_scale: u64,
+    pub max_number_bits: u64,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_source_chars: 1_000_000,
+            max_tokens: 250_000,
+            max_nesting: 256,
+            max_steps: 1_000_000,
+            max_call_depth: 256,
+            max_exponent: 100_000,
+            max_shift: 1_000_000,
+            max_decimal_precision: 10_000,
+            max_decimal_scale: 100_000,
+            max_number_bits: 8_000_000,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum ExecutionError {
     Scan(Vec<ScanError>),
     Parse(ParseError),
-    Runtime(String),
+    Runtime(RuntimeError),
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeError {
+    pub message: String,
+    pub span: Option<SourceSpan>,
+    pub is_limit: bool,
+}
+
+impl RuntimeError {
+    pub fn new(message: impl Into<String>, span: Option<SourceSpan>) -> Self {
+        Self {
+            message: message.into(),
+            span,
+            is_limit: false,
+        }
+    }
+
+    pub fn limit(message: impl Into<String>, span: Option<SourceSpan>) -> Self {
+        Self {
+            message: message.into(),
+            span,
+            is_limit: true,
+        }
+    }
+
+    pub fn render(&self, source: &str, source_name: &str) -> String {
+        let category = if self.is_limit { "limit" } else { "runtime" };
+        let Some(span) = self.span else {
+            return format!("{category} error: {}", self.message);
+        };
+        render_diagnostic(category, &self.message, span, source, source_name, None)
+    }
+}
+
+impl fmt::Display for RuntimeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.message.fmt(formatter)
+    }
+}
+
+impl std::error::Error for RuntimeError {}
 
 impl ExecutionError {
     pub fn render(&self, source: &str, source_name: &str) -> String {
@@ -28,7 +104,7 @@ impl ExecutionError {
                 .collect::<Vec<_>>()
                 .join("\n"),
             Self::Parse(error) => error.render(source, source_name),
-            Self::Runtime(message) => format!("runtime error: {message}"),
+            Self::Runtime(error) => error.render(source, source_name),
         }
     }
 }
@@ -38,9 +114,40 @@ impl fmt::Display for ExecutionError {
         match self {
             Self::Scan(errors) => write!(formatter, "{} lexical error(s)", errors.len()),
             Self::Parse(error) => error.fmt(formatter),
-            Self::Runtime(message) => write!(formatter, "{message}"),
+            Self::Runtime(error) => error.message.fmt(formatter),
         }
     }
+}
+
+/// Shared rendering used by every diagnostic phase.
+pub(crate) fn render_diagnostic(
+    category: &str,
+    message: &str,
+    span: SourceSpan,
+    source: &str,
+    source_name: &str,
+    label: Option<&str>,
+) -> String {
+    let source_line = source
+        .split('\n')
+        .nth(span.line.saturating_sub(1))
+        .unwrap_or("");
+    let chars: Vec<char> = source_line.chars().collect();
+    let start = span.column.saturating_sub(1).min(chars.len());
+    let width = span
+        .length
+        .max(1)
+        .min(chars.len().saturating_sub(start).max(1));
+    let indentation: String = chars[..start]
+        .iter()
+        .map(|character| if *character == '\t' { '\t' } else { ' ' })
+        .collect();
+    let gutter = span.line.to_string().len();
+    let suffix = label.map(|text| format!(" {text}")).unwrap_or_default();
+    format!(
+        "{category} error: {message}\n {:>gutter$}--> {source_name}:{}:{}\n {:>gutter$} |\n {:>gutter$} | {source_line}\n {:>gutter$} | {indentation}{}{suffix}",
+        "", span.line, span.column, "", span.line, "", "^".repeat(width),
+    )
 }
 
 impl std::error::Error for ExecutionError {}
@@ -50,14 +157,68 @@ impl std::error::Error for ExecutionError {}
 /// Language output is written only to `output`; this function never prints or
 /// terminates the process, which makes it suitable for tests and embedding.
 pub fn execute<W: Write>(source: &str, output: W) -> Result<(), ExecutionError> {
+    execute_with_limits(source, output, Limits::default())
+}
+
+pub fn execute_with_limits<W: Write>(
+    source: &str,
+    output: W,
+    limits: Limits,
+) -> Result<(), ExecutionError> {
+    if source.chars().count() > limits.max_source_chars {
+        return Err(ExecutionError::Runtime(RuntimeError::limit(
+            format!(
+                "source exceeds the {} character limit",
+                limits.max_source_chars
+            ),
+            Some(SourceSpan {
+                line: 1,
+                column: 1,
+                length: 1,
+            }),
+        )));
+    }
     let mut scanner = Scanner::new(source);
     let tokens = scanner.scan_tokens().clone();
     if !scanner.errors().is_empty() {
         return Err(ExecutionError::Scan(scanner.errors().to_vec()));
     }
+    if tokens.len() > limits.max_tokens {
+        return Err(ExecutionError::Runtime(RuntimeError::limit(
+            format!("program exceeds the {} token limit", limits.max_tokens),
+            tokens.last().map(|token| SourceSpan {
+                line: token.line,
+                column: token.column,
+                length: token.length.max(1),
+            }),
+        )));
+    }
+    let mut nesting = 0usize;
+    for token in &tokens {
+        use lexer::TokenType::{
+            LeftBrace, LeftBracket, LeftParen, RightBrace, RightBracket, RightParen,
+        };
+        match token.token_type {
+            LeftBrace | LeftBracket | LeftParen => {
+                nesting += 1;
+                if nesting > limits.max_nesting {
+                    return Err(ExecutionError::Runtime(RuntimeError::limit(
+                        format!("input exceeds the nesting limit of {}", limits.max_nesting),
+                        Some(SourceSpan {
+                            line: token.line,
+                            column: token.column,
+                            length: token.length.max(1),
+                        }),
+                    )));
+                }
+            }
+            RightBrace | RightBracket | RightParen => nesting = nesting.saturating_sub(1),
+            _ => {}
+        }
+    }
     let symbols = scanner.into_symbols();
     let program = Parser::new(tokens).parse().map_err(ExecutionError::Parse)?;
-    Interpreter::new(symbols, output)
+    Interpreter::with_limits(symbols, output, limits)
         .run(&program)
         .map_err(ExecutionError::Runtime)
 }

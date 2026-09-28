@@ -2,7 +2,7 @@ use crate::ast::assign_op::AssignOp;
 use crate::ast::binary_op::BinaryOp;
 use crate::ast::expr::Expr;
 use crate::ast::statement::FunctionBody;
-use crate::ast::statement::Statement;
+use crate::ast::statement::{Statement, StatementKind};
 use crate::ast::unary_op::UnaryOp;
 use crate::interpreter::environment::{Env, Environment};
 use crate::interpreter::flow::{ExecResult, Flow};
@@ -10,6 +10,7 @@ use crate::interpreter::polynomial::Polynomial;
 use crate::interpreter::value::{Builtin, SymbolicExpr, UserFunction, Value};
 use crate::lexer::symbol::{Symbol, SymbolTable};
 use crate::number::Number;
+use crate::{Limits, RuntimeError};
 use bigdecimal::{BigDecimal, Context};
 use num_bigint::BigInt;
 use num_integer::Integer;
@@ -28,15 +29,27 @@ pub struct Interpreter<W: Write> {
     symbols: SymbolTable,
     decimal_context: Context,
     output: W,
+    current_span: Option<crate::ast::SourceSpan>,
+    limits: Limits,
+    steps: u64,
+    call_depth: usize,
 }
 
 impl<W: Write> Interpreter<W> {
     pub fn new(symbols: SymbolTable, output: W) -> Self {
+        Self::with_limits(symbols, output, Limits::default())
+    }
+
+    pub fn with_limits(symbols: SymbolTable, output: W, limits: Limits) -> Self {
         let mut interpreter = Interpreter {
             globals: Environment::new(),
             symbols,
             decimal_context: Context::default(),
             output,
+            current_span: None,
+            limits,
+            steps: 0,
+            call_depth: 0,
         };
         interpreter.install_standard_library();
         interpreter
@@ -78,7 +91,9 @@ impl<W: Write> Interpreter<W> {
     /// Runs a whole program (as produced by `Parser::parse`) in the
     /// global scope. Returns a human-readable message on the first
     /// unhandled runtime error.
-    pub fn run(&mut self, program: &[Statement]) -> Result<(), String> {
+    pub fn run(&mut self, program: &[Statement]) -> Result<(), RuntimeError> {
+        self.steps = 0;
+        self.call_depth = 0;
         let env = Rc::clone(&self.globals);
         for stmt in program {
             self.execute(&env, stmt)
@@ -88,12 +103,17 @@ impl<W: Write> Interpreter<W> {
     }
 
     /// Runs one REPL submission and returns the final bare expression.
-    pub fn run_interactive(&mut self, program: &[Statement]) -> Result<Option<String>, String> {
+    pub fn run_interactive(
+        &mut self,
+        program: &[Statement],
+    ) -> Result<Option<String>, RuntimeError> {
+        self.steps = 0;
+        self.call_depth = 0;
         let env = Rc::clone(&self.globals);
         let mut result = None;
         for (index, stmt) in program.iter().enumerate() {
             if index + 1 == program.len() {
-                if let Statement::Expr(expr) = stmt {
+                if let StatementKind::Expr(expr) = &stmt.kind {
                     let value = self
                         .evaluate(&env, expr)
                         .map_err(|flow| self.describe_top_level(flow))?;
@@ -115,25 +135,55 @@ impl<W: Write> Interpreter<W> {
 
     /// Sets the significant-digit precision used by operations whose
     /// decimal expansion is infinite (division and negative powers).
-    pub fn set_decimal_precision(&mut self, precision: NonZeroU64) {
+    pub fn set_decimal_precision(&mut self, precision: NonZeroU64) -> Result<(), RuntimeError> {
+        if precision.get() > self.limits.max_decimal_precision {
+            return Err(RuntimeError::limit(
+                format!(
+                    "decimal precision exceeds the {} digit limit",
+                    self.limits.max_decimal_precision
+                ),
+                self.current_span,
+            ));
+        }
         self.decimal_context = self.decimal_context.with_precision(precision);
+        Ok(())
     }
 
     pub fn decimal_precision(&self) -> u64 {
         self.decimal_context.precision().get()
     }
 
-    fn describe_top_level(&self, flow: Flow) -> String {
+    fn describe_top_level(&self, flow: Flow) -> RuntimeError {
         match flow {
             Flow::Error(msg) => msg,
-            Flow::Return(_) => "'return' used outside of a function".to_string(),
-            Flow::Break => "'break' used outside of a loop".to_string(),
-            Flow::Continue => "'continue' used outside of a loop".to_string(),
+            Flow::Return(_) => {
+                RuntimeError::new("'return' used outside of a function", self.current_span)
+            }
+            Flow::Break => RuntimeError::new("'break' used outside of a loop", self.current_span),
+            Flow::Continue => {
+                RuntimeError::new("'continue' used outside of a loop", self.current_span)
+            }
         }
     }
 
     fn error(&self, message: impl Into<String>) -> Flow {
-        Flow::Error(message.into())
+        Flow::Error(RuntimeError::new(message, self.current_span))
+    }
+
+    fn limit_error(&self, message: impl Into<String>) -> Flow {
+        Flow::Error(RuntimeError::limit(message, self.current_span))
+    }
+
+    fn tick(&mut self) -> ExecResult<()> {
+        self.steps = self.steps.saturating_add(1);
+        if self.steps > self.limits.max_steps {
+            Err(self.limit_error(format!(
+                "execution exceeded the {} step limit",
+                self.limits.max_steps
+            )))
+        } else {
+            Ok(())
+        }
     }
 
     fn undefined_variable(&self, name: Symbol) -> Flow {
@@ -146,8 +196,10 @@ impl<W: Write> Interpreter<W> {
     // ---- statements -----------------------------------------------
 
     fn execute(&mut self, env: &Env, stmt: &Statement) -> ExecResult<()> {
-        match stmt {
-            Statement::Let { name, value } => {
+        self.current_span = Some(stmt.span);
+        self.tick()?;
+        match &stmt.kind {
+            StatementKind::Let { name, value } => {
                 let v = match value {
                     Some(e) => self.evaluate(env, e)?,
                     None => Value::Nil,
@@ -156,7 +208,7 @@ impl<W: Write> Interpreter<W> {
                 Ok(())
             }
 
-            Statement::Function { name, params, body } => {
+            StatementKind::Function { name, params, body } => {
                 let display_body = self.normalize_function_body(env, params, body);
                 let f = Value::Function(Rc::new(UserFunction {
                     name: *name,
@@ -169,7 +221,7 @@ impl<W: Write> Interpreter<W> {
                 Ok(())
             }
 
-            Statement::If {
+            StatementKind::If {
                 condition,
                 then_branch,
                 else_branch,
@@ -183,7 +235,7 @@ impl<W: Write> Interpreter<W> {
                 }
             }
 
-            Statement::While { condition, body } => {
+            StatementKind::While { condition, body } => {
                 while self.evaluate(env, condition)?.is_truthy() {
                     match self.execute(env, body) {
                         Err(Flow::Break) => break,
@@ -194,7 +246,7 @@ impl<W: Write> Interpreter<W> {
                 Ok(())
             }
 
-            Statement::For {
+            StatementKind::For {
                 init,
                 condition,
                 update,
@@ -218,7 +270,7 @@ impl<W: Write> Interpreter<W> {
                 Ok(())
             }
 
-            Statement::Return(value) => {
+            StatementKind::Return(value) => {
                 let v = match value {
                     Some(e) => self.evaluate(env, e)?,
                     None => Value::Nil,
@@ -226,10 +278,10 @@ impl<W: Write> Interpreter<W> {
                 Err(Flow::Return(v))
             }
 
-            Statement::Break => Err(Flow::Break),
-            Statement::Continue => Err(Flow::Continue),
+            StatementKind::Break => Err(Flow::Break),
+            StatementKind::Continue => Err(Flow::Continue),
 
-            Statement::Print(expr) => {
+            StatementKind::Print(expr) => {
                 let v = self.evaluate(env, expr)?;
                 let rendered = self.stringify(&v);
                 writeln!(self.output, "{rendered}")
@@ -237,7 +289,7 @@ impl<W: Write> Interpreter<W> {
                 Ok(())
             }
 
-            Statement::Block(statements) => {
+            StatementKind::Block(statements) => {
                 let block_env = Environment::child(env);
                 for s in statements {
                     self.execute(&block_env, s)?;
@@ -245,12 +297,12 @@ impl<W: Write> Interpreter<W> {
                 Ok(())
             }
 
-            Statement::Expr(expr) => {
+            StatementKind::Expr(expr) => {
                 self.evaluate(env, expr)?;
                 Ok(())
             }
 
-            Statement::Assign { name, op, value } => {
+            StatementKind::Assign { name, op, value } => {
                 let rhs = self.evaluate(env, value)?;
                 let new_val = if *op == AssignOp::Assign {
                     rhs
@@ -293,6 +345,7 @@ impl<W: Write> Interpreter<W> {
     // ---- expressions ------------------------------------------------
 
     fn evaluate(&mut self, env: &Env, expr: &Expr) -> ExecResult<Value> {
+        self.tick()?;
         match expr {
             Expr::Bool(b) => Ok(Value::Bool(*b)),
             Expr::Nil => Ok(Value::Nil),
@@ -385,29 +438,36 @@ impl<W: Write> Interpreter<W> {
                 args.len()
             )));
         }
+        if self.call_depth >= self.limits.max_call_depth {
+            return Err(self.limit_error(format!(
+                "function calls exceeded the depth limit of {}",
+                self.limits.max_call_depth
+            )));
+        }
+        self.call_depth += 1;
         let call_env = Environment::child(&f.closure);
         for (param, arg) in f.params.iter().zip(args) {
             call_env.borrow_mut().define(*param, arg);
         }
-        match &f.body {
+        let result = match &f.body {
             FunctionBody::Expression(expr) => self.evaluate(&call_env, expr),
-            FunctionBody::Block(statements) => {
-                for statement in statements {
-                    match self.execute(&call_env, statement) {
-                        Ok(()) => {}
-                        Err(Flow::Return(value)) => return Ok(value),
-                        Err(Flow::Break) => {
-                            return Err(self.error("'break' used outside of a loop"))
-                        }
-                        Err(Flow::Continue) => {
-                            return Err(self.error("'continue' used outside of a loop"))
-                        }
-                        Err(error @ Flow::Error(_)) => return Err(error),
-                    }
-                }
-                Ok(Value::Nil)
+            FunctionBody::Block(statements) => self.execute_function_block(&call_env, statements),
+        };
+        self.call_depth -= 1;
+        result
+    }
+
+    fn execute_function_block(&mut self, env: &Env, statements: &[Statement]) -> ExecResult<Value> {
+        for statement in statements {
+            match self.execute(env, statement) {
+                Ok(()) => {}
+                Err(Flow::Return(value)) => return Ok(value),
+                Err(Flow::Break) => return Err(self.error("'break' used outside of a loop")),
+                Err(Flow::Continue) => return Err(self.error("'continue' used outside of a loop")),
+                Err(error @ Flow::Error(_)) => return Err(error),
             }
         }
+        Ok(Value::Nil)
     }
 
     fn call_builtin(&self, builtin: Builtin, args: Vec<Value>) -> ExecResult<Value> {
@@ -763,9 +823,17 @@ impl<W: Write> Interpreter<W> {
         if let Some(integer) = integer {
             return Ok(Value::Number(Number::Integer(integer)));
         }
-        text.parse::<BigDecimal>()
-            .map(|decimal| Value::Number(Number::Decimal(decimal)))
-            .map_err(|_| self.error(format!("invalid number literal '{text}'")))
+        let decimal = text
+            .parse::<BigDecimal>()
+            .map_err(|_| self.error(format!("invalid number literal '{text}'")))?;
+        let (_, scale) = decimal.as_bigint_and_exponent();
+        if scale.unsigned_abs() > self.limits.max_decimal_scale {
+            return Err(self.limit_error(format!(
+                "decimal scale exceeds the limit of {}",
+                self.limits.max_decimal_scale
+            )));
+        }
+        Ok(Value::Number(Number::Decimal(decimal)))
     }
 
     // ---- operators -----------------------------------------------------
@@ -808,6 +876,19 @@ impl<W: Write> Interpreter<W> {
             && (matches!(&l, Value::Symbolic(_)) || matches!(&r, Value::Symbolic(_)))
         {
             return self.symbolic_binary(op, l, r);
+        }
+        if let (Value::Number(left), Value::Number(right)) = (&l, &r) {
+            let estimated_bits = match op {
+                Add | Sub => Some(Self::number_bits(left).max(Self::number_bits(right)) + 1),
+                Mul | Div | Mod => Some(Self::number_bits(left) + Self::number_bits(right)),
+                _ => None,
+            };
+            if estimated_bits.is_some_and(|bits| bits > self.limits.max_number_bits) {
+                return Err(self.limit_error(format!(
+                    "numeric result exceeds the {} bit limit",
+                    self.limits.max_number_bits
+                )));
+            }
         }
         match op {
             Add => match (&l, &r) {
@@ -944,12 +1025,27 @@ impl<W: Write> Interpreter<W> {
             return Err(self.error("'^' requires a numeric base and an integer exponent"));
         };
         let exponent = exponent.to_i64().ok_or_else(|| {
-            self.error("exponent is too large to evaluate (maximum magnitude is 2^63 - 1)")
+            self.limit_error(format!(
+                "exponent magnitude exceeds the limit of {}",
+                self.limits.max_exponent
+            ))
         })?;
+        if exponent.unsigned_abs() > u64::from(self.limits.max_exponent) {
+            return Err(self.limit_error(format!(
+                "exponent magnitude exceeds the limit of {}",
+                self.limits.max_exponent
+            )));
+        }
+        if Self::number_bits(&base).saturating_mul(exponent.unsigned_abs())
+            > self.limits.max_number_bits
+        {
+            return Err(self.limit_error(format!(
+                "numeric result exceeds the {} bit limit",
+                self.limits.max_number_bits
+            )));
+        }
         if exponent >= 0 {
-            let exponent = u32::try_from(exponent).map_err(|_| {
-                self.error("exponent is too large to evaluate (maximum is 2^32 - 1)")
-            })?;
+            let exponent = u32::try_from(exponent).expect("bounded exponent fits in u32");
             return Ok(Value::Number(match base {
                 Number::Integer(value) => Number::Integer(value.pow(exponent)),
                 Number::Rational(value) => {
@@ -966,9 +1062,8 @@ impl<W: Write> Interpreter<W> {
                 value.powi_with_context(exponent, &self.decimal_context),
             ))),
             value => {
-                let positive = u32::try_from(exponent.unsigned_abs()).map_err(|_| {
-                    self.error("exponent magnitude is too large (maximum is 2^32 - 1)")
-                })?;
+                let positive = u32::try_from(exponent.unsigned_abs())
+                    .expect("bounded exponent magnitude fits in u32");
                 let powered = Self::rational_pow(value.to_rational(), positive);
                 Ok(Value::Number(Number::from_rational(powered.recip())))
             }
@@ -1046,9 +1141,29 @@ impl<W: Write> Interpreter<W> {
                 let amount = b.to_usize().ok_or_else(|| {
                     self.error("shift amount must be a non-negative machine-sized integer")
                 })?;
+                if amount > self.limits.max_shift {
+                    return Err(self.limit_error(format!(
+                        "shift amount exceeds the limit of {}",
+                        self.limits.max_shift
+                    )));
+                }
+                if a.bits().saturating_add(amount as u64) > self.limits.max_number_bits {
+                    return Err(self.limit_error(format!(
+                        "numeric result exceeds the {} bit limit",
+                        self.limits.max_number_bits
+                    )));
+                }
                 Ok(Value::Number(Number::Integer(op(a, amount))))
             }
             (l, r) => Err(self.type_error(sym, &l, &r)),
+        }
+    }
+
+    fn number_bits(number: &Number) -> u64 {
+        match number {
+            Number::Integer(value) => value.bits(),
+            Number::Rational(value) => value.numer().bits().saturating_add(value.denom().bits()),
+            Number::Decimal(value) => value.as_bigint_and_exponent().0.bits(),
         }
     }
 

@@ -2,6 +2,16 @@ use crate::ast::assign_op::AssignOp;
 use crate::ast::expr::Expr;
 use crate::lexer::symbol::Symbol;
 
+/// Source location of a statement. Runtime diagnostics use this span so an
+/// execution failure points back into the same source text as scan and parse
+/// failures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceSpan {
+    pub line: usize,
+    pub column: usize,
+    pub length: usize,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum FunctionBody {
     Expression(Expr),
@@ -9,7 +19,19 @@ pub enum FunctionBody {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Statement {
+pub struct Statement {
+    pub span: SourceSpan,
+    pub kind: StatementKind,
+}
+
+impl Statement {
+    pub fn new(span: SourceSpan, kind: StatementKind) -> Self {
+        Self { span, kind }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum StatementKind {
     Let {
         name: Symbol,
         value: Option<Expr>,
