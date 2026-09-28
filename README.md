@@ -172,6 +172,49 @@ and positive integral powers preserve all digits. Division and negative decimal
 powers use the active significant-digit precision, which defaults to 100 and
 can be changed in the REPL with `:precision N`.
 
+## Standard mathematics and algebra
+
+SCAS provides real-valued mathematical constants and functions:
+
+- Constants: `pi`, `e`, `tau`
+- Powers and logs: `sqrt`, `cbrt`, `exp`, `ln`, `log`, `log10`, `log2`
+- Trigonometry: `sin`, `cos`, `tan`, `sec`, `csc`, `cot`, `asin`, `acos`,
+  `atan`, `atan2`
+- Hyperbolic functions: `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh`
+- Special functions: `erf`, `erfc`, `gamma`, `lgamma`
+- Utilities: `abs`, `sign`, `floor`, `ceil`, `round`, `trunc`, `min`, `max`,
+  `hypot`, `gcd`, `lcm`, `degrees`, `radians`
+
+`log(x)` and `ln(x)` are natural logarithms; `log(x, base)` uses an explicit
+base. Exact special values such as `sqrt(4)`, `exp(0)`, and `cos(0)` remain
+exact. General transcendental results currently use real `f64` evaluation and
+are converted to a 16-significant-digit decimal. Inputs outside the real domain
+produce runtime errors rather than complex results.
+
+Symbolic inputs remain symbolic and safe elementary identities are applied:
+
+```scas
+print(sqrt(x^2)); // abs(x)
+print(sin(-x));   // -sin(x)
+print(cos(-x));   // cos(x)
+```
+
+Polynomial and rational-expression tools are explicit so ordinary
+simplification does not unexpectedly expand an expression:
+
+```scas
+print(expand((x + y)^2));        // x^2 + 2*x*y + y^2
+print(factor(x^2 - y^2));        // (x-y)*(x+y)
+print(apart(1 / (x^2 - 1)));     // partial fractions
+print(horner(2x^3 - 6x^2 + 1));  // Horner form
+```
+
+`expand` uses a canonical sparse multivariate polynomial representation.
+`factor` performs content and common-monomial extraction, square/cube
+identities, square-free decomposition, and rational-root factorization.
+`apart` currently supports proper rational functions whose denominator splits
+into distinct rational linear factors.
+
 Arrays are immutable, dynamically typed, and may be nested. Indexes are
 zero-based non-negative integers. `+` concatenates two arrays:
 

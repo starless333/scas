@@ -6,6 +6,112 @@ use crate::lexer::symbol::Symbol;
 use crate::number::Number;
 use std::rc::Rc;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Builtin {
+    Abs,
+    Sqrt,
+    Cbrt,
+    Exp,
+    Ln,
+    Log,
+    Log10,
+    Log2,
+    Sin,
+    Cos,
+    Tan,
+    Sec,
+    Csc,
+    Cot,
+    Asin,
+    Acos,
+    Atan,
+    Atan2,
+    Sinh,
+    Cosh,
+    Tanh,
+    Asinh,
+    Acosh,
+    Atanh,
+    Erf,
+    Erfc,
+    Gamma,
+    Lgamma,
+    Floor,
+    Ceil,
+    Round,
+    Trunc,
+    Min,
+    Max,
+    Hypot,
+    Gcd,
+    Lcm,
+    Sign,
+    Degrees,
+    Radians,
+    Simplify,
+    Expand,
+    Factor,
+    Apart,
+    Horner,
+}
+
+impl Builtin {
+    pub const ALL: &'static [(&'static str, Builtin)] = &[
+        ("abs", Builtin::Abs),
+        ("sqrt", Builtin::Sqrt),
+        ("cbrt", Builtin::Cbrt),
+        ("exp", Builtin::Exp),
+        ("ln", Builtin::Ln),
+        ("log", Builtin::Log),
+        ("log10", Builtin::Log10),
+        ("log2", Builtin::Log2),
+        ("sin", Builtin::Sin),
+        ("cos", Builtin::Cos),
+        ("tan", Builtin::Tan),
+        ("sec", Builtin::Sec),
+        ("csc", Builtin::Csc),
+        ("cot", Builtin::Cot),
+        ("asin", Builtin::Asin),
+        ("acos", Builtin::Acos),
+        ("atan", Builtin::Atan),
+        ("atan2", Builtin::Atan2),
+        ("sinh", Builtin::Sinh),
+        ("cosh", Builtin::Cosh),
+        ("tanh", Builtin::Tanh),
+        ("asinh", Builtin::Asinh),
+        ("acosh", Builtin::Acosh),
+        ("atanh", Builtin::Atanh),
+        ("erf", Builtin::Erf),
+        ("erfc", Builtin::Erfc),
+        ("gamma", Builtin::Gamma),
+        ("lgamma", Builtin::Lgamma),
+        ("floor", Builtin::Floor),
+        ("ceil", Builtin::Ceil),
+        ("round", Builtin::Round),
+        ("trunc", Builtin::Trunc),
+        ("min", Builtin::Min),
+        ("max", Builtin::Max),
+        ("hypot", Builtin::Hypot),
+        ("gcd", Builtin::Gcd),
+        ("lcm", Builtin::Lcm),
+        ("sign", Builtin::Sign),
+        ("degrees", Builtin::Degrees),
+        ("radians", Builtin::Radians),
+        ("simplify", Builtin::Simplify),
+        ("expand", Builtin::Expand),
+        ("factor", Builtin::Factor),
+        ("apart", Builtin::Apart),
+        ("horner", Builtin::Horner),
+    ];
+
+    pub fn name(self) -> &'static str {
+        Self::ALL
+            .iter()
+            .find_map(|(name, builtin)| (*builtin == self).then_some(*name))
+            .expect("every builtin has a name")
+    }
+}
+
 /// A user-defined function and the lexical environment it closed over.
 #[derive(Debug)]
 pub struct UserFunction {
@@ -31,6 +137,10 @@ pub enum SymbolicExpr {
         op: BinaryOp,
         right: Rc<SymbolicExpr>,
     },
+    Call {
+        function: Builtin,
+        args: Vec<Rc<SymbolicExpr>>,
+    },
 }
 
 impl SymbolicExpr {
@@ -54,6 +164,20 @@ impl SymbolicExpr {
                     right: b_right,
                 },
             ) => a_op == b_op && a_left.equals(b_left) && a_right.equals(b_right),
+            (
+                SymbolicExpr::Call {
+                    function: a_function,
+                    args: a_args,
+                },
+                SymbolicExpr::Call {
+                    function: b_function,
+                    args: b_args,
+                },
+            ) => {
+                a_function == b_function
+                    && a_args.len() == b_args.len()
+                    && a_args.iter().zip(b_args).all(|(a, b)| a.equals(b))
+            }
             _ => false,
         }
     }
@@ -68,6 +192,7 @@ pub enum Value {
     Array(Rc<Vec<Value>>),
     Symbolic(Rc<SymbolicExpr>),
     Function(Rc<UserFunction>),
+    Builtin(Builtin),
 }
 
 impl Value {
@@ -87,6 +212,7 @@ impl Value {
             }
             (Value::Symbolic(a), Value::Symbolic(b)) => a.equals(b),
             (Value::Function(a), Value::Function(b)) => Rc::ptr_eq(a, b),
+            (Value::Builtin(a), Value::Builtin(b)) => a == b,
             _ => false,
         }
     }
@@ -102,6 +228,7 @@ impl Value {
             Value::Array(_) => "array",
             Value::Symbolic(_) => "symbolic expression",
             Value::Function(_) => "function",
+            Value::Builtin(_) => "builtin function",
         }
     }
 }

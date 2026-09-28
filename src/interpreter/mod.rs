@@ -2,6 +2,7 @@
 mod engine;
 pub mod environment;
 pub mod flow;
+mod polynomial;
 pub mod value;
 
 pub use engine::Interpreter;

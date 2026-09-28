@@ -6,11 +6,13 @@ use crate::ast::statement::Statement;
 use crate::ast::unary_op::UnaryOp;
 use crate::interpreter::environment::{Env, Environment};
 use crate::interpreter::flow::{ExecResult, Flow};
-use crate::interpreter::value::{SymbolicExpr, UserFunction, Value};
+use crate::interpreter::polynomial::Polynomial;
+use crate::interpreter::value::{Builtin, SymbolicExpr, UserFunction, Value};
 use crate::lexer::symbol::{Symbol, SymbolTable};
 use crate::number::Number;
 use bigdecimal::{BigDecimal, Context};
 use num_bigint::BigInt;
+use num_integer::Integer;
 use num_rational::BigRational;
 use num_traits::ToPrimitive;
 use std::io::Write;
@@ -30,8 +32,27 @@ pub struct Interpreter<W: Write> {
 
 impl<W: Write> Interpreter<W> {
     pub fn new(symbols: SymbolTable, output: W) -> Self {
+        let globals = Environment::new();
+        for (name, builtin) in Builtin::ALL {
+            if let Some(symbol) = symbols.get(name) {
+                globals
+                    .borrow_mut()
+                    .define(symbol, Value::Builtin(*builtin));
+            }
+        }
+        for (name, value) in [
+            ("pi", std::f64::consts::PI),
+            ("e", std::f64::consts::E),
+            ("tau", std::f64::consts::TAU),
+        ] {
+            if let Some(symbol) = symbols.get(name) {
+                if let Some(number) = Number::from_f64(value) {
+                    globals.borrow_mut().define(symbol, Value::Number(number));
+                }
+            }
+        }
         Interpreter {
-            globals: Environment::new(),
+            globals,
             symbols,
             decimal_context: Context::default(),
             output,
@@ -338,6 +359,9 @@ impl<W: Write> Interpreter<W> {
     }
 
     fn call(&mut self, callee: Value, args: Vec<Value>) -> ExecResult<Value> {
+        if let Value::Builtin(builtin) = callee {
+            return self.call_builtin(builtin, args);
+        }
         let Value::Function(f) = callee else {
             return Err(self.error(format!("'{}' is not callable", callee.type_name())));
         };
@@ -371,6 +395,342 @@ impl<W: Write> Interpreter<W> {
                 Ok(Value::Nil)
             }
         }
+    }
+
+    fn call_builtin(&self, builtin: Builtin, args: Vec<Value>) -> ExecResult<Value> {
+        let (minimum, maximum) = match builtin {
+            Builtin::Log => (1, 2),
+            Builtin::Atan2
+            | Builtin::Min
+            | Builtin::Max
+            | Builtin::Hypot
+            | Builtin::Gcd
+            | Builtin::Lcm => (2, 2),
+            _ => (1, 1),
+        };
+        if args.len() < minimum || args.len() > maximum {
+            let expected = if minimum == maximum {
+                minimum.to_string()
+            } else {
+                format!("{minimum} or {maximum}")
+            };
+            return Err(self.error(format!(
+                "{} expects {expected} argument(s) but got {}",
+                builtin.name(),
+                args.len()
+            )));
+        }
+
+        if matches!(
+            builtin,
+            Builtin::Simplify
+                | Builtin::Expand
+                | Builtin::Factor
+                | Builtin::Apart
+                | Builtin::Horner
+        ) {
+            let value = args.into_iter().next().expect("arity checked");
+            let Value::Symbolic(expression) = value else {
+                return Ok(value);
+            };
+            if builtin == Builtin::Simplify {
+                return Ok(Value::Symbolic(expression));
+            }
+            let result = if builtin == Builtin::Apart {
+                Polynomial::partial_fraction_expression(&expression, &self.symbols)
+            } else {
+                Polynomial::from_expression(&expression, &self.symbols).map(|polynomial| {
+                    if builtin == Builtin::Factor {
+                        polynomial.factored_expression()
+                    } else if builtin == Builtin::Horner {
+                        polynomial.horner_expression()
+                    } else {
+                        polynomial.expanded_expression()
+                    }
+                })
+            };
+            return Ok(result
+                .map(Self::symbolic_value)
+                .unwrap_or(Value::Symbolic(expression)));
+        }
+
+        if args.iter().any(|value| matches!(value, Value::Symbolic(_))) {
+            return self.symbolic_builtin(builtin, args);
+        }
+
+        match builtin {
+            Builtin::Abs => match &args[0] {
+                Value::Number(number) => Ok(Value::Number(number.abs())),
+                value => {
+                    Err(self.error(format!("abs expects a number, got {}", value.type_name())))
+                }
+            },
+            Builtin::Sign => match &args[0] {
+                Value::Number(number) => {
+                    let zero = Number::Integer(BigInt::from(0));
+                    let sign = match number.compare(&zero) {
+                        std::cmp::Ordering::Less => -1,
+                        std::cmp::Ordering::Equal => 0,
+                        std::cmp::Ordering::Greater => 1,
+                    };
+                    Ok(Value::Number(Number::Integer(BigInt::from(sign))))
+                }
+                value => {
+                    Err(self.error(format!("sign expects a number, got {}", value.type_name())))
+                }
+            },
+            Builtin::Min | Builtin::Max => {
+                let (Value::Number(left), Value::Number(right)) = (&args[0], &args[1]) else {
+                    return Err(self.error(format!("{} expects two numbers", builtin.name())));
+                };
+                let take_left = if builtin == Builtin::Min {
+                    !left.compare(right).is_gt()
+                } else {
+                    !left.compare(right).is_lt()
+                };
+                Ok(if take_left {
+                    args[0].clone()
+                } else {
+                    args[1].clone()
+                })
+            }
+            Builtin::Floor | Builtin::Ceil | Builtin::Round | Builtin::Trunc => {
+                let number = self.builtin_number(builtin, &args[0])?;
+                let value = self.number_as_f64(builtin, number)?;
+                let result = match builtin {
+                    Builtin::Floor => value.floor(),
+                    Builtin::Ceil => value.ceil(),
+                    Builtin::Round => value.round(),
+                    Builtin::Trunc => value.trunc(),
+                    _ => unreachable!(),
+                };
+                self.f64_value(builtin, result)
+            }
+            Builtin::Log if args.len() == 2 => {
+                let value = self.number_as_f64(builtin, self.builtin_number(builtin, &args[0])?)?;
+                let base = self.number_as_f64(builtin, self.builtin_number(builtin, &args[1])?)?;
+                if value <= 0.0 || base <= 0.0 || base == 1.0 {
+                    return Err(
+                        self.error("log domain requires value > 0, base > 0, and base != 1")
+                    );
+                }
+                self.f64_value(builtin, value.log(base))
+            }
+            Builtin::Atan2 | Builtin::Hypot => {
+                let left = self.number_as_f64(builtin, self.builtin_number(builtin, &args[0])?)?;
+                let right = self.number_as_f64(builtin, self.builtin_number(builtin, &args[1])?)?;
+                let result = if builtin == Builtin::Atan2 {
+                    left.atan2(right)
+                } else {
+                    left.hypot(right)
+                };
+                self.f64_value(builtin, result)
+            }
+            Builtin::Gcd | Builtin::Lcm => {
+                let (Value::Number(Number::Integer(left)), Value::Number(Number::Integer(right))) =
+                    (&args[0], &args[1])
+                else {
+                    return Err(
+                        self.error(format!("{} expects two integer arguments", builtin.name()))
+                    );
+                };
+                let result = if builtin == Builtin::Gcd {
+                    left.gcd(right)
+                } else {
+                    left.lcm(right)
+                };
+                Ok(Value::Number(Number::Integer(result)))
+            }
+            _ => {
+                let number = self.builtin_number(builtin, &args[0])?;
+                if let Some(root) = match builtin {
+                    Builtin::Sqrt => number.exact_root(2),
+                    Builtin::Cbrt => number.exact_root(3),
+                    _ => None,
+                } {
+                    return Ok(Value::Number(root));
+                }
+                if number.is_zero() {
+                    return match builtin {
+                        Builtin::Sqrt
+                        | Builtin::Cbrt
+                        | Builtin::Sin
+                        | Builtin::Tan
+                        | Builtin::Asin
+                        | Builtin::Atan
+                        | Builtin::Sinh
+                        | Builtin::Tanh
+                        | Builtin::Asinh => Ok(Value::Number(Number::Integer(BigInt::from(0)))),
+                        Builtin::Exp | Builtin::Cos | Builtin::Cosh | Builtin::Sec => {
+                            Ok(Value::Number(Number::Integer(BigInt::from(1))))
+                        }
+                        _ => self.approximate_unary(builtin, number),
+                    };
+                }
+                if number.is_one()
+                    && matches!(
+                        builtin,
+                        Builtin::Ln | Builtin::Log | Builtin::Log10 | Builtin::Log2
+                    )
+                {
+                    return Ok(Value::Number(Number::Integer(BigInt::from(0))));
+                }
+                self.approximate_unary(builtin, number)
+            }
+        }
+    }
+
+    fn builtin_number<'a>(&self, builtin: Builtin, value: &'a Value) -> ExecResult<&'a Number> {
+        let Value::Number(number) = value else {
+            return Err(self.error(format!(
+                "{} expects numeric arguments, got {}",
+                builtin.name(),
+                value.type_name()
+            )));
+        };
+        Ok(number)
+    }
+
+    fn number_as_f64(&self, builtin: Builtin, number: &Number) -> ExecResult<f64> {
+        number.to_f64().ok_or_else(|| {
+            self.error(format!(
+                "{} argument is outside the supported floating-point range",
+                builtin.name()
+            ))
+        })
+    }
+
+    fn f64_value(&self, builtin: Builtin, value: f64) -> ExecResult<Value> {
+        Number::from_f64(value).map(Value::Number).ok_or_else(|| {
+            self.error(format!(
+                "{} result is outside the real-number domain",
+                builtin.name()
+            ))
+        })
+    }
+
+    fn approximate_unary(&self, builtin: Builtin, number: &Number) -> ExecResult<Value> {
+        let value = self.number_as_f64(builtin, number)?;
+        let mut result = match builtin {
+            Builtin::Sqrt if value >= 0.0 => value.sqrt(),
+            Builtin::Cbrt => value.cbrt(),
+            Builtin::Exp => value.exp(),
+            Builtin::Ln | Builtin::Log if value > 0.0 => value.ln(),
+            Builtin::Log10 if value > 0.0 => value.log10(),
+            Builtin::Log2 if value > 0.0 => value.log2(),
+            Builtin::Sin => value.sin(),
+            Builtin::Cos => value.cos(),
+            Builtin::Tan if value.cos().abs() >= 1e-15 => value.tan(),
+            Builtin::Sec if value.cos().abs() >= 1e-15 => 1.0 / value.cos(),
+            Builtin::Csc if value.sin().abs() >= 1e-15 => 1.0 / value.sin(),
+            Builtin::Cot if value.sin().abs() >= 1e-15 => 1.0 / value.tan(),
+            Builtin::Asin if (-1.0..=1.0).contains(&value) => value.asin(),
+            Builtin::Acos if (-1.0..=1.0).contains(&value) => value.acos(),
+            Builtin::Atan => value.atan(),
+            Builtin::Sinh => value.sinh(),
+            Builtin::Cosh => value.cosh(),
+            Builtin::Tanh => value.tanh(),
+            Builtin::Asinh => value.asinh(),
+            Builtin::Acosh if value >= 1.0 => value.acosh(),
+            Builtin::Atanh if (-1.0..1.0).contains(&value) => value.atanh(),
+            Builtin::Erf => libm::erf(value),
+            Builtin::Erfc => libm::erfc(value),
+            Builtin::Gamma => libm::tgamma(value),
+            Builtin::Lgamma => libm::lgamma(value),
+            Builtin::Degrees => value.to_degrees(),
+            Builtin::Radians => value.to_radians(),
+            _ => {
+                return Err(self.error(format!(
+                    "{} argument {number} is outside the real-number domain",
+                    builtin.name()
+                )))
+            }
+        };
+        if matches!(
+            builtin,
+            Builtin::Sin | Builtin::Cos | Builtin::Tan | Builtin::Sec | Builtin::Csc | Builtin::Cot
+        ) {
+            if result.abs() < 1e-15 {
+                result = 0.0;
+            } else if (result - 1.0).abs() < 1e-15 {
+                result = 1.0;
+            } else if (result + 1.0).abs() < 1e-15 {
+                result = -1.0;
+            }
+        }
+        self.f64_value(builtin, result)
+    }
+
+    fn symbolic_builtin(&self, builtin: Builtin, args: Vec<Value>) -> ExecResult<Value> {
+        let mut symbolic_args = Vec::with_capacity(args.len());
+        for argument in args {
+            symbolic_args.push(self.value_to_symbolic(argument)?);
+        }
+        let argument = symbolic_args.first().cloned();
+        if let Some(argument) = argument {
+            if matches!(
+                builtin,
+                Builtin::Sin | Builtin::Tan | Builtin::Csc | Builtin::Cot | Builtin::Erf
+            ) {
+                if let SymbolicExpr::Unary {
+                    op: UnaryOp::Neg,
+                    expr,
+                } = argument.as_ref()
+                {
+                    return self.apply_unary(
+                        UnaryOp::Neg,
+                        Self::symbolic_value(Rc::new(SymbolicExpr::Call {
+                            function: builtin,
+                            args: vec![Rc::clone(expr)],
+                        })),
+                    );
+                }
+            }
+            if matches!(builtin, Builtin::Cos | Builtin::Sec) {
+                if let SymbolicExpr::Unary {
+                    op: UnaryOp::Neg,
+                    expr,
+                } = argument.as_ref()
+                {
+                    return Ok(Self::symbolic_value(Rc::new(SymbolicExpr::Call {
+                        function: builtin,
+                        args: vec![Rc::clone(expr)],
+                    })));
+                }
+            }
+            if builtin == Builtin::Sqrt {
+                if let SymbolicExpr::Binary {
+                    left,
+                    op: BinaryOp::Pow,
+                    right,
+                } = argument.as_ref()
+                {
+                    if matches!(right.as_ref(), SymbolicExpr::Number(Number::Integer(value)) if value == &BigInt::from(2))
+                    {
+                        return Ok(Self::symbolic_value(Rc::new(SymbolicExpr::Call {
+                            function: Builtin::Abs,
+                            args: vec![Rc::clone(left)],
+                        })));
+                    }
+                }
+            }
+            if builtin == Builtin::Abs {
+                if let SymbolicExpr::Unary {
+                    op: UnaryOp::Neg,
+                    expr,
+                } = argument.as_ref()
+                {
+                    return Ok(Self::symbolic_value(Rc::new(SymbolicExpr::Call {
+                        function: Builtin::Abs,
+                        args: vec![Rc::clone(expr)],
+                    })));
+                }
+            }
+        }
+        Ok(Self::symbolic_value(Rc::new(SymbolicExpr::Call {
+            function: builtin,
+            args: symbolic_args,
+        })))
     }
 
     // ---- number parsing ----------------------------------------------
@@ -711,6 +1071,9 @@ impl<W: Write> Interpreter<W> {
             BinaryOp::Div if Self::symbolic_is_zero(&left) => {
                 return Ok(Self::symbolic_value(left))
             }
+            BinaryOp::Div if Self::symbolic_is_zero(&right) => {
+                return Err(self.error("division by zero in '/'"))
+            }
             BinaryOp::Div if Self::symbolic_is_one(&right) => {
                 return Ok(Self::symbolic_value(left))
             }
@@ -721,6 +1084,31 @@ impl<W: Write> Interpreter<W> {
                 return Ok(Self::symbolic_value(left))
             }
             _ => {}
+        }
+
+        if op == BinaryOp::Div {
+            if let SymbolicExpr::Unary {
+                op: UnaryOp::Neg,
+                expr,
+            } = right.as_ref()
+            {
+                let numerator = self.apply_unary(UnaryOp::Neg, Self::symbolic_value(left))?;
+                return self.symbolic_binary(
+                    BinaryOp::Div,
+                    numerator,
+                    Self::symbolic_value(Rc::clone(expr)),
+                );
+            }
+            if let SymbolicExpr::Number(number) = right.as_ref() {
+                if number.is_negative() {
+                    let numerator = self.apply_unary(UnaryOp::Neg, Self::symbolic_value(left))?;
+                    return self.symbolic_binary(
+                        BinaryOp::Div,
+                        numerator,
+                        Value::Number(number.abs()),
+                    );
+                }
+            }
         }
 
         if left.equals(&right) {
@@ -743,6 +1131,10 @@ impl<W: Write> Interpreter<W> {
                     left_coefficient - right_coefficient
                 };
                 return Ok(Self::make_integer_term(coefficient, left_term));
+            }
+
+            if let Some(value) = self.combine_symbolic_fractions(op, &left, &right)? {
+                return Ok(value);
             }
         }
 
@@ -768,6 +1160,17 @@ impl<W: Write> Interpreter<W> {
                 return Ok(Self::make_integer_power(
                     left_base,
                     left_exponent + right_exponent,
+                ));
+            }
+            if left_exponent == right_exponent && left_exponent != BigInt::from(1) {
+                let product = self.symbolic_binary(
+                    BinaryOp::Mul,
+                    Self::symbolic_value(left_base),
+                    Self::symbolic_value(right_base),
+                )?;
+                return Ok(Self::make_integer_power(
+                    self.value_to_symbolic(product)?,
+                    left_exponent,
                 ));
             }
             if let SymbolicExpr::Number(Number::Integer(factor)) = right.as_ref() {
@@ -805,11 +1208,211 @@ impl<W: Write> Interpreter<W> {
             }
         }
 
+        if op == BinaryOp::Div {
+            if let Some((numerator, denominator)) =
+                Polynomial::reduce_fraction(&left, &right, &self.symbols)
+            {
+                if Self::symbolic_is_one(&denominator) {
+                    return Ok(Self::symbolic_value(numerator));
+                }
+                return Ok(Self::symbolic_value(Rc::new(SymbolicExpr::Binary {
+                    left: numerator,
+                    op: BinaryOp::Div,
+                    right: denominator,
+                })));
+            }
+            let (left_base, left_exponent) = Self::integer_power_parts(&left);
+            let (right_base, right_exponent) = Self::integer_power_parts(&right);
+            if left_base.equals(&right_base) {
+                return Ok(Self::make_integer_power(
+                    left_base,
+                    left_exponent - right_exponent,
+                ));
+            }
+            if let Some(cancelled) = self.cancel_symbolic_factors(&left, &right) {
+                return Ok(Self::symbolic_value(cancelled));
+            }
+        }
+
+        if matches!(op, BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul) {
+            let expression = SymbolicExpr::Binary {
+                left: Rc::clone(&left),
+                op,
+                right: Rc::clone(&right),
+            };
+            if let Some(polynomial) = Polynomial::from_expression(&expression, &self.symbols) {
+                if op != BinaryOp::Mul || polynomial.term_count() == 1 {
+                    return Ok(Self::symbolic_value(polynomial.expanded_expression()));
+                }
+            }
+        }
+
+        if matches!(op, BinaryOp::Add | BinaryOp::Mul) {
+            return Ok(Self::symbolic_value(
+                self.canonical_commutative(op, left, right),
+            ));
+        }
+
         Ok(Value::Symbolic(Rc::new(SymbolicExpr::Binary {
             left,
             op,
             right,
         })))
+    }
+
+    fn canonical_commutative(
+        &self,
+        op: BinaryOp,
+        left: Rc<SymbolicExpr>,
+        right: Rc<SymbolicExpr>,
+    ) -> Rc<SymbolicExpr> {
+        fn collect(
+            expression: Rc<SymbolicExpr>,
+            op: BinaryOp,
+            operands: &mut Vec<Rc<SymbolicExpr>>,
+        ) {
+            if let SymbolicExpr::Binary {
+                left,
+                op: expression_op,
+                right,
+            } = expression.as_ref()
+            {
+                if *expression_op == op {
+                    collect(Rc::clone(left), op, operands);
+                    collect(Rc::clone(right), op, operands);
+                    return;
+                }
+            }
+            operands.push(expression);
+        }
+
+        let mut operands = Vec::new();
+        collect(left, op, &mut operands);
+        collect(right, op, &mut operands);
+        operands.sort_by_key(|operand| self.format_symbolic(operand, 0));
+        operands
+            .into_iter()
+            .reduce(|left, right| Rc::new(SymbolicExpr::Binary { left, op, right }))
+            .expect("two operands were supplied")
+    }
+
+    fn combine_symbolic_fractions(
+        &self,
+        op: BinaryOp,
+        left: &Rc<SymbolicExpr>,
+        right: &Rc<SymbolicExpr>,
+    ) -> ExecResult<Option<Value>> {
+        let (left_numerator, left_denominator) = Self::fraction_parts(left);
+        let (right_numerator, right_denominator) = Self::fraction_parts(right);
+        if Self::symbolic_is_one(&left_denominator) && Self::symbolic_is_one(&right_denominator) {
+            return Ok(None);
+        }
+        let left_cross = self.symbolic_binary(
+            BinaryOp::Mul,
+            Self::symbolic_value(left_numerator),
+            Self::symbolic_value(Rc::clone(&right_denominator)),
+        )?;
+        let right_cross = self.symbolic_binary(
+            BinaryOp::Mul,
+            Self::symbolic_value(right_numerator),
+            Self::symbolic_value(Rc::clone(&left_denominator)),
+        )?;
+        let numerator = self.symbolic_binary(op, left_cross, right_cross)?;
+        let denominator = self.symbolic_binary(
+            BinaryOp::Mul,
+            Self::symbolic_value(left_denominator),
+            Self::symbolic_value(right_denominator),
+        )?;
+        Ok(Some(self.symbolic_binary(
+            BinaryOp::Div,
+            numerator,
+            denominator,
+        )?))
+    }
+
+    fn fraction_parts(expression: &Rc<SymbolicExpr>) -> (Rc<SymbolicExpr>, Rc<SymbolicExpr>) {
+        if let SymbolicExpr::Binary {
+            left,
+            op: BinaryOp::Div,
+            right,
+        } = expression.as_ref()
+        {
+            return (Rc::clone(left), Rc::clone(right));
+        }
+        (
+            Rc::clone(expression),
+            Rc::new(SymbolicExpr::Number(Number::Integer(BigInt::from(1)))),
+        )
+    }
+
+    fn cancel_symbolic_factors(
+        &self,
+        numerator: &Rc<SymbolicExpr>,
+        denominator: &Rc<SymbolicExpr>,
+    ) -> Option<Rc<SymbolicExpr>> {
+        let mut numerator_factors = Vec::new();
+        let mut denominator_factors = Vec::new();
+        Self::collect_product_factors(numerator, &mut numerator_factors);
+        Self::collect_product_factors(denominator, &mut denominator_factors);
+        let original_count = numerator_factors.len() + denominator_factors.len();
+
+        let mut index = 0;
+        while index < numerator_factors.len() {
+            if let Some(match_index) = denominator_factors
+                .iter()
+                .position(|factor| numerator_factors[index].equals(factor))
+            {
+                numerator_factors.remove(index);
+                denominator_factors.remove(match_index);
+            } else {
+                index += 1;
+            }
+        }
+        if original_count == numerator_factors.len() + denominator_factors.len() {
+            return None;
+        }
+        let numerator = Self::product_from_factors(numerator_factors);
+        let denominator = Self::product_from_factors(denominator_factors);
+        if Self::symbolic_is_one(&denominator) {
+            Some(numerator)
+        } else {
+            Some(Rc::new(SymbolicExpr::Binary {
+                left: numerator,
+                op: BinaryOp::Div,
+                right: denominator,
+            }))
+        }
+    }
+
+    fn collect_product_factors(expression: &Rc<SymbolicExpr>, factors: &mut Vec<Rc<SymbolicExpr>>) {
+        if let SymbolicExpr::Binary {
+            left,
+            op: BinaryOp::Mul,
+            right,
+        } = expression.as_ref()
+        {
+            Self::collect_product_factors(left, factors);
+            Self::collect_product_factors(right, factors);
+        } else {
+            factors.push(Rc::clone(expression));
+        }
+    }
+
+    fn product_from_factors(mut factors: Vec<Rc<SymbolicExpr>>) -> Rc<SymbolicExpr> {
+        if factors.is_empty() {
+            return Rc::new(SymbolicExpr::Number(Number::Integer(BigInt::from(1))));
+        }
+        factors.sort_by_key(|factor| format!("{factor:?}"));
+        factors
+            .into_iter()
+            .reduce(|left, right| {
+                Rc::new(SymbolicExpr::Binary {
+                    left,
+                    op: BinaryOp::Mul,
+                    right,
+                })
+            })
+            .expect("non-empty factors")
     }
 
     fn integer_coefficient(expression: &Rc<SymbolicExpr>) -> (BigInt, Rc<SymbolicExpr>) {
@@ -956,6 +1559,7 @@ impl<W: Write> Interpreter<W> {
                     FunctionBody::Block(_) => format!("<function {name}({params})>"),
                 }
             }
+            Value::Builtin(builtin) => format!("<builtin {}>", builtin.name()),
         }
     }
 
@@ -989,6 +1593,14 @@ impl<W: Write> Interpreter<W> {
                     text
                 }
             }
+            SymbolicExpr::Call { function, args } => format!(
+                "{}({})",
+                function.name(),
+                args.iter()
+                    .map(|argument| self.format_symbolic(argument, 0))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
         }
     }
 

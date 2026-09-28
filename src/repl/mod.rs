@@ -206,7 +206,7 @@ mod tests {
         let output = String::from_utf8(output).unwrap();
         assert!(output.contains("f(x, y) = 2 * x + 3 * y"));
         assert!(output.contains("2 * x ^ 2 + 3 * y"));
-        assert!(output.contains("4 + 3 * y"));
+        assert!(output.contains("3 * y + 4"));
         assert!(output.contains("19"));
         assert!(output.contains("2 * (x + 1)"));
         assert!(output.contains("g(x, y) = x ^ 4 + y ^ 2 + 9"));

@@ -133,7 +133,7 @@ tests or acceptance criteria are also complete.
 
 ## Current verification snapshot
 
-- [x] `cargo test --all-targets --all-features` passes (19 tests).
+- [x] `cargo test --all-targets --all-features` passes (24 tests).
 - [x] `cargo fmt --all -- --check` passes.
 - [x] `cargo clippy --all-targets --all-features -- -D warnings` passes.
 - [x] File-based pass/fail fixtures are exercised by `cargo test`.

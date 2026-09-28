@@ -1,7 +1,7 @@
 use bigdecimal::{BigDecimal, Context};
 use num_bigint::BigInt;
 use num_rational::BigRational;
-use num_traits::{One, Zero};
+use num_traits::{FromPrimitive, One, Signed, ToPrimitive, Zero};
 use std::cmp::Ordering;
 use std::fmt;
 
@@ -75,6 +75,14 @@ impl Number {
         }
     }
 
+    pub fn is_negative(&self) -> bool {
+        match self {
+            Number::Integer(value) => value.is_negative(),
+            Number::Rational(value) => value.is_negative(),
+            Number::Decimal(value) => value.is_negative(),
+        }
+    }
+
     pub fn compare(&self, other: &Number) -> Ordering {
         match (self, other) {
             (Number::Integer(a), Number::Integer(b)) => a.cmp(b),
@@ -87,6 +95,55 @@ impl Number {
                 }
             },
         }
+    }
+
+    pub fn abs(&self) -> Number {
+        match self {
+            Number::Integer(value) => Number::Integer(value.abs()),
+            Number::Rational(value) => Number::Rational(value.abs()),
+            Number::Decimal(value) => Number::Decimal(value.abs()),
+        }
+    }
+
+    pub fn to_f64(&self) -> Option<f64> {
+        match self {
+            Number::Integer(value) => value.to_f64(),
+            Number::Rational(value) => value.to_f64(),
+            Number::Decimal(value) => value.to_f64(),
+        }
+    }
+
+    pub fn from_f64(value: f64) -> Option<Number> {
+        if !value.is_finite() {
+            return None;
+        }
+        if value.fract() == 0.0 {
+            if let Some(integer) = BigInt::from_f64(value) {
+                return Some(Number::Integer(integer));
+            }
+        }
+        format!("{value:.15e}")
+            .parse::<BigDecimal>()
+            .ok()
+            .map(Number::Decimal)
+    }
+
+    pub fn exact_root(&self, degree: u32) -> Option<Number> {
+        fn integer_root(value: &BigInt, degree: u32) -> Option<BigInt> {
+            if degree % 2 == 0 && value.is_negative() {
+                return None;
+            }
+            let root = value.nth_root(degree);
+            (root.pow(degree) == *value).then_some(root)
+        }
+
+        let rational = self.try_to_rational()?;
+        let numerator = integer_root(rational.numer(), degree)?;
+        let denominator = integer_root(rational.denom(), degree)?;
+        Some(Number::from_rational(BigRational::new(
+            numerator,
+            denominator,
+        )))
     }
 }
 

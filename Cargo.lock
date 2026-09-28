@@ -71,7 +71,9 @@ name = "scas"
 version = "0.1.0"
 dependencies = [
  "bigdecimal",
+ "libm",
  "num-bigint",
+ "num-integer",
  "num-rational",
  "num-traits",
 ]

@@ -30,6 +30,10 @@ impl SymbolTable {
         &self.names[sym as usize]
     }
 
+    pub fn get(&self, name: &str) -> Option<Symbol> {
+        self.ids.get(name).copied()
+    }
+
     pub fn len(&self) -> usize {
         self.names.len()
     }
