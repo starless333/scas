@@ -9,10 +9,10 @@ use crate::interpreter::value::Value;
 /// nearest function call, `Error` all the way out to the top level).
 #[derive(Debug, Clone)]
 pub enum Flow {
-        Error(String),
-        Return(Value),
-        Break,
-        Continue,
+    Error(String),
+    Return(Value),
+    Break,
+    Continue,
 }
 
 pub type ExecResult<T> = Result<T, Flow>;

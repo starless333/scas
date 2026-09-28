@@ -1,17 +1,33 @@
 # SCAS
 
-SCAS is a small interpreted language written in Rust. It currently supports
-variables, expression-based functions, control flow, strings, booleans, and
+SCAS is a dynamically typed interpreted language and an early-stage computer
+algebra system written in Rust. It supports arbitrary-size integers, exact
+rationals, arbitrary-precision decimals, arrays, closures, control flow, and
 numeric and bitwise operators.
 
 ## Requirements
 
-- A recent Rust toolchain with Cargo ([install Rust](https://rustup.rs/))
+- Rust 1.79 or newer with Cargo ([install Rust](https://rustup.rs/))
 
 ## Running a program
 
-SCAS reads the complete program from standard input. From the repository root,
-run a `.scas` file with:
+Running SCAS in a terminal starts an interactive REPL. Definitions remain
+available until the session ends, bare expressions print their values, and
+multiline blocks receive a continuation prompt.
+
+```text
+$ cargo run --quiet
+scas 0.1.0 — type :help for help, :quit to exit
+> 1 / 2 + 1 / 3
+5/6
+> :precision 200
+decimal precision: 200 digits
+```
+
+Use `:help`, `:clear`, `:precision N`, or `:quit` to control the REPL.
+
+When standard input is redirected, SCAS reads and executes a complete program.
+From the repository root, run a `.scas` file with:
 
 ```sh
 cargo run --quiet < path/to/program.scas
@@ -34,6 +50,18 @@ To build once and run the compiled executable:
 ```sh
 cargo build --release
 ./target/release/scas < path/to/program.scas
+```
+
+Successful batch programs exit with status 0. Input, lexical, syntax, and
+runtime failures are written to standard error and exit with status 1. Syntax
+diagnostics include the source line and exact failing span:
+
+```text
+error: expected an expression
+  --> <stdin>:1:11
+   |
+ 1 | print(1 + );
+   |           ^ unexpected `)`
 ```
 
 ## Language basics
@@ -62,15 +90,37 @@ Variables declared without a value are initialized to `nil`:
 let result;
 ```
 
-Functions have a single expression as their body. Both the declaration and
-ordinary function calls used as statements end with a semicolon:
+Functions may have a concise expression body or a normal block body. Block
+functions return `nil` when execution reaches the end without `return`:
 
 ```scas
 fn add(a, b) = a + b;
 fn square(x) = x ^ 2;
 
+fn factorial(n) {
+    if n <= 1 {
+        return 1;
+    }
+    return n * factorial(n - 1);
+}
+
 let answer = add(square(4), 5);
 print(answer);
+```
+
+For mathematical functions, the `fn` keyword is optional when using an
+expression body. Adjacent terms imply multiplication, and unbound identifiers
+become symbolic values. Calling a function with symbolic arguments substitutes
+them while still evaluating every numeric part:
+
+```scas
+f(x, y) = 2x + 3y;
+
+print(f);           // f(x, y) = 2 * x + 3 * y
+print(f(x ^ 2, y)); // 2 * x ^ 2 + 3 * y
+print(f(2, y));     // 4 + 3 * y
+print(f(2, 5));     // 19
+print(2(x + 1));    // 2 * (x + 1)
 ```
 
 Conditionals and loops use braces:
@@ -101,8 +151,39 @@ available outside that block.
 
 ## Values and operators
 
-SCAS currently has numbers, strings, booleans (`true` and `false`), `nil`, and
-functions. Numbers may be decimal or use `0b`, `0o`, and `0x` prefixes.
+SCAS has integers, rationals, decimals, symbolic expressions, arrays, strings,
+booleans (`true` and `false`), `nil`, and functions. Integer and decimal
+literals can be arbitrarily large. Integers may use `0b`, `0o`, and `0x`
+prefixes, while decimals support scientific notation such as `1.25e+40`.
+
+Integer division produces a reduced exact rational. A decimal operand requests
+decimal division instead:
+
+```scas
+print(1 / 3);      // 1/3
+print(6 / 3);      // 2 (a denominator of one normalizes to an integer)
+print(1.0 / 3);    // decimal, rounded using the active precision
+print(1 / 2 == 0.5); // true
+```
+
+The numeric promotion order is `Integer -> Rational -> Decimal`. Integer and
+rational arithmetic is exact. Decimal addition, subtraction, multiplication,
+and positive integral powers preserve all digits. Division and negative decimal
+powers use the active significant-digit precision, which defaults to 100 and
+can be changed in the REPL with `:precision N`.
+
+Arrays are immutable, dynamically typed, and may be nested. Indexes are
+zero-based non-negative integers. `+` concatenates two arrays:
+
+```scas
+let values = [1, 1 / 2, "three", [4, 5]];
+print(values[1]);       // 1/2
+print(values[3][0]);    // 4
+print(values + [6, 7]);
+
+fn second(xs) = xs[1];
+print(second([10, 20]));
+```
 
 | Category | Operators |
 | --- | --- |
@@ -112,17 +193,50 @@ functions. Numbers may be decimal or use `0b`, `0o`, and `0x` prefixes.
 | Bitwise (integers) | `~`, `&`, `xor`, `|`, `<<`, `>>` |
 | Assignment | `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `^=`, `&=`, `|=` |
 
-The `+` operator adds numbers or joins two strings. Every value except `false`
-and `nil` is treated as true in a condition. Logical `and` and `or`
-short-circuit.
+The `+` operator adds numbers, joins two strings, or concatenates two arrays.
+Bitwise operations require integers, and exponents must be integers. Every
+value except `false` and `nil` is treated as true in a condition. Logical `and`
+and `or` short-circuit.
+
+## Using SCAS as a Rust library
+
+The crate exposes a pipeline that scans, parses, and executes a complete source
+program without printing or terminating the host process. Program output is
+written to a caller-provided `Write` implementation:
+
+```rust
+let source = "print(1 / 2 + 1 / 3);";
+let mut output = Vec::new();
+
+if let Err(error) = scas::execute(source, &mut output) {
+    eprintln!("{}", error.render(source, "example.scas"));
+}
+
+assert_eq!(String::from_utf8(output).unwrap(), "5/6\n");
+```
+
+`execute` creates a fresh environment for each call. Embedders that need a
+persistent session or custom decimal precision can use the public `Scanner`,
+`Parser`, and `Interpreter` types directly. Interpreter output is also injected
+through a `Write` implementation; it never relies on global standard output.
 
 ## Development
 
-Build and run the Rust test suite with:
+The same checks enforced in CI can be run locally with:
 
 ```sh
-cargo test
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets --all-features
 ```
+
+CI runs these checks on the minimum supported Rust release (1.79) and the
+latest stable release. Programs under `tests/should_pass` and
+`tests/should_fail` are integration fixtures with matching `.stdout` or
+`.stderr` golden files; adding a `.scas` fixture without its expected output
+causes the test suite to fail.
 
 Grammar notes are available in [`src/grammar.org`](src/grammar.org), and
 additional example programs are under [`tests/should_pass`](tests/should_pass).
+The symbolic simplification roadmap is documented in
+[`docs/algebraic_identities.md`](docs/algebraic_identities.md).

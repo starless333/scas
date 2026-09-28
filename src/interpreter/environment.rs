@@ -20,54 +20,57 @@ pub type Env = Rc<RefCell<Environment>>;
 /// lookup, with no heap traffic at all.
 #[derive(Debug, Default)]
 pub struct Environment {
-        values: HashMap<Symbol, Value>,
-        parent: Option<Env>,
+    values: HashMap<Symbol, Value>,
+    parent: Option<Env>,
 }
 
 impl Environment {
-        pub fn new() -> Env {
-                Rc::new(RefCell::new(Environment { values: HashMap::new(), parent: None }))
-        }
+    pub fn new() -> Env {
+        Rc::new(RefCell::new(Environment {
+            values: HashMap::new(),
+            parent: None,
+        }))
+    }
 
-        pub fn child(parent: &Env) -> Env {
-                Rc::new(RefCell::new(Environment {
-                        values: HashMap::new(),
-                        parent: Some(Rc::clone(parent)),
-                }))
-        }
+    pub fn child(parent: &Env) -> Env {
+        Rc::new(RefCell::new(Environment {
+            values: HashMap::new(),
+            parent: Some(Rc::clone(parent)),
+        }))
+    }
 
-        pub fn define(&mut self, name: Symbol, value: Value) {
-                self.values.insert(name, value);
-        }
+    pub fn define(&mut self, name: Symbol, value: Value) {
+        self.values.insert(name, value);
+    }
 
-        /// Walk outward through enclosing scopes looking for `name`.
-        pub fn get(env: &Env, name: Symbol) -> Option<Value> {
-                let scope = env.borrow();
-                if let Some(v) = scope.values.get(&name) {
-                        return Some(v.clone());
-                }
-                match &scope.parent {
-                        Some(parent) => Environment::get(parent, name),
-                        None => None,
-                }
+    /// Walk outward through enclosing scopes looking for `name`.
+    pub fn get(env: &Env, name: Symbol) -> Option<Value> {
+        let scope = env.borrow();
+        if let Some(v) = scope.values.get(&name) {
+            return Some(v.clone());
         }
+        match &scope.parent {
+            Some(parent) => Environment::get(parent, name),
+            None => None,
+        }
+    }
 
-        /// Assigns to the *nearest* existing binding of `name`, walking
-        /// outward through enclosing scopes. Returns `false` (and assigns
-        /// nothing) if `name` isn't defined anywhere in the chain --
-        /// assignment, unlike `let`, must not silently create a new
-        /// global.
-        pub fn assign(env: &Env, name: Symbol, value: Value) -> bool {
-                let mut scope = env.borrow_mut();
-                if scope.values.contains_key(&name) {
-                        scope.values.insert(name, value);
-                        return true;
-                }
-                let parent = scope.parent.clone();
-                drop(scope); // release this scope's borrow before recursing
-                match parent {
-                        Some(parent) => Environment::assign(&parent, name, value),
-                        None => false,
-                }
+    /// Assigns to the *nearest* existing binding of `name`, walking
+    /// outward through enclosing scopes. Returns `false` (and assigns
+    /// nothing) if `name` isn't defined anywhere in the chain --
+    /// assignment, unlike `let`, must not silently create a new
+    /// global.
+    pub fn assign(env: &Env, name: Symbol, value: Value) -> bool {
+        let mut scope = env.borrow_mut();
+        if let std::collections::hash_map::Entry::Occupied(mut entry) = scope.values.entry(name) {
+            entry.insert(value);
+            return true;
         }
+        let parent = scope.parent.clone();
+        drop(scope); // release this scope's borrow before recursing
+        match parent {
+            Some(parent) => Environment::assign(&parent, name, value),
+            None => false,
+        }
+    }
 }

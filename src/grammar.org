@@ -22,11 +22,14 @@ block           ::= "{" statement* "}"
 (*                DECLARATIONS                *)
 (* ========================================== *)
 
-declaration     ::= variable_decl | function_decl
+declaration     ::= variable_decl | function_decl | math_function_decl
 
 variable_decl   ::= "let" IDENTIFIER ("=" expression)? ";"
 
-function_decl   ::= IDENTIFIER "(" parameter_list? ")" "=" expression
+function_decl   ::= "fn" IDENTIFIER "(" parameter_list? ")"
+                    ("=" expression ";" | block)
+
+math_function_decl ::= IDENTIFIER "(" parameter_list? ")" "=" expression ";"
 
 parameter_list  ::= IDENTIFIER ("," IDENTIFIER)*
 
@@ -87,19 +90,24 @@ shift           ::= additive (("<<" | ">>") additive)*
 
 additive        ::= multiplicative (("+" | "-") multiplicative)*
 
-multiplicative  ::= unary (("*" | "/" | "%") unary)*
+multiplicative  ::= unary (("*" | "/" | "%") unary | implicit_product)*
+
+implicit_product ::= NUMBER | IDENTIFIER | "(" expression ")"
 
 unary           ::= ("!" | "-" | "~") unary | exponent
 
 exponent        ::= postfix ("^" exponent)?
 
-postfix         ::= primary ("(" argument_list? ")")*
+postfix         ::= primary ("(" argument_list? ")" | "[" expression "]")*
 
 argument_list   ::= expression ("," expression)*
+
+array_elements  ::= expression ("," expression)* ","?
 
 primary         ::= NUMBER 
                   | STRING 
                   | IDENTIFIER 
+                  | "[" array_elements? "]"
                   | "true" 
                   | "false" 
                   | "nil" 

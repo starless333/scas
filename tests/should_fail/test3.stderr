@@ -1,0 +1,5 @@
+error: expected `;` after for loop condition
+  --> <stdin>:1:25
+   |
+ 1 | for let i = 0; i < 10 i += 1 { }
+   |                         ^^ unexpected `+=`

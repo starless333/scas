@@ -7,84 +7,87 @@
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TokenType {
-        // Single-character punctuation
-        LeftParen, RightParen, // done
-        LeftBracket, RightBracket, // matrices?
-        LeftBrace, RightBrace, // done
-        Comma, // done
-        Dot, // done
-        Colon, // done
-        Semicolon, // done
-        FlowOperator,
-        
-        // Arithmetic
-        Plus, // done
-        Minus, // done
-        Star, // done
-        Slash, // done
-        Mod, // done
-        Pow, // done
+    // Single-character punctuation
+    LeftParen,
+    RightParen, // done
+    LeftBracket,
+    RightBracket, // matrices?
+    LeftBrace,
+    RightBrace, // done
+    Comma,      // done
+    Dot,        // done
+    Colon,      // done
+    Semicolon,  // done
+    FlowOperator,
 
-        // Bitwise
-        Ampersand, // done
-        Pipe, // done
-        Xor,
-        Tilde, // done
-        ShiftLeft,
-        ShiftRight,
-        ShiftLeftEqual,
-        ShiftRightEqual,
+    // Arithmetic
+    Plus,  // done
+    Minus, // done
+    Star,  // done
+    Slash, // done
+    Mod,   // done
+    Pow,   // done
 
-        // Assignment
-        Equal, // done
-        PlusEqual, // done
-        MinusEqual, // done
-        StarEqual, // done
-        SlashEqual, // done
-        ModEqual, // done
-        PowEqual, // done
-        AmpersandEqual, // done
-        PipeEqual, // done
-        TildeEqual, // done
+    // Bitwise
+    Ampersand, // done
+    Pipe,      // done
+    Xor,
+    Tilde, // done
+    ShiftLeft,
+    ShiftRight,
+    ShiftLeftEqual,
+    ShiftRightEqual,
 
-        // Comparison
-        EqualEqual, // done
-        BangEqual, // done
-        Less,
-        LessEqual,
-        Greater,
-        GreaterEqual,
+    // Assignment
+    Equal,          // done
+    PlusEqual,      // done
+    MinusEqual,     // done
+    StarEqual,      // done
+    SlashEqual,     // done
+    ModEqual,       // done
+    PowEqual,       // done
+    AmpersandEqual, // done
+    PipeEqual,      // done
+    TildeEqual,     // done
 
-        // Logical
-        Bang, // done
-        And, // done
-        Or, // done
+    // Comparison
+    EqualEqual, // done
+    BangEqual,  // done
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
 
-        // Literals
-        Identifier,
-        Number, // done
-        Str, // done
+    // Logical
+    Bang, // done
+    And,  // done
+    Or,   // done
 
-        // Keywords
-        Let, // done
-        Fn, // done
-        If, // done
-        Else, // done
-        For, // done
-        While, // done
-        Break, // done
-        Continue, // done
-        Return, // done
-        Print, // done
+    // Literals
+    Identifier,
+    Number, // done
+    Str,    // done
 
-        True, // done
-        False, // done
-        Nil, // done
+    // Keywords
+    Let,      // done
+    Fn,       // done
+    If,       // done
+    Else,     // done
+    For,      // done
+    While,    // done
+    Break,    // done
+    Continue, // done
+    Return,   // done
+    Print,    // done
 
-        // REPL
-        Exit, // done
-        Help, // done
-        Clear, // done
+    True,  // done
+    False, // done
+    Nil,   // done
 
-        Eof,
+    // REPL
+    Exit,  // done
+    Help,  // done
+    Clear, // done
+
+    Eof,
 }
