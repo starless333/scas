@@ -67,4 +67,11 @@ pub enum StatementKind {
         op: AssignOp,
         value: Expr,
     },
+    DocComment(String),
+    RenderBlock(Vec<Statement>),
+    RenderLine {
+        expression: Expr,
+        show_result: bool,
+    },
+    Show(Expr),
 }

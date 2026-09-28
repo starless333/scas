@@ -14,7 +14,19 @@ statement       ::= declaration
                   | break_stmt 
                   | continue_stmt 
                   | expr_stmt 
+                  | doc_comment
+                  | render_block
+                  | render_line
+                  | show_stmt
                   | block
+
+render_block    ::= "\\{" statement* "\\}"
+
+render_line     ::= "\\[" expression ("=>")? "\\]"
+
+show_stmt       ::= expression "=>" ";"
+
+doc_comment     ::= "///" DOC_TEXT
 
 block           ::= "{" statement* "}"
 
@@ -37,7 +49,7 @@ parameter_list  ::= IDENTIFIER ("," IDENTIFIER)*
 (*               CONTROL FLOW                 *)
 (* ========================================== *)
 
-if_stmt         ::= "if" expression block ("else" block)?
+if_stmt         ::= "if" expression block ("else" (if_stmt | block))?
 
 while_stmt      ::= "while" expression block
 
@@ -95,22 +107,29 @@ additive        ::= multiplicative (("+" | "-") multiplicative)*
 
 multiplicative  ::= unary (("*" | "/" | "%") unary | implicit_product)*
 
-implicit_product ::= NUMBER | IDENTIFIER | "(" expression ")"
+implicit_product ::= exponent
 
 unary           ::= ("!" | "-" | "~") unary | exponent
 
 exponent        ::= postfix ("^" exponent)?
 
-postfix         ::= primary ("(" argument_list? ")" | "[" expression "]")*
+postfix         ::= primary ("(" argument_list? ")" | "[" index_list "]")*
+
+index_list      ::= expression ("," expression)*
 
 argument_list   ::= expression ("," expression)*
 
 array_elements  ::= expression ("," expression)* ","?
 
+matrix_literal  ::= "[" matrix_row (";" matrix_row)+ "]"
+
+matrix_row      ::= expression ("," expression)*
+
 primary         ::= NUMBER 
                   | STRING 
                   | IDENTIFIER 
                   | "[" array_elements? "]"
+                  | matrix_literal
                   | "true" 
                   | "false" 
                   | "nil" 

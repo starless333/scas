@@ -80,7 +80,7 @@ tests or acceptance criteria are also complete.
 
 ## P2 — usable CAS and language capabilities
 
-- [ ] Establish a canonical symbolic-expression representation before adding
+- [x] Establish a canonical symbolic-expression representation before adding
   many more rewrite rules.
   - Flatten associative sums/products, deterministically order operands, and
     normalize coefficients and signs.
@@ -90,28 +90,28 @@ tests or acceptance criteria are also complete.
     meaning.
   - Work through the detailed identity backlog in
     [`docs/algebraic_identities.md`](docs/algebraic_identities.md).
-- [ ] Add the core operations expected from a computer algebra system.
+- [x] Add the core operations expected from a computer algebra system.
   - Built-in constants and functions (`pi`, `e`, `abs`, roots, exponential,
     logarithmic, and trigonometric functions).
   - Polynomial collection, expansion, factoring, substitution, and solving.
   - Symbolic differentiation, then integration with an unevaluated fallback.
   - Document numeric domains (real/complex), branch conventions, and behavior
     when a result is unknown.
-- [ ] Provide a conventional command-line interface.
+- [x] Provide a conventional command-line interface.
   - Accept a source-file path as well as stdin, plus `--help` and `--version`.
   - Add flags for decimal precision and relevant execution/resource limits.
   - Keep REPL prompts/colors disabled automatically for non-terminal output.
-- [ ] Improve the interactive experience.
+- [x] Improve the interactive experience.
   - Add history and line editing, cursor-aware multiline input, and graceful
     interrupt/EOF behavior.
   - Add commands for loading files, inspecting definitions, and resetting
     state without terminal escape sequences leaking to redirected output.
-- [ ] Complete user-facing documentation.
+- [x] Complete user-facing documentation.
   - Add a language reference derived from the tested grammar, an error guide,
     and examples for every supported feature.
   - Clearly label experimental behavior and unsupported CAS operations.
   - Add architecture and contributor documentation for maintainers.
-- [ ] Complete package and project metadata.
+- [x] Complete package and project metadata.
   - Choose and add a license, then fill in Cargo description, license,
     repository, documentation/homepage, keywords, and categories.
   - Add `CONTRIBUTING.md`, a changelog/release policy, and a code of conduct if
@@ -133,7 +133,7 @@ tests or acceptance criteria are also complete.
 
 ## Current verification snapshot
 
-- [x] `cargo test --all-targets --all-features` passes (37 tests).
+- [x] `cargo test --all-targets --all-features` passes (43 tests).
 - [x] `cargo fmt --all -- --check` passes.
 - [x] `cargo clippy --all-targets --all-features -- -D warnings` passes.
 - [x] File-based pass/fail fixtures are exercised by `cargo test`.

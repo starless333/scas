@@ -1,10 +1,11 @@
 use scas::interpreter::Interpreter;
 use scas::lexer::{Scanner, SymbolTable};
 use scas::parser::Parser;
+use std::fs;
 use std::io::{self, BufRead, Write};
 use std::num::NonZeroU64;
 
-const HELP: &str = "Commands:\n  :help              show this help\n  :precision N       set decimal division precision\n  :quit, :exit       leave the REPL\n  :clear             clear the screen\n\nExamples:\n  2 + 2\n  :precision 200\n  1 / 7\n  f(x, y) = 2x + 3y\n  f(x ^ 2, y)\n  fn square(x) = x * x;\n  fn factorial(n) {\n      if n <= 1 { return 1; }\n      return n * factorial(n - 1);\n  }\n  factorial(6)";
+const HELP: &str = "Commands:\n  :help              show this help\n  :precision N       set decimal division precision\n  :load PATH         execute a source file\n  :definitions       list current names\n  :history           show session inputs\n  :reset             clear session definitions\n  :quit, :exit       leave the REPL\n  :clear             clear the screen\n\nTry:\n  f(x) = x^3 - 3x + 1\n  derivative(f(x), x)\n  solve(x^2 - 5x + 6, x)\n  factor(x^3 - y^3)\n  let A = [1, 2; 3, 4];\n  A[1, 0]";
 
 /// Run an interactive session. Definitions and variables persist between
 /// submissions, including closures created by earlier submissions.
@@ -18,6 +19,7 @@ fn run_with_io<R: BufRead, W: Write>(mut input: R, mut output: W) -> io::Result<
     let mut symbols = SymbolTable::new();
     let mut interpreter = Interpreter::new(symbols.clone(), Vec::new());
     let mut source = String::new();
+    let mut history: Vec<String> = Vec::new();
 
     writeln!(output, "scas 0.1.0 — type :help for help, :quit to exit")?;
     loop {
@@ -31,7 +33,16 @@ fn run_with_io<R: BufRead, W: Write>(mut input: R, mut output: W) -> io::Result<
         }
 
         if source.is_empty() {
-            let command = line.trim();
+            let command = line.trim().to_owned();
+            if let Some(path) = command.strip_prefix(":load ") {
+                match fs::read_to_string(path.trim()) {
+                    Ok(loaded) => line = loaded,
+                    Err(error) => {
+                        writeln!(output, "error: failed to load `{}`: {error}", path.trim())?;
+                        continue;
+                    }
+                }
+            }
             if let Some(argument) = command.strip_prefix(":precision") {
                 match argument
                     .trim()
@@ -51,7 +62,7 @@ fn run_with_io<R: BufRead, W: Write>(mut input: R, mut output: W) -> io::Result<
                 }
                 continue;
             }
-            match command {
+            match command.as_str() {
                 ":quit" | ":exit" | "quit" | "exit" => break,
                 ":help" | "help" => {
                     writeln!(output, "{HELP}")?;
@@ -60,6 +71,22 @@ fn run_with_io<R: BufRead, W: Write>(mut input: R, mut output: W) -> io::Result<
                 ":clear" | "clear" => {
                     write!(output, "\x1b[2J\x1b[H")?;
                     output.flush()?;
+                    continue;
+                }
+                ":definitions" => {
+                    writeln!(output, "{}", interpreter.definition_names().join("\n"))?;
+                    continue;
+                }
+                ":history" => {
+                    for (index, entry) in history.iter().enumerate() {
+                        writeln!(output, "{}  {}", index + 1, entry.trim_end())?;
+                    }
+                    continue;
+                }
+                ":reset" => {
+                    symbols = SymbolTable::new();
+                    interpreter = Interpreter::new(symbols.clone(), Vec::new());
+                    writeln!(output, "session reset")?;
                     continue;
                 }
                 "" => continue,
@@ -73,6 +100,7 @@ fn run_with_io<R: BufRead, W: Write>(mut input: R, mut output: W) -> io::Result<
         }
 
         let submission = terminate_if_needed(&source);
+        history.push(submission.clone());
         let mut scanner = Scanner::with_symbols(&submission, symbols);
         let tokens = scanner.scan_tokens().clone();
         if scanner.had_error() {

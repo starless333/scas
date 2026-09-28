@@ -19,6 +19,12 @@ pub enum TokenType {
     Colon,      // done
     Semicolon,  // done
     FlowOperator,
+    RenderLeftBrace,
+    RenderRightBrace,
+    RenderLeftBracket,
+    RenderRightBracket,
+    FatArrow,
+    DocComment,
 
     // Arithmetic
     Plus,  // done

@@ -1,9 +1,0 @@
-let i   = 0;
-let ans = 0.5;
-for i = 0; i < 5; i += 1 {
-        if i%2 == 0 {
-                ans += i;
-        } else { continue; }
-}
-
-print(ans);

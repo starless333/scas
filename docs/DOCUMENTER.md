@@ -2,7 +2,8 @@
 
 Design document for the literate-programming layer of the language: source files that both **compute** and **typeset themselves** into a LaTeX document.
 
-Status: draft. Items marked **[DECIDE]** are open design choices; record the final answer in `docs/decisions.md`.
+Status: grammar accepted; LaTeX assembly remains experimental. Design choices
+are recorded in `docs/decisions.md`.
 
 ---
 
@@ -66,25 +67,25 @@ At $x = 3$ the slope is $8$.
 - Consecutive `///` lines form one paragraph. A bare `///` line is a paragraph break.
 - One leading space after `///` is stripped.
 - Contents are passed through as raw LaTeX, except for `#{ }` interpolation.
-- `////` (four or more slashes) is a plain comment. **[DECIDE]** confirm.
-- A `///` line inside a render block is emitted as `\intertext{...}` so the `align*` continues. **[DECIDE]**
+- `////` (four or more slashes) is a plain comment.
+- A `///` line inside a render block is emitted as `\intertext{...}` so the `align*` continues.
 
 ### 3.2 Render blocks `\{ ... \}`
 - Statements execute in order, exactly as in a normal block.
 - Each statement produces at most one aligned row.
-- **Scope: a render block does not introduce a new scope**, so definitions remain visible afterward. **[DECIDE]** (the alternative is to match `{ }`; whichever is chosen must be documented).
+- **Scope: a render block does not introduce a new scope**, so definitions remain visible afterward.
 - Rendering per statement kind:
 
 | Statement | Typeset as |
 |---|---|
 | `let a = e;` | `a &= e` |
 | `f(x) = e;` (math function decl) | `f(x) &= e` |
-| `a = e;`, `a += e;` | `a &= e` (compound ops expand, e.g. `a &= a + e`) **[DECIDE]** |
+| `a = e;`, `a += e;` | `a &= e` (compound ops expand, e.g. `a &= a + e`) |
 | `e;` | `e` (typeset as written, not evaluated for display) |
 | `e =>;` | `e &= value` |
 | `print(e);` | not typeset (executes only) |
 | `return e;` | not typeset by default |
-| `if` / `while` / `for` | executes; not typeset. Emit an informational diagnostic. **[DECIDE]** |
+| `if` / `while` / `for` | executes; not typeset. Emit an informational diagnostic. |
 | `fn` declarations | executes; not typeset, unless the user asks for it explicitly (see section 10) |
 
 ### 3.3 Render lines `\[ ... \]`
@@ -96,11 +97,11 @@ At $x = 3$ the slope is $8$.
 - `expr` is parsed with the normal expression grammar and evaluated in the current scope at that point in source order.
 - The value is typeset with the same rules as render output.
 - Evaluation errors become a diagnostic and render as a visible placeholder (`\text{\textbf{?}}`), never a crash.
-- `#{` was chosen because bare `{` is pervasive in LaTeX. **[DECIDE]** confirm the delimiter.
+- `#{` was chosen because bare `{` is pervasive in LaTeX.
 
 ### 3.5 Raw LaTeX escape hatch
 Some notation will not be expressible in the expression grammar (`\vec{v}`, `\mathbb{R}`).
-- STRING literals in render position pass through verbatim: `\{ "\\vec{v} = " ; \}` **[DECIDE]** syntax, or a dedicated `tex"..."` form.
+- String literals in render position pass through verbatim: `\{ "\\vec{v} = " ; \}`.
 - The escape hatch is required for the tool to remain trustworthy.
 
 ---
@@ -161,7 +162,7 @@ inv        = '{0}^{-1}'
 ### 5.3 Values
 - Integers and rationals: `\frac{a}{b}`, with sign moved to the front.
 - Floats: configurable precision.
-- Matrices: `pmatrix`; vectors: column `pmatrix` by default **[DECIDE]** (config option for row vectors).
+- Matrices: `pmatrix`; vectors: column `pmatrix` by default (configurable).
 - Lists of solutions: set notation or comma-separated, chosen by config.
 - Booleans, strings, `nil`: `\text{true}`, `\text{...}`, `\varnothing`.
 
@@ -244,12 +245,12 @@ These affect the documenter directly because users now write math inside render 
 
 ## 12. Open decisions summary
 
-- [ ] Delimiter syntax: `\{ \}` / `\[ \]` versus alternatives such as `math { }` or `@align { }`
-- [ ] Render block scope (shared versus new)
-- [ ] `/// ` lines inside render blocks (`\intertext`)
-- [ ] Interpolation delimiter `#{ }`
-- [ ] Raw LaTeX escape syntax
-- [ ] Rendering of compound assignment (`+=`)
-- [ ] Whether control flow inside render blocks is silent or an error
-- [ ] Default vector orientation
-- [ ] Meaning of `////`
+- [x] Delimiter syntax: `\{ \}` / `\[ \]`
+- [x] Render block scope: shared
+- [x] `/// ` lines inside render blocks: `\intertext`
+- [x] Interpolation delimiter: `#{ }`
+- [x] Raw LaTeX escape syntax: string in render position
+- [x] Compound assignment renders its expanded meaning
+- [x] Control flow inside render blocks executes silently with an info diagnostic
+- [x] Default vector orientation: column
+- [x] `////` is an ordinary comment

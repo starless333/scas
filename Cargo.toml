@@ -3,6 +3,14 @@ name = "scas"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.79"
+description = "An exact-arithmetic scripting language and symbolic computer algebra system"
+license = "MIT"
+repository = "https://github.com/starless333/scas"
+homepage = "https://github.com/starless333/scas"
+documentation = "https://docs.rs/scas"
+readme = "README.md"
+keywords = ["computer-algebra", "symbolic-math", "mathematics", "interpreter"]
+categories = ["science::mathematics", "command-line-utilities"]
 
 [dependencies]
 bigdecimal = "0.4"

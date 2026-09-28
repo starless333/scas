@@ -1,0 +1,23 @@
+// Exact numbers, functions, implicit multiplication, and control flow.
+fn binomial(x) = (x + 1)^3;
+
+print(1 / 2 + 1 / 3);
+print(binomial(2));
+print(binomial(t));
+
+let classification = "";
+let score = 87;
+if score >= 90 {
+    classification = "excellent";
+} else if score >= 75 {
+    classification = "strong";
+} else {
+    classification = "developing";
+}
+print(classification);
+
+let total = 0;
+for let i = 1; i <= 5; i += 1 {
+    total += i^2;
+}
+print(total);

@@ -47,6 +47,57 @@ fn canonical_arithmetic_collects_terms_powers_and_factors() {
 }
 
 #[test]
+fn substitution_solving_and_calculus_have_safe_fallbacks() {
+    assert_eq!(
+        output(
+            r#"
+            print(collect(x*x + 2x + x^2, x));
+            print(subs(x^2 + y, x, 3));
+            print(solve(x^2 - 1, x));
+            print(derivative(x^3 + 2x + sin(x), x));
+            print(integral(x^2 + 2, x));
+            print(integral(sqrt(x), x));
+            "#,
+        ),
+        concat!(
+            "2 * x ^ 2 + 2 * x\n",
+            "y + 9\n",
+            "[-1, 1]\n",
+            "2 + 3 * x ^ 2 + cos(x)\n",
+            "x ^ 3 / 3 + 2 * x\n",
+            "integral(sqrt(x), x)\n",
+        ),
+    );
+}
+
+#[test]
+fn domain_documented_transcendental_and_absolute_identities_simplify() {
+    assert_eq!(
+        output(
+            r#"
+            print(abs(x)^2);
+            print(log(exp(x)));
+            print(exp(log(x)));
+            print(exp(x) * exp(y));
+            print(sin(t)^2 + cos(t)^2);
+            print(1 + tan(t)^2);
+            print(expand(exp(x + y)));
+            print(expand(sin(x + y)));
+            assume_nonnegative(x);
+            print(sqrt(x^2));
+            print(abs(x));
+            "#,
+        ),
+        concat!(
+            "x ^ 2\nx\nx\nexp(x + y)\n1\nsec(t) ^ 2\n",
+            "exp(x) * exp(y)\n",
+            "cos(x) * sin(y) + cos(y) * sin(x)\n",
+            "x\nx\n",
+        ),
+    );
+}
+
+#[test]
 fn fractions_are_combined_reduced_and_checked() {
     assert_eq!(
         output(

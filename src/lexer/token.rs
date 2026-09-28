@@ -11,4 +11,7 @@ pub struct Token {
     pub column: usize,
     /// Length of the token in Unicode scalar values. EOF has length zero.
     pub length: usize,
+    /// Half-open UTF-8 byte range in the original source.
+    pub byte_start: usize,
+    pub byte_end: usize,
 }

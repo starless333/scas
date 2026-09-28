@@ -23,6 +23,31 @@ fn run(source: &str) -> Output {
     child.wait_with_output().expect("failed to wait for scas")
 }
 
+#[test]
+fn help_and_version_are_conventional() {
+    let help = Command::new(BINARY).arg("--help").output().unwrap();
+    assert!(help.status.success());
+    assert!(text(&help.stdout).contains("USAGE:"));
+    let version = Command::new(BINARY).arg("--version").output().unwrap();
+    assert!(version.status.success());
+    assert_eq!(text(&version.stdout), "scas 0.1.0\n");
+}
+
+#[test]
+fn source_file_and_precision_flag_are_supported() {
+    let path = std::env::temp_dir().join(format!("scas-cli-{}.scas", std::process::id()));
+    fs::write(&path, "print(1.0 / 7);\n").unwrap();
+    let output = Command::new(BINARY)
+        .args(["--precision", "6"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+    assert!(output.status.success());
+    assert_eq!(text(&output.stdout), "0.142857\n");
+    assert_eq!(text(&output.stderr), "");
+}
+
 fn fixtures(directory: &str) -> Vec<PathBuf> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")

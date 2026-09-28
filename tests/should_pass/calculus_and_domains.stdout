@@ -1,0 +1,6 @@
+x
+x
+2 + 3 * x ^ 2 + cos(x)
+x ^ 3 / 3 + 2 * x
+integral(sqrt(x), x)
+16

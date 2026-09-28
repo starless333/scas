@@ -53,6 +53,13 @@ pub enum Builtin {
     Factor,
     Apart,
     Horner,
+    Collect,
+    Subs,
+    Solve,
+    Derivative,
+    Integral,
+    AssumeNonzero,
+    AssumeNonnegative,
 }
 
 impl Builtin {
@@ -102,6 +109,13 @@ impl Builtin {
         ("factor", Builtin::Factor),
         ("apart", Builtin::Apart),
         ("horner", Builtin::Horner),
+        ("collect", Builtin::Collect),
+        ("subs", Builtin::Subs),
+        ("solve", Builtin::Solve),
+        ("derivative", Builtin::Derivative),
+        ("integral", Builtin::Integral),
+        ("assume_nonzero", Builtin::AssumeNonzero),
+        ("assume_nonnegative", Builtin::AssumeNonnegative),
     ];
 
     pub fn name(self) -> &'static str {

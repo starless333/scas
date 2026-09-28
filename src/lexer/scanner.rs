@@ -17,6 +17,7 @@ pub struct Scanner {
     token_line: usize,
     token_column: usize,
     errors: Vec<ScanError>,
+    byte_offsets: Vec<usize>,
 }
 
 static KEYWORDS_CELL: OnceLock<HashMap<&'static str, TokenType>> = OnceLock::new();
@@ -49,6 +50,11 @@ fn keywords() -> &'static HashMap<&'static str, TokenType> {
 
 impl Scanner {
     pub fn new(input: &str) -> Self {
+        let mut byte_offsets = input
+            .char_indices()
+            .map(|(offset, _)| offset)
+            .collect::<Vec<_>>();
+        byte_offsets.push(input.len());
         Self {
             source: input.chars().collect(),
             tokens: Vec::new(),
@@ -60,6 +66,7 @@ impl Scanner {
             token_line: 1,
             token_column: 1,
             errors: Vec::new(),
+            byte_offsets,
         }
     }
 
@@ -67,6 +74,11 @@ impl Scanner {
     /// one — e.g. a REPL that wants identifier symbols to stay stable
     /// across successive lines of input.
     pub fn with_symbols(input: &str, symbols: SymbolTable) -> Self {
+        let mut byte_offsets = input
+            .char_indices()
+            .map(|(offset, _)| offset)
+            .collect::<Vec<_>>();
+        byte_offsets.push(input.len());
         Self {
             source: input.chars().collect(),
             tokens: Vec::new(),
@@ -78,6 +90,7 @@ impl Scanner {
             token_line: 1,
             token_column: 1,
             errors: Vec::new(),
+            byte_offsets,
         }
     }
 
@@ -97,6 +110,8 @@ impl Scanner {
             line: self.line,
             column: self.current - self.line_start + 1,
             length: 0,
+            byte_start: self.byte_offsets[self.current],
+            byte_end: self.byte_offsets[self.current],
         });
         &self.tokens
     }
@@ -142,6 +157,8 @@ impl Scanner {
             '=' => {
                 if self.check('=') {
                     self.add_token(TokenType::EqualEqual);
+                } else if self.check('>') {
+                    self.add_token(TokenType::FatArrow);
                 } else {
                     self.add_token(TokenType::Equal);
                 }
@@ -178,9 +195,20 @@ impl Scanner {
                 if self.check('=') {
                     self.add_token(TokenType::SlashEqual);
                 } else if self.check('/') {
-                    // comment case
-                    while self.peek() != '\n' && !self.is_end() {
-                        self.advance();
+                    if self.check('/') && self.peek() != '/' {
+                        while self.peek() != '\n' && !self.is_end() {
+                            self.advance();
+                        }
+                        let mut text: String =
+                            self.source[(self.start + 3)..self.current].iter().collect();
+                        if text.starts_with(' ') {
+                            text.remove(0);
+                        }
+                        self.add_token2(TokenType::DocComment, Some(Literal::Str(text)));
+                    } else {
+                        while self.peek() != '\n' && !self.is_end() {
+                            self.advance();
+                        }
                     }
                 } else {
                     self.add_token(TokenType::Slash);
@@ -267,6 +295,15 @@ impl Scanner {
             '∘' => {
                 self.add_token(TokenType::FlowOperator);
             }
+            '\\' => match self.advance_if_render_delimiter() {
+                Some(token) => self.add_token(token),
+                None => self.errors.push(ScanError::new(
+                    "expected `{`, `}`, `[` or `]` after `\\`",
+                    self.token_line,
+                    self.token_column,
+                    1,
+                )),
+            },
             _ => {
                 if Self::is_digit(c) {
                     self.number();
@@ -427,6 +464,8 @@ impl Scanner {
             line: self.token_line,
             column: self.token_column,
             length: self.current - self.start,
+            byte_start: self.byte_offsets[self.start],
+            byte_end: self.byte_offsets[self.current],
         });
     }
 
@@ -440,6 +479,18 @@ impl Scanner {
         }
         self.current += 1;
         true
+    }
+
+    fn advance_if_render_delimiter(&mut self) -> Option<TokenType> {
+        let token = match self.peek() {
+            '{' => TokenType::RenderLeftBrace,
+            '}' => TokenType::RenderRightBrace,
+            '[' => TokenType::RenderLeftBracket,
+            ']' => TokenType::RenderRightBracket,
+            _ => return None,
+        };
+        self.advance();
+        Some(token)
     }
 
     // looks one character ahead.
@@ -474,6 +525,7 @@ mod tests {
             (tokens[1].line, tokens[1].column, tokens[1].length),
             (1, 5, 1)
         );
+        assert_eq!((tokens[1].byte_start, tokens[1].byte_end), (4, 6));
         assert_eq!(
             (tokens[5].line, tokens[5].column, tokens[5].length),
             (2, 1, 5)

@@ -1,0 +1,12 @@
+/// # Exact geometric sum
+/// The render markers execute in source order and share their surrounding scope.
+\{
+    let ratio = 1 / 2;
+    let terms = 8;
+    let sum = (1 - ratio^terms) / (1 - ratio);
+    sum =>;
+\}
+\[ sum => \]
+
+// The LaTeX backend is experimental; ordinary program output still works.
+print(sum);

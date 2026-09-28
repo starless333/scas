@@ -1,0 +1,10 @@
+// Assumptions enable stronger domain-safe simplification.
+assume_nonnegative(x);
+print(sqrt(x^2));
+print(abs(x));
+
+let f = x^3 + 2x + sin(x);
+print(derivative(f, x));
+print(integral(x^2 + 2, x));
+print(integral(sqrt(x), x)); // no safe rule: remains unevaluated
+print(subs(x^2 + 2x + 1, x, 3));

@@ -43,6 +43,10 @@ impl Environment {
         self.values.insert(name, value);
     }
 
+    pub fn local_names(env: &Env) -> Vec<Symbol> {
+        env.borrow().values.keys().copied().collect()
+    }
+
     /// Walk outward through enclosing scopes looking for `name`.
     pub fn get(env: &Env, name: Symbol) -> Option<Value> {
         let scope = env.borrow();

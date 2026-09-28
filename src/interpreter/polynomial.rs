@@ -26,6 +26,30 @@ pub struct Polynomial {
 }
 
 impl Polynomial {
+    pub fn solve_expression(
+        expression: &SymbolicExpr,
+        variable: Symbol,
+        symbols: &SymbolTable,
+    ) -> Option<Vec<Rc<SymbolicExpr>>> {
+        let polynomial = Self::from_expression(expression, symbols)?;
+        let (found_variable, coefficients) = polynomial.univariate_coefficients()?;
+        if found_variable.symbol != variable || coefficients.len() <= 1 {
+            return None;
+        }
+        let mut roots = Self::root_candidates(&coefficients)
+            .into_iter()
+            .filter(|root| Self::evaluate_coefficients(&coefficients, root).is_zero())
+            .collect::<Vec<_>>();
+        roots.sort();
+        roots.dedup();
+        Some(
+            roots
+                .into_iter()
+                .map(|root| Rc::new(SymbolicExpr::Number(Number::from_rational(root))))
+                .collect(),
+        )
+    }
+
     pub fn from_expression(expression: &SymbolicExpr, symbols: &SymbolTable) -> Option<Self> {
         match expression {
             SymbolicExpr::Number(number) => Some(Self::constant(number.to_rational())),

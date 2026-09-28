@@ -1,0 +1,13 @@
+// Canonical algebra and explicit polynomial transformations.
+let polynomial = (x + y)^3;
+
+print(collect(x*x + 2x + x^2, x));
+print(expand(polynomial));
+print(factor(x^3 - y^3));
+print(apart(1 / (x^2 - 1)));
+print(horner(2x^3 - 6x^2 + 1));
+print(solve(x^2 - 5x + 6, x));
+
+// Elementary identities are simplified without expanding unrelated terms.
+print(sin(theta)^2 + cos(theta)^2);
+print(exp(a) * exp(b));

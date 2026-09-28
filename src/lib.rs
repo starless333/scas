@@ -12,6 +12,7 @@ use lexer::{ScanError, Scanner};
 use parser::{ParseError, Parser};
 use std::fmt;
 use std::io::Write;
+use std::num::NonZeroU64;
 
 /// Resource budget for one program execution. All limits are deterministic;
 /// exceeding one returns a normal `limit error` rather than panicking or
@@ -43,6 +44,21 @@ impl Default for Limits {
             max_decimal_precision: 10_000,
             max_decimal_scale: 100_000,
             max_number_bits: 8_000_000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExecutionOptions {
+    pub limits: Limits,
+    pub decimal_precision: NonZeroU64,
+}
+
+impl Default for ExecutionOptions {
+    fn default() -> Self {
+        Self {
+            limits: Limits::default(),
+            decimal_precision: NonZeroU64::new(100).expect("100 is non-zero"),
         }
     }
 }
@@ -157,7 +173,7 @@ impl std::error::Error for ExecutionError {}
 /// Language output is written only to `output`; this function never prints or
 /// terminates the process, which makes it suitable for tests and embedding.
 pub fn execute<W: Write>(source: &str, output: W) -> Result<(), ExecutionError> {
-    execute_with_limits(source, output, Limits::default())
+    execute_with_options(source, output, ExecutionOptions::default())
 }
 
 pub fn execute_with_limits<W: Write>(
@@ -165,6 +181,26 @@ pub fn execute_with_limits<W: Write>(
     output: W,
     limits: Limits,
 ) -> Result<(), ExecutionError> {
+    let precision = Limits::default()
+        .max_decimal_precision
+        .min(limits.max_decimal_precision)
+        .max(1);
+    execute_with_options(
+        source,
+        output,
+        ExecutionOptions {
+            limits,
+            decimal_precision: NonZeroU64::new(precision).expect("precision is at least one"),
+        },
+    )
+}
+
+pub fn execute_with_options<W: Write>(
+    source: &str,
+    output: W,
+    options: ExecutionOptions,
+) -> Result<(), ExecutionError> {
+    let limits = options.limits;
     if source.chars().count() > limits.max_source_chars {
         return Err(ExecutionError::Runtime(RuntimeError::limit(
             format!(
@@ -218,7 +254,9 @@ pub fn execute_with_limits<W: Write>(
     }
     let symbols = scanner.into_symbols();
     let program = Parser::new(tokens).parse().map_err(ExecutionError::Parse)?;
-    Interpreter::with_limits(symbols, output, limits)
-        .run(&program)
-        .map_err(ExecutionError::Runtime)
+    let mut interpreter = Interpreter::with_limits(symbols, output, limits);
+    interpreter
+        .set_decimal_precision(options.decimal_precision)
+        .map_err(ExecutionError::Runtime)?;
+    interpreter.run(&program).map_err(ExecutionError::Runtime)
 }

@@ -1,6 +1,6 @@
 # SCAS
 
-SCAS is a dynamically typed interpreted language and an early-stage computer
+SCAS is a dynamically typed interpreted language and computer
 algebra system written in Rust. It supports arbitrary-size integers, exact
 rationals, arbitrary-precision decimals, arrays, closures, control flow, and
 numeric and bitwise operators.
@@ -18,25 +18,27 @@ multiline blocks receive a continuation prompt.
 ```text
 $ cargo run --quiet
 scas 0.1.0 — type :help for help, :quit to exit
-> 1 / 2 + 1 / 3
-5/6
-> :precision 200
-decimal precision: 200 digits
+> f(x) = x^2 + 2x + 1
+> derivative(f(x), x)
+2 * x + 2
+> solve(f(x), x)
+[-1]
 ```
 
-Use `:help`, `:clear`, `:precision N`, or `:quit` to control the REPL.
+Use `:help`, `:load`, `:definitions`, `:history`, `:reset`, `:clear`,
+`:precision N`, or `:quit` to control the REPL.
 
 When standard input is redirected, SCAS reads and executes a complete program.
 From the repository root, run a `.scas` file with:
 
 ```sh
-cargo run --quiet < path/to/program.scas
+cargo run --quiet -- path/to/program.scas
 ```
 
 For example, the included sample can be run with:
 
 ```sh
-cargo run --quiet < tests/should_pass/test1.scas
+cargo run --quiet -- tests/should_pass/language_tour.scas
 ```
 
 You can also pipe a short program directly into the interpreter:
@@ -49,8 +51,24 @@ To build once and run the compiled executable:
 
 ```sh
 cargo build --release
-./target/release/scas < path/to/program.scas
+./target/release/scas path/to/program.scas
 ```
+
+`scas --help` lists decimal-precision and execution-limit flags; `--version`
+prints the release version. Redirection and pipelines remain supported.
+
+### Current examples
+
+The executable examples under [`tests/should_pass`](tests/should_pass) are
+checked on every test run:
+
+| Example | Demonstrates |
+| --- | --- |
+| `language_tour.scas` | exact arithmetic, symbolic functions, `else if`, and semicolon-style `for` |
+| `symbolic_algebra.scas` | collection, expansion, factoring, partial fractions, Horner form, solving, and identities |
+| `calculus_and_domains.scas` | assumptions, substitution, derivatives, integrals, and unevaluated fallbacks |
+| `matrices_and_closures.scas` | matrix literals, comma indexing, arrays, and lexical closures |
+| `documented_calculation.scas` | `///` prose, render blocks and lines, and `=>` markers |
 
 Successful batch programs exit with status 0. Input, lexical, syntax, and
 runtime failures are written to standard error and exit with status 1. Syntax
@@ -79,19 +97,14 @@ Blocks do not. A `for` header uses C-style semicolon separators:
 fourth semicolon.
 
 ```scas
-// Variables and values
-let name = "SCAS";
-let count = 3;
-let enabled = true;
-let nothing = nil;
+// Exact arithmetic and symbolic expressions coexist.
+let probability = 1 / 3 + 1 / 6;
+let model = 2x^2 - 3x + 1;
+let samples = [1, 2, 3; 4, 5, 6];
 
-// Reassignment and compound assignment
-count += 2;
-count *= 4;
-
-// Output
-print(name + " example");
-print(count);
+print(probability);     // 1/2
+print(factor(model));   // (x - 1/2) * (x - 1) * 2
+print(samples[1, 2]);   // 6
 ```
 
 Variables declared without a value are initialized to `nil`:
@@ -104,18 +117,26 @@ Functions may have a concise expression body or a normal block body. Block
 functions return `nil` when execution reaches the end without `return`:
 
 ```scas
-fn add(a, b) = a + b;
-fn square(x) = x ^ 2;
+fn gradient_step(value, gradient, rate) = value - rate * gradient;
 
-fn factorial(n) {
-    if n <= 1 {
-        return 1;
-    }
-    return n * factorial(n - 1);
+fn make_shift(offset) {
+    fn shift(value) = value + offset;
+    return shift;
 }
 
-let answer = add(square(4), 5);
-print(answer);
+fn classify(score) {
+    if score >= 90 {
+        return "excellent";
+    } else if score >= 75 {
+        return "strong";
+    }
+    return "developing";
+}
+
+let shift_by_five = make_shift(5);
+print(gradient_step(10, 4, 1 / 2)); // 8
+print(shift_by_five(3));            // 8
+print(classify(87));                // strong
 ```
 
 For mathematical functions, the `fn` keyword is optional when using an
@@ -124,36 +145,32 @@ become symbolic values. Calling a function with symbolic arguments substitutes
 them while still evaluating every numeric part:
 
 ```scas
-f(x, y) = 2x + 3y;
+f(x) = x^3 - 3x + 1;
 
-print(f);           // f(x, y) = 2 * x + 3 * y
-print(f(x ^ 2, y)); // 2 * x ^ 2 + 3 * y
-print(f(2, y));     // 4 + 3 * y
-print(f(2, 5));     // 19
-print(2(x + 1));    // 2 * (x + 1)
+print(f);                    // f(x) = x ^ 3 - 3 * x + 1
+print(derivative(f(x), x));  // 3 * x ^ 2 - 3
+print(subs(f(x), x, 2));     // 3
+print(2(x + 1));             // 2 * (x + 1)
 ```
 
 Conditionals and loops use braces:
 
 ```scas
-let total = 0;
+let sum_of_squares = 0;
 
-for let i = 0; i < 5; i += 1 {
-    if i % 2 == 0 {
-        total += i;
-    } else {
-        continue;
-    }
+for let i = 1; i <= 5; i += 1 {
+    sum_of_squares += i^2;
 }
 
-while total < 10 {
-    total += 1;
-    if total == 8 {
-        break;
-    }
+if sum_of_squares > 50 {
+    print("large");
+} else if sum_of_squares > 25 {
+    print("medium");
+} else {
+    print("small");
 }
 
-print(total);
+print(sum_of_squares); // 55
 ```
 
 Blocks create a new scope. A variable declared inside `{ ... }` is not
@@ -171,6 +188,11 @@ subtraction, shifts, bitwise `&`, `xor`, bitwise `|`, comparisons, equality,
 `and`, then `or`. Adjacency (`2x`, `2(x + 1)`, `(x + 1)y`) means
 multiplication. A named function call such as `f(x)` takes precedence over
 adjacency; a numeric value is not callable, so `2(x)` is multiplication.
+
+The experimental self-documenting grammar recognizes `///` prose, shared-scope
+render blocks `\{ ... \}`, render lines `\[ expression \]`, and the `=>`
+show-result marker. These forms execute today; the LaTeX assembly backend is
+tracked separately in [`docs/DOCUMENTER.md`](docs/DOCUMENTER.md).
 
 ## Values and operators
 
@@ -229,19 +251,25 @@ produce runtime errors rather than complex results.
 Symbolic inputs remain symbolic and safe elementary identities are applied:
 
 ```scas
-print(sqrt(x^2)); // abs(x)
-print(sin(-x));   // -sin(x)
-print(cos(-x));   // cos(x)
+print(sqrt(x^2)); // abs(x), because the sign of x is unknown
+assume_nonnegative(x);
+print(sqrt(x^2)); // x
+print(sin(t)^2 + cos(t)^2); // 1
 ```
 
 Polynomial and rational-expression tools are explicit so ordinary
 simplification does not unexpectedly expand an expression:
 
 ```scas
-print(expand((x + y)^2));        // x^2 + 2*x*y + y^2
-print(factor(x^2 - y^2));        // (x-y)*(x+y)
-print(apart(1 / (x^2 - 1)));     // partial fractions
-print(horner(2x^3 - 6x^2 + 1));  // Horner form
+print(collect(x*x + 2x + x^2, x)); // 2*x^2 + 2*x
+print(expand((x + y)^3));           // canonical polynomial expansion
+print(factor(x^3 - y^3));           // difference of cubes
+print(apart(1 / (x^2 - 1)));        // partial fractions
+print(horner(2x^3 - 6x^2 + 1));     // Horner form
+print(subs(x^2 + 2x + 1, x, 3));    // 16
+print(solve(x^2 - 5x + 6, x));      // [2, 3]
+print(derivative(x^3 + sin(x), x));  // 3*x^2 + cos(x)
+print(integral(sqrt(x), x));         // unevaluated safe fallback
 ```
 
 `expand` uses a canonical sparse multivariate polynomial representation.
@@ -261,6 +289,9 @@ print(values + [6, 7]);
 
 fn second(xs) = xs[1];
 print(second([10, 20]));
+
+let matrix = [1, 2; 3, 4];
+print(matrix[1, 0]); // 3; equivalent to matrix[1][0]
 ```
 
 | Category | Operators |
@@ -293,10 +324,11 @@ if let Err(error) = scas::execute(source, &mut output) {
 assert_eq!(String::from_utf8(output).unwrap(), "5/6\n");
 ```
 
-`execute` creates a fresh environment for each call. Embedders that need a
-persistent session or custom decimal precision can use the public `Scanner`,
-`Parser`, and `Interpreter` types directly. Interpreter output is also injected
-through a `Write` implementation; it never relies on global standard output.
+`execute` creates a fresh environment for each call. `execute_with_options`
+configures decimal precision and resource limits. Embedders that need a
+persistent session can use the public `Scanner`, `Parser`, and `Interpreter`
+types directly. Interpreter output is injected through a `Write`
+implementation; it never relies on global standard output.
 
 ## Development
 
@@ -318,3 +350,5 @@ Grammar notes are available in [`src/grammar.org`](src/grammar.org), and
 additional example programs are under [`tests/should_pass`](tests/should_pass).
 The symbolic simplification roadmap is documented in
 [`docs/algebraic_identities.md`](docs/algebraic_identities.md).
+See also the [language reference](docs/language.md), [error guide](docs/errors.md),
+[architecture notes](docs/architecture.md), and [contribution guide](CONTRIBUTING.md).

@@ -41,6 +41,34 @@ impl Parser {
     }
 
     fn statement_kind(&mut self) -> ParseResult<StatementKind> {
+        if self.match_token(&[TokenType::DocComment]) {
+            return Ok(StatementKind::DocComment(Self::literal_text(
+                self.previous(),
+            )?));
+        }
+        if self.match_token(&[TokenType::RenderLeftBrace]) {
+            let mut statements = Vec::new();
+            while !self.check(TokenType::RenderRightBrace) && !self.is_at_end() {
+                statements.push(self.statement()?);
+            }
+            self.consume(
+                TokenType::RenderRightBrace,
+                "expected `\\}` after render block",
+            )?;
+            return Ok(StatementKind::RenderBlock(statements));
+        }
+        if self.match_token(&[TokenType::RenderLeftBracket]) {
+            let expression = self.expression()?;
+            let show_result = self.match_token(&[TokenType::FatArrow]);
+            self.consume(
+                TokenType::RenderRightBracket,
+                "expected `\\]` after render line",
+            )?;
+            return Ok(StatementKind::RenderLine {
+                expression,
+                show_result,
+            });
+        }
         if self.match_token(&[TokenType::Let]) {
             return self.variable_declaration();
         }
@@ -168,11 +196,16 @@ impl Parser {
 
         let mut else_branch = None;
         if self.match_token(&[TokenType::Else]) {
-            self.consume(TokenType::LeftBrace, "expected `{` before `else` body")?;
-            else_branch = Some(Box::new(Statement::new(
-                self.previous_span(),
-                StatementKind::Block(self.block()?),
-            )));
+            let span = self.peek_span();
+            if self.match_token(&[TokenType::If]) {
+                else_branch = Some(Box::new(Statement::new(span, self.if_statement()?)));
+            } else {
+                self.consume(TokenType::LeftBrace, "expected `if` or `{` after `else`")?;
+                else_branch = Some(Box::new(Statement::new(
+                    self.previous_span(),
+                    StatementKind::Block(self.block()?),
+                )));
+            }
         }
 
         Ok(StatementKind::If {
@@ -251,6 +284,13 @@ impl Parser {
 
     fn expression_statement(&mut self) -> ParseResult<StatementKind> {
         let stmt = self.parse_assignment_or_expr()?;
+        if self.match_token(&[TokenType::FatArrow]) {
+            let StatementKind::Expr(expression) = stmt else {
+                return Err(self.error("`=>` can only follow an expression"));
+            };
+            self.consume(TokenType::Semicolon, "expected `;` after `=>`")?;
+            return Ok(StatementKind::Show(expression));
+        }
         self.consume(TokenType::Semicolon, "expected `;` after statement")?;
         Ok(stmt)
     }
@@ -434,12 +474,17 @@ impl Parser {
                     args,
                 };
             } else if self.match_token(&[TokenType::LeftBracket]) {
-                let index = self.expression()?;
+                let mut indices = vec![self.expression()?];
+                while self.match_token(&[TokenType::Comma]) {
+                    indices.push(self.expression()?);
+                }
                 self.consume(TokenType::RightBracket, "expected `]` after array index")?;
-                expr = Expr::Index {
-                    target: Box::new(expr),
-                    index: Box::new(index),
-                };
+                for index in indices {
+                    expr = Expr::Index {
+                        target: Box::new(expr),
+                        index: Box::new(index),
+                    };
+                }
             } else {
                 break;
             }
@@ -474,11 +519,15 @@ impl Parser {
             return Ok(Expr::Variable(self.previous().symbol));
         }
         if self.match_token(&[TokenType::LeftBracket]) {
-            let mut elements = Vec::new();
+            let mut rows = vec![Vec::new()];
             if !self.check(TokenType::RightBracket) {
                 loop {
-                    elements.push(self.expression()?);
-                    if !self.match_token(&[TokenType::Comma]) {
+                    rows.last_mut()
+                        .expect("matrix always has a row")
+                        .push(self.expression()?);
+                    if self.match_token(&[TokenType::Semicolon]) {
+                        rows.push(Vec::new());
+                    } else if !self.match_token(&[TokenType::Comma]) {
                         break;
                     }
                     if self.check(TokenType::RightBracket) {
@@ -487,7 +536,14 @@ impl Parser {
                 }
             }
             self.consume(TokenType::RightBracket, "expected `]` after array literal")?;
-            return Ok(Expr::Array(elements));
+            if rows.len() == 1 {
+                return Ok(Expr::Array(rows.pop().expect("single array row")));
+            }
+            let columns = rows[0].len();
+            if columns == 0 || rows.iter().any(|row| row.len() != columns) {
+                return Err(self.error("matrix rows must have the same non-zero length"));
+            }
+            return Ok(Expr::Array(rows.into_iter().map(Expr::Array).collect()));
         }
         if self.match_token(&[TokenType::LeftParen]) {
             let expr = self.expression()?;

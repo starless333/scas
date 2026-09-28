@@ -145,6 +145,44 @@ fn control_flow_closures_scopes_arrays_and_function_arity_work() {
 }
 
 #[test]
+fn documenter_prerequisite_grammar_is_executable() {
+    assert_eq!(
+        output(
+            r#"
+            print(3x^2);
+            let branch = 0;
+            if false { branch = 1; } else if true { branch = 2; } else { branch = 3; }
+            print(branch);
+            let A = [1, 2; 3, 4];
+            print(A[1, 0]);
+            let x_1 = 7;
+            print(x_1);
+            "#,
+        ),
+        "3 * x ^ 2\n2\n3\n7\n",
+    );
+}
+
+#[test]
+fn documenter_markers_parse_and_execute_with_shared_scope() {
+    assert_eq!(
+        output(
+            r#"
+            /// A documented calculation with #{ a } interpolation text.
+            //// This remains an ordinary comment.
+            \{
+                let a = 2;
+                a + 1 =>;
+            \}
+            \[ a^2 => \]
+            print(a + 1);
+            "#,
+        ),
+        "3\n",
+    );
+}
+
+#[test]
 fn runtime_failures_have_stable_messages() {
     let cases = [
         ("print(1 / 0);", "division by zero in '/'"),
