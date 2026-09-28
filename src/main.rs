@@ -16,6 +16,8 @@ OPTIONS:
     -h, --help                 Show this help
     -V, --version              Show the version
     --precision N              Decimal significant digits
+    --max-transcendental-precision N
+                               Transcendental-function digit budget
     --max-steps N              Evaluation step budget
     --max-call-depth N         Function recursion limit
     --max-exponent N           Exponent magnitude limit
@@ -53,6 +55,8 @@ fn main() -> ExitCode {
                 }),
                 "--max-steps" => parse_number(&argument, args.next())
                     .map(|value| options.limits.max_steps = value),
+                "--max-transcendental-precision" => parse_number(&argument, args.next())
+                    .map(|value| options.limits.max_transcendental_precision = value),
                 "--max-call-depth" => parse_number(&argument, args.next())
                     .map(|value| options.limits.max_call_depth = value),
                 "--max-exponent" => parse_number(&argument, args.next())

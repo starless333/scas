@@ -29,6 +29,11 @@ pub struct Limits {
     pub max_exponent: u32,
     pub max_shift: usize,
     pub max_decimal_precision: u64,
+    /// Maximum significant-digit precision accepted by transcendental and
+    /// special-function algorithms. These operations are substantially more
+    /// expensive than ordinary decimal arithmetic, so they have a separate
+    /// deterministic budget.
+    pub max_transcendental_precision: u64,
     pub max_decimal_scale: u64,
     pub max_number_bits: u64,
 }
@@ -44,6 +49,7 @@ impl Default for Limits {
             max_exponent: 100_000,
             max_shift: 1_000_000,
             max_decimal_precision: 10_000,
+            max_transcendental_precision: 2_000,
             max_decimal_scale: 100_000,
             max_number_bits: 8_000_000,
         }

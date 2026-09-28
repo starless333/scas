@@ -3,7 +3,7 @@ use crate::ast::statement::FunctionBody;
 use crate::ast::unary_op::UnaryOp;
 use crate::interpreter::environment::Env;
 use crate::lexer::symbol::Symbol;
-use crate::number::Number;
+use crate::number::{MathConstant, Number};
 use std::rc::Rc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +48,7 @@ pub enum Builtin {
     Sign,
     Degrees,
     Radians,
+    Evalf,
     Simplify,
     Expand,
     Factor,
@@ -60,6 +61,10 @@ pub enum Builtin {
     Integral,
     AssumeNonzero,
     AssumeNonnegative,
+    AssumePositive,
+    AssumeNegative,
+    AssumeInteger,
+    AssumeReal,
 }
 
 impl Builtin {
@@ -104,6 +109,7 @@ impl Builtin {
         ("sign", Builtin::Sign),
         ("degrees", Builtin::Degrees),
         ("radians", Builtin::Radians),
+        ("evalf", Builtin::Evalf),
         ("simplify", Builtin::Simplify),
         ("expand", Builtin::Expand),
         ("factor", Builtin::Factor),
@@ -116,6 +122,10 @@ impl Builtin {
         ("integral", Builtin::Integral),
         ("assume_nonzero", Builtin::AssumeNonzero),
         ("assume_nonnegative", Builtin::AssumeNonnegative),
+        ("assume_positive", Builtin::AssumePositive),
+        ("assume_negative", Builtin::AssumeNegative),
+        ("assume_integer", Builtin::AssumeInteger),
+        ("assume_real", Builtin::AssumeReal),
     ];
 
     pub fn name(self) -> &'static str {
@@ -141,6 +151,7 @@ pub struct UserFunction {
 #[derive(Debug, Clone)]
 pub enum SymbolicExpr {
     Number(Number),
+    Constant(MathConstant),
     Variable(Symbol),
     Unary {
         op: UnaryOp,
@@ -161,6 +172,7 @@ impl SymbolicExpr {
     pub fn equals(&self, other: &SymbolicExpr) -> bool {
         match (self, other) {
             (SymbolicExpr::Number(a), SymbolicExpr::Number(b)) => a == b,
+            (SymbolicExpr::Constant(a), SymbolicExpr::Constant(b)) => a == b,
             (SymbolicExpr::Variable(a), SymbolicExpr::Variable(b)) => a == b,
             (
                 SymbolicExpr::Unary { op: a_op, expr: a },
@@ -236,6 +248,7 @@ impl Value {
             Value::Number(Number::Integer(_)) => "integer",
             Value::Number(Number::Rational(_)) => "rational",
             Value::Number(Number::Decimal(_)) => "decimal",
+            Value::Number(Number::Complex(_)) => "complex",
             Value::Str(_) => "string",
             Value::Bool(_) => "bool",
             Value::Nil => "nil",

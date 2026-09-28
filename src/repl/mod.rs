@@ -256,7 +256,7 @@ mod tests {
         let output = String::from_utf8(output).unwrap();
 
         assert!(!output.contains("runtime error"), "{output}");
-        assert!(output.contains("> 2\n> 0\n> 1\n> 1\n> 3\n> 24\n> 1\n> 3.141592653589793\n> "));
+        assert!(output.contains("> 2\n> 0\n> 1\n> 1\n> 3\n> 24\n> 1\n> pi\n> "));
     }
 
     #[test]
@@ -269,7 +269,7 @@ mod tests {
         let output = String::from_utf8(output).unwrap();
 
         assert!(!output.contains("runtime error"), "{output}");
-        assert!(output.contains("abs(x)"));
+        assert!(output.contains("sqrt(x ^ 2)"));
         assert!(output.contains("-sin(x)"));
         assert!(output.contains("x ^ 2 + 2 * x * y + y ^ 2"));
         assert!(output.contains("(x - y) * (x + y)"));

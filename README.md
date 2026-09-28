@@ -2,8 +2,8 @@
 
 SCAS is a dynamically typed interpreted language and computer
 algebra system written in Rust. It supports arbitrary-size integers, exact
-rationals, arbitrary-precision decimals, arrays, closures, control flow, and
-numeric and bitwise operators.
+rationals, arbitrary-precision real and complex decimals, arrays, closures,
+control flow, and numeric and bitwise operators.
 
 ## Requirements
 
@@ -230,7 +230,7 @@ subscripts, vectors, matrices, and raw LaTeX strings.
 
 ## Values and operators
 
-SCAS has integers, rationals, decimals, symbolic expressions, arrays, strings,
+SCAS has integers, rationals, decimals, complex numbers, symbolic expressions, arrays, strings,
 booleans (`true` and `false`), `nil`, and functions. Integer and decimal
 literals can be arbitrarily large. Integers may use `0b`, `0o`, and `0x`
 prefixes, while decimals support scientific notation such as `1.25e+40`.
@@ -245,19 +245,20 @@ print(1.0 / 3);    // decimal, rounded using the active precision
 print(1 / 2 == 0.5); // true
 ```
 
-The numeric promotion order is `Integer -> Rational -> Decimal`. Integer and
-rational arithmetic is exact. Decimal addition, subtraction, multiplication,
-and positive integral powers preserve all digits. Division and negative decimal
-powers use the active significant-digit precision, which defaults to 100 and
-can be changed in the REPL with `:precision N`.
+The real numeric promotion order is `Integer -> Rational -> Decimal`; a complex
+operand promotes the operation to `Complex`. Integer and rational arithmetic is
+exact. Decimal addition, subtraction, multiplication, and positive integral
+powers preserve all digits. Division and non-integral powers use the active
+significant-digit precision, which defaults to 100 and can be changed in the
+REPL with `:precision N`.
 
 ## Resource limits
 
 Batch execution uses deterministic defaults to prevent runaway programs:
 1,000,000 source characters, 250,000 tokens, 256 nested delimiters, 1,000,000
 evaluation steps, 256 nested function calls, exponent magnitude 100,000, shift
-amount 1,000,000, decimal precision 10,000 digits, decimal scale 100,000, and
-numeric values 8,000,000 bits. Crossing a budget
+amount 1,000,000, decimal precision 10,000 digits, transcendental precision
+2,000 digits, decimal scale 100,000, and numeric values 8,000,000 bits. Crossing a budget
 returns a `limit error`; it never terminates the process by panic. Embedders can
 override every value with `execute_with_limits(source, output, Limits { ... })`.
 The REPL applies the same execution, recursion, numeric, and precision defaults
@@ -265,7 +266,8 @@ to each submission.
 
 ## Standard mathematics and algebra
 
-SCAS provides real-valued mathematical constants and functions:
+SCAS provides exact symbolic constants, arbitrary-precision elementary
+functions, and real special functions:
 
 - Constants: `pi`, `e`, `tau`
 - Powers and logs: `sqrt`, `cbrt`, `exp`, `ln`, `log`, `log10`, `log2`
@@ -277,15 +279,26 @@ SCAS provides real-valued mathematical constants and functions:
   `hypot`, `gcd`, `lcm`, `degrees`, `radians`
 
 `log(x)` and `ln(x)` are natural logarithms; `log(x, base)` uses an explicit
-base. Exact special values such as `sqrt(4)`, `exp(0)`, and `cos(0)` remain
-exact. General transcendental results currently use real `f64` evaluation and
-are converted to a 16-significant-digit decimal. Inputs outside the real domain
-produce runtime errors rather than complex results.
+base. Exact inputs stay exact or symbolic: `sqrt(4)` is `2`, `sin(pi/6)` is
+`1/2`, and `sqrt(2)` remains `sqrt(2)`. Use `evalf(expression)` to request a
+decimal approximation at the active precision. Decimal inputs request numeric
+evaluation directly.
+
+Elementary functions use arbitrary-precision decimal real and complex
+arithmetic; they never pass through a machine `f64`. Results outside the real
+domain are promoted to principal complex values, so `sqrt(-1)` is `i` and
+`evalf(ln(-1))` is `pi*i` to the requested precision. `gamma`, `lgamma`, `erf`,
+and `erfc` are arbitrary-precision real functions; complex arguments to those
+four functions are explicitly unsupported. See
+[`docs/math-functions.md`](docs/math-functions.md) for branch conventions,
+exactness, precision, and the complete support table.
 
 Symbolic inputs remain symbolic and safe elementary identities are applied:
 
 ```scas
-print(sqrt(x^2)); // abs(x), because the sign of x is unknown
+print(sqrt(x^2)); // retained: an unconstrained symbol may be complex
+assume_real(x);
+print(sqrt(x^2)); // abs(x)
 assume_nonnegative(x);
 print(sqrt(x^2)); // x
 print(sin(t)^2 + cos(t)^2); // 1
@@ -303,7 +316,7 @@ print(horner(2x^3 - 6x^2 + 1));     // Horner form
 print(subs(x^2 + 2x + 1, x, 3));    // 16
 print(solve(x^2 - 5x + 6, x));      // [2, 3]
 print(derivative(x^3 + sin(x), x));  // 3*x^2 + cos(x)
-print(integral(sqrt(x), x));         // unevaluated safe fallback
+print(integral(sqrt(x), x));         // 2*sqrt(x)^3/3
 ```
 
 `expand` uses a canonical sparse multivariate polynomial representation.
@@ -337,7 +350,9 @@ print(matrix[1, 0]); // 3; equivalent to matrix[1][0]
 | Assignment | `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `^=`, `&=`, `|=` |
 
 The `+` operator adds numbers, joins two strings, or concatenates two arrays.
-Bitwise operations require integers, and exponents must be integers. Every
+Bitwise operations require integers. Integral exponents use exact arithmetic;
+exact non-integral powers stay symbolic when no exact root exists, while a
+decimal exponent requests an arbitrary-precision numeric result. Every
 value except `false` and `nil` is treated as true in a condition. Logical `and`
 and `or` short-circuit.
 

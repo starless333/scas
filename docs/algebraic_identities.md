@@ -7,8 +7,8 @@ behavior.
 The simplifier must distinguish unconditional identities from identities that
 need domain assumptions. For example, `x / x = 1` requires `x != 0`, and
 `sqrt(x^2) = x` is false over the reals when `x < 0` (the result is `abs(x)`).
-A future assumptions system should track facts such as `real(x)`, `x > 0`, and
-`integer(n)` instead of applying conditional rewrites blindly.
+The assumptions system tracks facts such as `real(x)`, `x > 0`, `x != 0`, and
+`integer(x)` instead of applying conditional rewrites blindly.
 
 ## Canonical arithmetic
 
@@ -36,17 +36,18 @@ A future assumptions system should track facts such as `real(x)`, `x > 0`, and
 - [x] `x^a * x^b -> x^(a + b)` for integer exponents
 - [x] `(x^a)^b -> x^(a*b)` for integer exponents
 - [x] Collect rational and decimal coefficients as well as integers
-- [x] `x^a / x^b -> x^(a-b)` under the generic-nonzero convention
+- [x] `x^a / x^b -> x^(a-b)` only when `x != 0` is known
 - [x] `x^n * y^n -> (x*y)^n` for integer `n`
 - [x] Expand `(x + y)^n` for non-negative integer `n` via `expand`
 - [x] Factor common terms: `a*x + a*y -> a*(x + y)` via `factor`
 
 ## Cancellation and fractions
 
-- [x] `x / x -> 1` under the generic-nonzero convention
-- [x] `x % x -> 0` under the generic-nonzero convention
+- [x] `x / x -> 1` only when `x != 0` is known
+- [x] `x % x -> 0` only when `x != 0` is known
 - [x] Exact integer division produces a reduced rational
-- [x] Cancel common factors in rational symbolic expressions
+- [x] Cancel common factors in rational symbolic expressions only when the
+      cancelled denominator is known nonzero
 - [x] Normalize a symbolic fraction to one numerator and denominator
 - [x] Keep denominator signs positive
 - [x] `a/b + c/d -> (a*d + b*c)/(b*d)` followed by GCD cancellation
@@ -72,20 +73,21 @@ A future assumptions system should track facts such as `real(x)`, `x > 0`, and
 ## Roots, absolute values, and powers
 
 - [x] `sqrt(0) -> 0`, `sqrt(1) -> 1`
-- [x] `sqrt(x^2) -> abs(x)` for real `x`
-- [x] `sqrt(x^2) -> x` after `assume_nonnegative(x)`; otherwise use `abs(x)`
+- [x] `sqrt(x^2) -> abs(x)` only for known real `x`
+- [x] `sqrt(x^2) -> x` after `assume_nonnegative(x)`; otherwise retain the
+      expression unless realness is known
 - [x] Do not distribute `sqrt(a*b)` without valid domain assumptions
 - [x] `abs(-x) -> abs(x)`
 - [x] `abs(x) -> x` after `assume_nonnegative(x)`
-- [x] `abs(x)^2 -> x^2` in the real domain
+- [x] `abs(x)^2 -> x^2` only when `x` is known real
 - [x] Normalize exact numeric roots when numerator and denominator are perfect powers
 - [x] Avoid unsafe rewrites of fractional powers across negative/complex values
 
 ## Exponentials and logarithms
 
 - [x] `exp(0) -> 1`, `log(1) -> 0`
-- [x] `log(exp(x)) -> x` in the documented real-domain policy
-- [x] `exp(log(x)) -> x` under the documented positive-real convention
+- [x] `log(exp(x)) -> x` only when `x` is known real
+- [x] `exp(log(x)) -> x` only when `x` is known nonzero
 - [x] `exp(a + b) -> exp(a)*exp(b)` when `expand` is requested
 - [x] Do not expand `log(a*b)` without positive-real assumptions
 - [x] Do not expand `log(a^n)` without branch/domain assumptions
@@ -97,10 +99,11 @@ A future assumptions system should track facts such as `real(x)`, `x > 0`, and
 - [x] `sin(-x) -> -sin(x)`, `cos(-x) -> cos(x)`
 - [x] `sin(x)^2 + cos(x)^2 -> 1`
 - [x] `1 + tan(x)^2 -> sec(x)^2`
-- [x] Exact common values at rational multiples of `pi` through real evaluation
+- [x] Exact common values at rational multiples of `pi` without numerical evaluation
 - [x] Angle-sum and double-angle expansion through `expand`
-- [x] Keep trigonometric form in the real-only domain (complex exponential form is unsupported)
-- [x] Respect poles and the documented real-domain behavior
+- [x] Keep exact trigonometric form symbolic; numerical complex arguments use
+      principal complex evaluation
+- [x] Respect exact poles and principal complex branches
 
 ## Calculus-oriented rewrites
 
@@ -110,8 +113,11 @@ A future assumptions system should track facts such as `real(x)`, `x > 0`, and
 - [x] Simplify derivatives immediately after constructing them
 - [x] Recognize polynomial, reciprocal, exponential, sine, and cosine antiderivatives
 - [x] Pull constant factors through integrals and recognize affine substitution
-  for powers, reciprocals, exponentials, sine, cosine, and tangent
+  for powers, reciprocals, roots, exponentials, sine, cosine, tangent,
+  hyperbolic sine/cosine, and standard secant/cosecant products
 - [x] Differentiate general powers plus inverse-trigonometric and hyperbolic functions
+- [x] Differentiate `erf`, `erfc`, logarithms with fixed bases, roots, and
+      assumption-qualified absolute values
 - [ ] Add bounded integration by parts for polynomial-times-exponential and
   polynomial-times-trigonometric forms
 - [ ] Integrate rational functions through partial-fraction decomposition

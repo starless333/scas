@@ -196,10 +196,6 @@ fn runtime_failures_have_stable_messages() {
             "shift amount must be a non-negative machine-sized integer",
         ),
         (
-            "print(2 ^ 1.5);",
-            "'^' requires a numeric base and an integer exponent",
-        ),
-        (
             "print(2 ^ 9223372036854775808);",
             "exponent magnitude exceeds the limit of 100000",
         ),

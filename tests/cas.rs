@@ -42,7 +42,10 @@ fn canonical_arithmetic_collects_terms_powers_and_factors() {
             print(x / -2);
             "#,
         ),
-        "2 * x + y\nx * y * z\n5/6 * x\n3/4 * x\n(x * y) ^ 2\nx ^ 3\ny / z\n-x / 2\n",
+        concat!(
+            "2 * x + y\nx * y * z\n5/6 * x\n3/4 * x\n(x * y) ^ 2\n",
+            "x ^ 5 / x ^ 2\nx * y / (x * z)\n-x / 2\n",
+        ),
     );
 }
 
@@ -67,7 +70,7 @@ fn substitution_solving_and_calculus_have_safe_fallbacks() {
             "2 + 3 * x ^ 2 + cos(x)\n",
             "cos(x) + sec(x) ^ 2\n",
             "(x ^ 3 + 6 * x) / 3\n",
-            "integral(sqrt(x), x)\n",
+            "2 * sqrt(x) ^ 3 / 3\n",
         ),
     );
 }
@@ -119,7 +122,7 @@ fn domain_documented_transcendental_and_absolute_identities_simplify() {
             "#,
         ),
         concat!(
-            "x ^ 2\nx\nx\nexp(x + y)\n1\nsec(t) ^ 2\n",
+            "abs(x) ^ 2\nlog(exp(x))\nexp(log(x))\nexp(x + y)\n1\nsec(t) ^ 2\n",
             "exp(x) * exp(y)\n",
             "cos(x) * sin(y) + cos(y) * sin(x)\n",
             "x\nx\n",
@@ -141,8 +144,8 @@ fn fractions_are_combined_reduced_and_checked() {
         ),
         concat!(
             "(a * d + b * c) / (b * d)\n",
-            "x + 1\n",
-            "x\n",
+            "(x ^ 2 - 1) / (x - 1)\n",
+            "(x ^ 3 - x) / (x ^ 2 - 1)\n",
             "-(1/2 / (x + 1)) + 1/2 / (x - 1)\n",
             "1 / (x + 2) + 2 / (x + 1)\n",
         ),
@@ -244,32 +247,28 @@ fn standard_math_library_has_numeric_and_symbolic_behavior() {
             "#,
         ),
         concat!(
-            "3.141592653589793\n2.718281828459045\n6.283185307179586\n",
+            "pi\ne\ntau\n",
             "3/2\n2\n3/4\n1000000000000000\n3\n1\n1\n3\n2\n3\n",
             "0\n1\n0\n0\n-1\n0\n0\n0\n0\n0\n1\n0\n0\n0\n0\n",
             "1\n2\n2\n-1\n3/2\n2\n5\n6\n36\n24\n0\n1\n0\n1\n1\n1\n-1\n",
-            "180\n3.141592653589793\nabs(x)\n-sin(x)\ncos(x)\n",
+            "180\npi\nsqrt(x ^ 2)\n-sin(x)\ncos(x)\n",
         ),
     );
 }
 
 #[test]
-fn standard_math_library_reports_domains_and_arity() {
-    assert_eq!(
-        runtime_error("print(sqrt(-1));"),
-        "sqrt argument -1 is outside the real-number domain",
-    );
+fn standard_math_library_reports_poles_and_arity() {
     assert_eq!(
         runtime_error("print(log(1, 1));"),
-        "log domain requires value > 0, base > 0, and base != 1",
-    );
-    assert_eq!(
-        runtime_error("print(asin(2));"),
-        "asin argument 2 is outside the real-number domain",
+        "log base must be nonzero and different from 1",
     );
     assert_eq!(
         runtime_error("print(tan(pi/2));"),
-        "tan argument 1.5707963267948965 is outside the real-number domain",
+        "tan is undefined at an odd multiple of pi/2",
+    );
+    assert_eq!(
+        runtime_error("print(evalf(gamma(-1)));"),
+        "gamma failed: gamma has a pole at non-positive integers",
     );
     assert_eq!(
         runtime_error("print(sin());"),

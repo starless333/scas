@@ -65,7 +65,9 @@ fn fixtures(directory: &str) -> Vec<PathBuf> {
 }
 
 fn text(bytes: &[u8]) -> String {
-    String::from_utf8(bytes.to_vec()).expect("scas output should be UTF-8")
+    String::from_utf8(bytes.to_vec())
+        .expect("scas output should be UTF-8")
+        .replace("\r\n", "\n")
 }
 
 fn assert_exit_one(output: &Output) {
@@ -99,7 +101,7 @@ fn every_should_pass_fixture_succeeds_with_expected_output() {
         );
         assert_eq!(
             text(&output.stdout),
-            expected,
+            expected.replace("\r\n", "\n"),
             "stdout differed for {}",
             fixture.display()
         );
@@ -135,7 +137,7 @@ fn every_should_fail_fixture_fails_with_expected_diagnostic() {
         );
         assert_eq!(
             text(&output.stderr),
-            expected,
+            expected.replace("\r\n", "\n"),
             "stderr differed for {}",
             fixture.display()
         );

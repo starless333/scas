@@ -1,9 +1,37 @@
 use bigdecimal::{BigDecimal, Context};
 use num_bigint::BigInt;
 use num_rational::BigRational;
-use num_traits::{FromPrimitive, One, Signed, ToPrimitive, Zero};
+use num_traits::{One, Signed, Zero};
 use std::cmp::Ordering;
 use std::fmt;
+
+mod transcendental;
+
+pub use transcendental::{
+    BinaryMathFunction, MathConstant, MathEvaluationError, UnaryMathFunction,
+};
+
+/// An approximate complex number. Both components are arbitrary-precision
+/// decimals rounded under the interpreter's active decimal context.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComplexNumber {
+    pub real: BigDecimal,
+    pub imaginary: BigDecimal,
+}
+
+impl ComplexNumber {
+    pub fn new(real: BigDecimal, imaginary: BigDecimal) -> Self {
+        Self { real, imaginary }
+    }
+
+    pub fn is_zero(&self) -> bool {
+        self.real.is_zero() && self.imaginary.is_zero()
+    }
+
+    pub fn is_one(&self) -> bool {
+        self.real.is_one() && self.imaginary.is_zero()
+    }
+}
 
 /// Runtime numeric values. Integers remain exact and use an unbounded
 /// magnitude. Decimals store an unbounded integer coefficient and a decimal
@@ -13,9 +41,19 @@ pub enum Number {
     Integer(BigInt),
     Rational(BigRational),
     Decimal(BigDecimal),
+    Complex(ComplexNumber),
 }
 
 impl Number {
+    pub fn is_exact(&self) -> bool {
+        matches!(self, Number::Integer(_) | Number::Rational(_))
+    }
+    pub fn constant(
+        constant: MathConstant,
+        precision: u64,
+    ) -> Result<Number, MathEvaluationError> {
+        transcendental::evaluate_constant(constant, precision)
+    }
     pub fn from_rational(value: BigRational) -> Number {
         if value.denom().is_one() {
             Number::Integer(value.to_integer())
@@ -24,12 +62,18 @@ impl Number {
         }
     }
 
-    pub fn to_rational(&self) -> BigRational {
+    /// Returns the exact rational represented by a real value. Complex values
+    /// return `None`, as do decimals whose scale cannot fit the conversion.
+    pub fn as_rational(&self) -> Option<BigRational> {
         self.try_to_rational()
-            .expect("decimal scale is too large to materialize as a rational")
     }
 
-    fn try_to_rational(&self) -> Option<BigRational> {
+    pub(crate) fn to_rational(&self) -> BigRational {
+        self.try_to_rational()
+            .expect("internal invariant: value must be an exactly representable real number")
+    }
+
+    pub(crate) fn try_to_rational(&self) -> Option<BigRational> {
         match self {
             Number::Integer(value) => Some(BigRational::from_integer(value.clone())),
             Number::Rational(value) => Some(value.clone()),
@@ -43,10 +87,20 @@ impl Number {
                     Some(BigRational::from_integer(coefficient * power))
                 }
             }
+            Number::Complex(_) => None,
         }
     }
 
-    pub fn to_decimal(&self, context: &Context) -> BigDecimal {
+    /// Converts a real value to a decimal using `context`. Complex values
+    /// return `None` instead of discarding their imaginary component.
+    pub fn as_decimal(&self, context: &Context) -> Option<BigDecimal> {
+        match self {
+            Number::Complex(_) => None,
+            _ => Some(self.to_decimal(context)),
+        }
+    }
+
+    pub(crate) fn to_decimal(&self, context: &Context) -> BigDecimal {
         match self {
             Number::Integer(value) => BigDecimal::from(value.clone()),
             Number::Rational(value) => {
@@ -56,6 +110,9 @@ impl Number {
                 context.multiply(&numerator, &reciprocal)
             }
             Number::Decimal(value) => value.clone(),
+            Number::Complex(_) => {
+                unreachable!("internal invariant: complex value reached real conversion")
+            }
         }
     }
 
@@ -64,6 +121,7 @@ impl Number {
             Number::Integer(value) => value.is_zero(),
             Number::Rational(value) => value.is_zero(),
             Number::Decimal(value) => value.is_zero(),
+            Number::Complex(value) => value.is_zero(),
         }
     }
 
@@ -72,60 +130,45 @@ impl Number {
             Number::Integer(value) => value.is_one(),
             Number::Rational(value) => value.is_one(),
             Number::Decimal(value) => value.is_one(),
+            Number::Complex(value) => value.is_one(),
         }
     }
 
-    pub fn is_negative(&self) -> bool {
+    pub(crate) fn is_negative(&self) -> bool {
         match self {
             Number::Integer(value) => value.is_negative(),
             Number::Rational(value) => value.is_negative(),
             Number::Decimal(value) => value.is_negative(),
+            Number::Complex(_) => false,
         }
     }
-
-    pub fn compare(&self, other: &Number) -> Ordering {
+    pub fn compare(&self, other: &Number) -> Option<Ordering> {
+        if matches!(self, Number::Complex(_)) || matches!(other, Number::Complex(_)) {
+            return None;
+        }
         match (self, other) {
-            (Number::Integer(a), Number::Integer(b)) => a.cmp(b),
-            (Number::Decimal(a), Number::Decimal(b)) => a.cmp(b),
+            (Number::Integer(a), Number::Integer(b)) => Some(a.cmp(b)),
+            (Number::Decimal(a), Number::Decimal(b)) => Some(a.cmp(b)),
             _ => match (self.try_to_rational(), other.try_to_rational()) {
-                (Some(a), Some(b)) => a.cmp(&b),
-                _ => {
+                (Some(a), Some(b)) => Some(a.cmp(&b)),
+                _ if !matches!(self, Number::Complex(_))
+                    && !matches!(other, Number::Complex(_)) =>
+                {
                     let context = Context::default();
-                    self.to_decimal(&context).cmp(&other.to_decimal(&context))
+                    Some(self.to_decimal(&context).cmp(&other.to_decimal(&context)))
                 }
+                _ => None,
             },
         }
     }
 
-    pub fn abs(&self) -> Number {
+    pub(crate) fn abs(&self) -> Number {
         match self {
             Number::Integer(value) => Number::Integer(value.abs()),
             Number::Rational(value) => Number::Rational(value.abs()),
             Number::Decimal(value) => Number::Decimal(value.abs()),
+            Number::Complex(value) => Number::Complex(value.clone()),
         }
-    }
-
-    pub fn to_f64(&self) -> Option<f64> {
-        match self {
-            Number::Integer(value) => value.to_f64(),
-            Number::Rational(value) => value.to_f64(),
-            Number::Decimal(value) => value.to_f64(),
-        }
-    }
-
-    pub fn from_f64(value: f64) -> Option<Number> {
-        if !value.is_finite() {
-            return None;
-        }
-        if value.fract() == 0.0 {
-            if let Some(integer) = BigInt::from_f64(value) {
-                return Some(Number::Integer(integer));
-            }
-        }
-        format!("{value:.15e}")
-            .parse::<BigDecimal>()
-            .ok()
-            .map(Number::Decimal)
     }
 
     pub fn exact_root(&self, degree: u32) -> Option<Number> {
@@ -145,11 +188,40 @@ impl Number {
             denominator,
         )))
     }
+
+    /// Evaluate an elementary function at the requested number of decimal
+    /// significant digits. Real inputs remain real whenever the principal
+    /// result is real; otherwise the result is promoted to a complex value.
+    pub fn evaluate_unary(
+        &self,
+        function: UnaryMathFunction,
+        precision: u64,
+    ) -> Result<Number, MathEvaluationError> {
+        transcendental::evaluate_unary(self, function, precision)
+    }
+
+    pub fn evaluate_binary(
+        &self,
+        other: &Number,
+        function: BinaryMathFunction,
+        precision: u64,
+    ) -> Result<Number, MathEvaluationError> {
+        transcendental::evaluate_binary(self, other, function, precision)
+    }
 }
 
 impl PartialEq for Number {
     fn eq(&self, other: &Self) -> bool {
-        self.compare(other) == Ordering::Equal
+        match (self, other) {
+            (Number::Complex(a), Number::Complex(b)) => {
+                a.real == b.real && a.imaginary == b.imaginary
+            }
+            (Number::Complex(a), value) | (value, Number::Complex(a)) => {
+                a.imaginary.is_zero()
+                    && Number::Decimal(a.real.clone()).compare(value) == Some(Ordering::Equal)
+            }
+            _ => self.compare(other) == Some(Ordering::Equal),
+        }
     }
 }
 
@@ -159,6 +231,27 @@ impl fmt::Display for Number {
             Number::Integer(value) => value.fmt(formatter),
             Number::Rational(value) => write!(formatter, "{}/{}", value.numer(), value.denom()),
             Number::Decimal(value) => value.normalized().fmt(formatter),
+            Number::Complex(value) => {
+                let real = value.real.normalized();
+                let imaginary = value.imaginary.normalized();
+                if imaginary.is_zero() {
+                    return real.fmt(formatter);
+                }
+                if real.is_zero() {
+                    if imaginary.is_one() {
+                        return formatter.write_str("i");
+                    }
+                    if imaginary == BigDecimal::from(-1) {
+                        return formatter.write_str("-i");
+                    }
+                    return write!(formatter, "{imaginary}i");
+                }
+                if imaginary.is_negative() {
+                    write!(formatter, "{real} - {}i", imaginary.abs())
+                } else {
+                    write!(formatter, "{real} + {imaginary}i")
+                }
+            }
         }
     }
 }

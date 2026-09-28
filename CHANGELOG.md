@@ -5,6 +5,15 @@ SCAS follows Semantic Versioning. User-visible changes accumulate under
 
 ## Unreleased
 
+- Replaced machine-precision math with arbitrary-precision real and complex
+  elementary evaluation, exact symbolic constants, and explicit `evalf`.
+- Added principal complex branches, first-class complex arithmetic, exact
+  common-angle values, non-integral powers, and arbitrary-precision real
+  `gamma`, `lgamma`, `erf`, and `erfc`.
+- Added real/integer/positive/negative assumptions and made cancellation,
+  roots, absolute values, and logarithm/exponential inverses domain-safe.
+- Expanded differentiation and affine-substitution integration rules, added a
+  dedicated transcendental resource budget, and documented numeric semantics.
 - Fixed the chain rule for `tan`, including `D(tan(x)) = sec(x)^2`.
 - Added reproducible property tests, fuzz targets, measured benchmarks, API
   documentation deployment, and attested cross-platform release automation.

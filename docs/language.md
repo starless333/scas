@@ -18,23 +18,28 @@ Arrays use `[a, b, c]`. Matrices use comma-separated columns and semicolon row
 separators, for example `[1, 2; 3, 4]`. `A[i, j]` is equivalent to `A[i][j]`.
 Rows must be rectangular. Names may contain underscores, so `x_1` is one name.
 
-The numeric promotion order is integer, rational, decimal. Integer division is
-an exact reduced rational. A decimal operand requests decimal arithmetic.
+The real numeric promotion order is integer, rational, decimal; a complex
+operand promotes arithmetic to complex. Integer division is an exact reduced
+rational. A decimal operand requests decimal arithmetic.
 Symbolic names are normalized automatically; explicit transforms include
 `simplify`, `collect`, `expand`, `factor`, `apart`, and `horner`. `subs`,
 `solve`, `derivative`, and `integral` provide substitution, rational polynomial
 roots, differentiation, and elementary antiderivatives. Calculus operations
 return an unevaluated call when no safe rule is known.
 
-The numeric domain is real. Transcendental approximations use `f64`; exact
-integer/rational algebra remains arbitrary precision. `sqrt(x^2)` normalizes to
-`abs(x)`. Cancellation and inverse logarithm/exponential rewrites use the
-documented generic-domain convention: symbolic denominators are assumed nonzero
-and logarithm arguments are assumed in the positive real domain. Complex
-numbers and branch-sensitive complex rewrites are unsupported.
+`pi`, `e`, and `tau` are exact symbolic constants. Exact function inputs remain
+exact or symbolic; `evalf(expression)` requests an arbitrary-precision decimal
+or complex approximation. A decimal input also requests numerical evaluation.
+Elementary functions use principal complex branches when a result leaves the
+real domain. The real special functions `gamma`, `lgamma`, `erf`, and `erfc`
+are arbitrary precision; their complex extensions are explicitly unsupported.
+See [`math-functions.md`](math-functions.md) for the support matrix and branch
+conventions.
 
-`assume_nonnegative(x)` and `assume_nonzero(x)` attach domain facts to a
-symbol in the current interpreter session. The simplifier uses these facts for
-stronger safe forms such as `sqrt(x^2) -> x` and `abs(x) -> x`; without the
-fact it retains `abs(x)`. Assumptions are explicit and are never inferred from
-unrelated expressions.
+`assume_real(x)`, `assume_integer(x)`, `assume_nonzero(x)`,
+`assume_nonnegative(x)`, `assume_positive(x)`, and `assume_negative(x)` attach
+domain facts to a symbol in the current interpreter session. Conditional
+rewrites require those facts: unconstrained `x/x` and `sqrt(x^2)` remain
+unchanged, a real `x` permits `sqrt(x^2) -> abs(x)`, and a nonnegative `x`
+permits `sqrt(x^2) -> x`. Contradictory sign assumptions are errors.
+Assumptions are never inferred from unrelated expressions.

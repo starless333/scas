@@ -52,7 +52,7 @@ impl Polynomial {
 
     pub fn from_expression(expression: &SymbolicExpr, symbols: &SymbolTable) -> Option<Self> {
         match expression {
-            SymbolicExpr::Number(number) => Some(Self::constant(number.to_rational())),
+            SymbolicExpr::Number(number) => Some(Self::constant(number.try_to_rational()?)),
             SymbolicExpr::Variable(symbol) => Some(Self::variable(Variable {
                 name: symbols.resolve(*symbol).to_owned(),
                 symbol: *symbol,
