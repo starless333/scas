@@ -215,4 +215,47 @@ mod tests {
         assert!(output.contains("x ^ 5"));
         assert!(output.contains("x ^ 6"));
     }
+
+    #[test]
+    fn standard_math_library_is_available_across_repl_submissions() {
+        // Each line is scanned independently, which grows the REPL symbol table
+        // after the interpreter has already been created.
+        let input = Cursor::new(
+            "sqrt(4)\nsin(0)\ncos(0)\nln(e)\nlog(8, 2)\ngamma(5)\nerfc(0)\npi\n:quit\n",
+        );
+        let mut output = Vec::new();
+        run_with_io(input, &mut output).unwrap();
+        let output = String::from_utf8(output).unwrap();
+
+        assert!(!output.contains("runtime error"), "{output}");
+        assert!(output.contains("> 2\n> 0\n> 1\n> 1\n> 3\n> 24\n> 1\n> 3.141592653589793\n> "));
+    }
+
+    #[test]
+    fn symbolic_algebra_functions_are_available_in_the_repl() {
+        let input = Cursor::new(
+            "sqrt(x^2)\nsin(-x)\nexpand((x+y)^2)\nfactor(x^2-y^2)\napart(1/(x^2-1))\n:quit\n",
+        );
+        let mut output = Vec::new();
+        run_with_io(input, &mut output).unwrap();
+        let output = String::from_utf8(output).unwrap();
+
+        assert!(!output.contains("runtime error"), "{output}");
+        assert!(output.contains("abs(x)"));
+        assert!(output.contains("-sin(x)"));
+        assert!(output.contains("x ^ 2 + 2 * x * y + y ^ 2"));
+        assert!(output.contains("(x - y) * (x + y)"));
+        assert!(output.contains("-(1/2 / (x + 1)) + 1/2 / (x - 1)"));
+    }
+
+    #[test]
+    fn refreshing_repl_symbols_does_not_replace_user_shadowing() {
+        let input = Cursor::new("let sin = 7;\nsin\ncos(0)\nsin\n:quit\n");
+        let mut output = Vec::new();
+        run_with_io(input, &mut output).unwrap();
+        let output = String::from_utf8(output).unwrap();
+
+        assert!(!output.contains("runtime error"), "{output}");
+        assert!(output.contains("> > 7\n> 1\n> 7\n> "));
+    }
 }

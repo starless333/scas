@@ -32,12 +32,24 @@ pub struct Interpreter<W: Write> {
 
 impl<W: Write> Interpreter<W> {
     pub fn new(symbols: SymbolTable, output: W) -> Self {
-        let globals = Environment::new();
+        let mut interpreter = Interpreter {
+            globals: Environment::new(),
+            symbols,
+            decimal_context: Context::default(),
+            output,
+        };
+        interpreter.install_standard_library();
+        interpreter
+    }
+
+    /// Adds standard-library names that are present in the current symbol
+    /// table. The REPL's table grows between submissions, so this must also be
+    /// called after a refresh. Existing globals are deliberately preserved so
+    /// user definitions can shadow a built-in or constant.
+    fn install_standard_library(&mut self) {
         for (name, builtin) in Builtin::ALL {
-            if let Some(symbol) = symbols.get(name) {
-                globals
-                    .borrow_mut()
-                    .define(symbol, Value::Builtin(*builtin));
+            if let Some(symbol) = self.symbols.get(name) {
+                self.define_global_if_absent(symbol, Value::Builtin(*builtin));
             }
         }
         for (name, value) in [
@@ -45,17 +57,17 @@ impl<W: Write> Interpreter<W> {
             ("e", std::f64::consts::E),
             ("tau", std::f64::consts::TAU),
         ] {
-            if let Some(symbol) = symbols.get(name) {
+            if let Some(symbol) = self.symbols.get(name) {
                 if let Some(number) = Number::from_f64(value) {
-                    globals.borrow_mut().define(symbol, Value::Number(number));
+                    self.define_global_if_absent(symbol, Value::Number(number));
                 }
             }
         }
-        Interpreter {
-            globals,
-            symbols,
-            decimal_context: Context::default(),
-            output,
+    }
+
+    fn define_global_if_absent(&mut self, symbol: Symbol, value: Value) {
+        if Environment::get(&self.globals, symbol).is_none() {
+            self.globals.borrow_mut().define(symbol, value);
         }
     }
 
@@ -98,6 +110,7 @@ impl<W: Write> Interpreter<W> {
     /// Updates name resolution as the REPL's stable symbol table grows.
     pub fn set_symbols(&mut self, symbols: SymbolTable) {
         self.symbols = symbols;
+        self.install_standard_library();
     }
 
     /// Sets the significant-digit precision used by operations whose

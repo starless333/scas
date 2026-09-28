@@ -116,11 +116,14 @@ fn standard_math_library_has_numeric_and_symbolic_behavior() {
             print(cos(pi));
             print(asin(0));
             print(acos(1));
+            print(atan(0));
             print(atan2(0, 1));
             print(sinh(0));
             print(cosh(0));
             print(tanh(0));
+            print(asinh(0));
             print(acosh(1));
+            print(atanh(0));
             print(floor(1.9));
             print(ceil(1.1));
             print(round(1.6));
@@ -132,7 +135,11 @@ fn standard_math_library_has_numeric_and_symbolic_behavior() {
             print(lcm(12, 18));
             print(gamma(5));
             print(erf(0));
+            print(erfc(0));
+            print(lgamma(1));
             print(sec(0));
+            print(csc(pi/2));
+            print(cot(pi/4));
             print(sign(-9));
             print(degrees(pi));
             print(radians(180));
@@ -144,8 +151,8 @@ fn standard_math_library_has_numeric_and_symbolic_behavior() {
         concat!(
             "3.141592653589793\n2.718281828459045\n6.283185307179586\n",
             "3/2\n2\n3/4\n1000000000000000\n3\n1\n1\n3\n2\n3\n",
-            "0\n1\n0\n0\n-1\n0\n0\n0\n0\n1\n0\n0\n",
-            "1\n2\n2\n-1\n3/2\n2\n5\n6\n36\n24\n0\n1\n-1\n",
+            "0\n1\n0\n0\n-1\n0\n0\n0\n0\n0\n1\n0\n0\n0\n0\n",
+            "1\n2\n2\n-1\n3/2\n2\n5\n6\n36\n24\n0\n1\n0\n1\n1\n1\n-1\n",
             "180\n3.141592653589793\nabs(x)\n-sin(x)\ncos(x)\n",
         ),
     );
