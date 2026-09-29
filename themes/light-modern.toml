@@ -1,0 +1,23 @@
+name = "Light Modern"
+dark = false
+
+[ui]
+background = "#f3f3f3"
+panel = "#f8f8f8"
+editor = "#ffffff"
+text = "#3b3b3b"
+muted = "#6f6f6f"
+accent = "#0078d4"
+selection = "#add6ff"
+
+[syntax]
+plain = "#000000"
+keyword = "#af00db"
+number = "#098658"
+string = "#a31515"
+comment = "#008000"
+doc_comment = "#237893"
+identifier = "#001080"
+operator = "#000000"
+delimiter = "#0431fa"
+render_marker = "#267f99"

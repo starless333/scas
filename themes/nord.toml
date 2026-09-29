@@ -1,0 +1,23 @@
+name = "Nord"
+dark = true
+
+[ui]
+background = "#2e3440"
+panel = "#3b4252"
+editor = "#2e3440"
+text = "#d8dee9"
+muted = "#a3adbd"
+accent = "#88c0d0"
+selection = "#434c5e"
+
+[syntax]
+plain = "#d8dee9"
+keyword = "#81a1c1"
+number = "#b48ead"
+string = "#a3be8c"
+comment = "#7b88a1"
+doc_comment = "#8fbcbb"
+identifier = "#88c0d0"
+operator = "#81a1c1"
+delimiter = "#eceff4"
+render_marker = "#5e81ac"

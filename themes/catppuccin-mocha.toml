@@ -1,0 +1,23 @@
+name = "Catppuccin Mocha"
+dark = true
+
+[ui]
+background = "#11111b"
+panel = "#181825"
+editor = "#1e1e2e"
+text = "#cdd6f4"
+muted = "#9399b2"
+accent = "#89b4fa"
+selection = "#45475a"
+
+[syntax]
+plain = "#cdd6f4"
+keyword = "#cba6f7"
+number = "#fab387"
+string = "#a6e3a1"
+comment = "#6c7086"
+doc_comment = "#94e2d5"
+identifier = "#89b4fa"
+operator = "#89dceb"
+delimiter = "#f9e2af"
+render_marker = "#74c7ec"

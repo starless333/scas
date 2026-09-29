@@ -1,0 +1,23 @@
+name = "Solarized Dark"
+dark = true
+
+[ui]
+background = "#002b36"
+panel = "#073642"
+editor = "#002b36"
+text = "#839496"
+muted = "#718589"
+accent = "#268bd2"
+selection = "#174552"
+
+[syntax]
+plain = "#839496"
+keyword = "#859900"
+number = "#d33682"
+string = "#2aa198"
+comment = "#657b83"
+doc_comment = "#93a1a1"
+identifier = "#b58900"
+operator = "#cb4b16"
+delimiter = "#6c71c4"
+render_marker = "#268bd2"

@@ -1,0 +1,23 @@
+name = "Dracula"
+dark = true
+
+[ui]
+background = "#21222c"
+panel = "#282a36"
+editor = "#282a36"
+text = "#f8f8f2"
+muted = "#a7a4b5"
+accent = "#bd93f9"
+selection = "#44475a"
+
+[syntax]
+plain = "#f8f8f2"
+keyword = "#ff79c6"
+number = "#bd93f9"
+string = "#f1fa8c"
+comment = "#6272a4"
+doc_comment = "#8be9fd"
+identifier = "#50fa7b"
+operator = "#ff79c6"
+delimiter = "#f8f8f2"
+render_marker = "#8be9fd"

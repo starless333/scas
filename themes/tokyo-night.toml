@@ -1,0 +1,23 @@
+name = "Tokyo Night"
+dark = true
+
+[ui]
+background = "#16161e"
+panel = "#1a1b26"
+editor = "#1a1b26"
+text = "#c0caf5"
+muted = "#7982a9"
+accent = "#7aa2f7"
+selection = "#33467c"
+
+[syntax]
+plain = "#c0caf5"
+keyword = "#bb9af7"
+number = "#ff9e64"
+string = "#9ece6a"
+comment = "#565f89"
+doc_comment = "#7dcfff"
+identifier = "#7aa2f7"
+operator = "#89ddff"
+delimiter = "#a9b1d6"
+render_marker = "#2ac3de"

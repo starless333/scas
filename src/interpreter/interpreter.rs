@@ -149,6 +149,17 @@ impl<W: Write> Interpreter<W> {
         &mut self,
         program: &[Statement],
     ) -> Result<Option<String>, RuntimeError> {
+        self.run_interactive_value(program)
+            .map(|value| value.map(|value| self.stringify(&value)))
+    }
+
+    /// Runs one REPL submission and returns its final bare expression as a
+    /// structured value. GUI clients use this to typeset results without
+    /// reparsing their display strings.
+    pub fn run_interactive_value(
+        &mut self,
+        program: &[Statement],
+    ) -> Result<Option<Value>, RuntimeError> {
         self.steps = 0;
         self.call_depth = 0;
         let env = Rc::clone(&self.globals);
@@ -159,7 +170,7 @@ impl<W: Write> Interpreter<W> {
                     let value = self
                         .evaluate(&env, expr)
                         .map_err(|flow| self.describe_top_level(flow))?;
-                    result = Some(self.stringify(&value));
+                    result = Some(value);
                     continue;
                 }
             }
@@ -1130,22 +1141,20 @@ impl<W: Write> Interpreter<W> {
                 }
             }
             Builtin::Matmul | Builtin::MatmulSteps => {
-                let left = self.matrix(&args[0], builtin.name())?;
-                let right = self.matrix(&args[1], builtin.name())?;
-                let product = self.matmul_values(&left, &right)?;
+                let product = self.matrix_product(&args[0], &args[1], builtin.name())?;
                 if builtin == Builtin::MatmulSteps {
-                    let result = Self::matrix_value(product);
                     Ok(Self::derivation(
-                        result.clone(),
+                        product.clone(),
                         vec![DerivationStep {
-                            value: result,
+                            value: product,
                             operation: StepOperation::Explanation(
-                                r"(AB)_{ij}=\sum_k A_{ik}B_{kj}".to_owned(),
+                                r"(AB)_{ij}=\sum_k A_{ik}B_{kj}\quad\text{or}\quad(Av)_i=\sum_k A_{ik}v_k"
+                                    .to_owned(),
                             ),
                         }],
                     ))
                 } else {
-                    Ok(Self::matrix_value(product))
+                    Ok(product)
                 }
             }
             Builtin::Dot | Builtin::DotSteps => {
@@ -1470,9 +1479,10 @@ impl<W: Write> Interpreter<W> {
         &self,
         left: &[Vec<Value>],
         right: &[Vec<Value>],
+        operation: &str,
     ) -> ExecResult<Vec<Vec<Value>>> {
         if left[0].len() != right.len() {
-            return Err(self.error("matmul matrix dimensions do not align"));
+            return Err(self.error(format!("{operation} matrix dimensions do not align")));
         }
         let mut product = vec![vec![Self::integer_value(0); right[0].len()]; left.len()];
         for row in 0..left.len() {
@@ -1489,6 +1499,42 @@ impl<W: Write> Interpreter<W> {
             }
         }
         Ok(product)
+    }
+
+    fn matrix_product(&self, left: &Value, right: &Value, operation: &str) -> ExecResult<Value> {
+        let left = self.matrix(left, operation)?;
+        let Value::Array(right_values) = right else {
+            return Err(self.error(format!(
+                "{operation} expects a matrix or vector as its right operand"
+            )));
+        };
+
+        if right_values
+            .iter()
+            .any(|value| matches!(value, Value::Array(_)))
+        {
+            let right = self.matrix(right, operation)?;
+            return self
+                .matmul_values(&left, &right, operation)
+                .map(Self::matrix_value);
+        }
+
+        let right = self.vector(right, operation)?;
+        if left[0].len() != right.len() {
+            return Err(self.error(format!(
+                "{operation} matrix and vector dimensions do not align"
+            )));
+        }
+        let mut product = Vec::with_capacity(left.len());
+        for row in left {
+            let mut total = Self::integer_value(0);
+            for (left, right) in row.into_iter().zip(&right) {
+                let term = self.apply_binary(BinaryOp::Mul, left, right.clone())?;
+                total = self.apply_binary(BinaryOp::Add, total, term)?;
+            }
+            product.push(total);
+        }
+        Ok(Value::Array(Rc::new(product)))
     }
 
     fn call_calculus_tool(&self, builtin: Builtin, args: Vec<Value>) -> ExecResult<Value> {
@@ -3724,6 +3770,10 @@ impl<W: Write> Interpreter<W> {
             (UnaryOp::BitNot, Value::Number(Number::Integer(n))) => {
                 Ok(Value::Number(Number::Integer(!n)))
             }
+            (UnaryOp::Transpose, value) => {
+                let matrix = self.matrix(&value, "transpose")?;
+                Ok(Self::matrix_value(Self::transpose_matrix(&matrix)))
+            }
             (op, value) => {
                 Err(self.error(format!("cannot apply {op:?} to a {}", value.type_name())))
             }
@@ -3732,6 +3782,9 @@ impl<W: Write> Interpreter<W> {
 
     fn apply_binary(&self, op: BinaryOp, l: Value, r: Value) -> ExecResult<Value> {
         use BinaryOp::*;
+        if op == Pow && matches!(&l, Value::Array(_)) {
+            return self.power(l, r);
+        }
         if matches!(op, Add | Sub | Mul | Div | Mod | Pow)
             && (matches!(&l, Value::Symbolic(_)) || matches!(&r, Value::Symbolic(_)))
         {
@@ -3762,6 +3815,9 @@ impl<W: Write> Interpreter<W> {
                 _ => self.numeric(l, r, "+", |a, b| a + b, |a, b| a + b, |a, b| a + b),
             },
             Sub => self.numeric(l, r, "-", |a, b| a - b, |a, b| a - b, |a, b| a - b),
+            Mul if matches!(&l, Value::Array(rows) if rows.iter().any(|row| matches!(row, Value::Array(_)))) => {
+                self.matrix_product(&l, &r, "*")
+            }
             Mul => self.numeric(l, r, "*", |a, b| a * b, |a, b| a * b, |a, b| a * b),
             Div => self.divide(l, r),
             Mod => self.remainder(l, r),
@@ -3889,6 +3945,12 @@ impl<W: Write> Interpreter<W> {
     }
 
     fn power(&self, base: Value, exponent: Value) -> ExecResult<Value> {
+        if matches!(base, Value::Array(_)) {
+            let Value::Number(Number::Integer(exponent)) = exponent else {
+                return Err(self.error("matrix exponent must be an integer"));
+            };
+            return self.matrix_integer_power(&base, exponent);
+        }
         let (Value::Number(base), Value::Number(exponent)) = (base, exponent) else {
             return Err(self.error("'^' requires numeric operands"));
         };
@@ -3973,6 +4035,48 @@ impl<W: Write> Interpreter<W> {
                 Ok(Value::Number(Number::from_rational(powered.recip())))
             }
         }
+    }
+
+    fn matrix_integer_power(&self, base: &Value, exponent: BigInt) -> ExecResult<Value> {
+        let exponent = exponent.to_i64().ok_or_else(|| {
+            self.limit_error(format!(
+                "exponent magnitude exceeds the limit of {}",
+                self.limits.max_exponent
+            ))
+        })?;
+        if exponent.unsigned_abs() > u64::from(self.limits.max_exponent) {
+            return Err(self.limit_error(format!(
+                "exponent magnitude exceeds the limit of {}",
+                self.limits.max_exponent
+            )));
+        }
+
+        let mut base = self.square_matrix(base, "matrix power")?;
+        let size = base.len();
+        if exponent < 0 {
+            let inverse =
+                self.call_linear_algebra(Builtin::Inverse, vec![Self::matrix_value(base)])?;
+            base = self.matrix(&inverse, "matrix power")?;
+        }
+
+        let mut result = (0..size)
+            .map(|row| {
+                (0..size)
+                    .map(|column| Self::integer_value(i64::from(row == column)))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let mut remaining = exponent.unsigned_abs();
+        while remaining > 0 {
+            if remaining & 1 == 1 {
+                result = self.matmul_values(&result, &base, "matrix power")?;
+            }
+            remaining >>= 1;
+            if remaining > 0 {
+                base = self.matmul_values(&base, &base, "matrix power")?;
+            }
+        }
+        Ok(Self::matrix_value(result))
     }
 
     fn rational_pow(mut base: BigRational, mut exponent: u32) -> BigRational {
@@ -4907,6 +5011,14 @@ impl<W: Write> Interpreter<W> {
                     .join(", ")
             ),
             ExprKind::Unary { op, expr } => {
+                if *op == UnaryOp::Transpose {
+                    let text = format!("{}'", self.format_expr(expr, 13));
+                    return if 13 < parent_precedence {
+                        format!("({text})")
+                    } else {
+                        text
+                    };
+                }
                 let text = format!("{}{}", Self::unary_text(*op), self.format_expr(expr, 12));
                 if 12 < parent_precedence {
                     format!("({text})")
@@ -4978,6 +5090,7 @@ impl<W: Write> Interpreter<W> {
             UnaryOp::Neg => "-",
             UnaryOp::Not => "!",
             UnaryOp::BitNot | UnaryOp::Tilde => "~",
+            UnaryOp::Transpose => "'",
         }
     }
 }

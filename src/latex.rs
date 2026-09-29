@@ -172,6 +172,11 @@ impl<'a> LatexRenderer<'a> {
             }
             ExprKind::Call { callee, args } => self.write_call(callee, args, output),
             ExprKind::Unary { op, expr } => {
+                if *op == UnaryOp::Transpose {
+                    self.write_expr(expr, 13, output);
+                    output.push_str(r"^{\mathsf T}");
+                    return;
+                }
                 let precedence = 12;
                 let parenthesize = precedence < parent_precedence;
                 if parenthesize {
@@ -181,6 +186,7 @@ impl<'a> LatexRenderer<'a> {
                     UnaryOp::Neg => "-",
                     UnaryOp::Not => r"\neg ",
                     UnaryOp::BitNot | UnaryOp::Tilde => r"\mathord{\sim}",
+                    UnaryOp::Transpose => unreachable!("transpose is rendered as a postfix"),
                 });
                 self.write_expr(expr, precedence, output);
                 if parenthesize {
@@ -512,10 +518,16 @@ impl<'a> LatexRenderer<'a> {
                 self.write_identifier(self.symbols.resolve(*symbol), output)
             }
             SymbolicExpr::Unary { op, expr } => {
+                if *op == UnaryOp::Transpose {
+                    self.write_symbolic(expr, 13, output);
+                    output.push_str(r"^{\mathsf T}");
+                    return;
+                }
                 output.push_str(match op {
                     UnaryOp::Neg => "-",
                     UnaryOp::Not => r"\neg ",
                     UnaryOp::BitNot | UnaryOp::Tilde => r"\mathord{\sim}",
+                    UnaryOp::Transpose => unreachable!("transpose is rendered as a postfix"),
                 });
                 self.write_symbolic(expr, 12, output);
             }
@@ -797,6 +809,10 @@ mod tests {
         assert_eq!(
             render("[1, 2; 3, 4]"),
             r"\begin{pmatrix}1 & 2 \\ 3 & 4\end{pmatrix}"
+        );
+        assert_eq!(
+            render("[1, 2; 3, 4]'"),
+            r"\begin{pmatrix}1 & 2 \\ 3 & 4\end{pmatrix}^{\mathsf T}"
         );
         assert_eq!(
             render("ζ + η + ϑ + ξ + υ + ψ + Ξ"),

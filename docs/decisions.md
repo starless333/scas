@@ -34,8 +34,8 @@ These decisions close the open items in `DOCUMENTER.md`.
 - Editor color schemes are UTF-8 TOML files with `[ui]` and `[syntax]` color
   tables. Colors use CSS-style `#RRGGBB` or `#RRGGBBAA` values. This keeps
   themes human-editable and makes every syntax category available without
-  recompiling. Gruber Darker is the default, with Paper Light included as a
-  light alternative.
+  recompiling. Dark Modern is the default, with a bundled library of familiar
+  dark and light developer palettes; external theme files remain supported.
 
 The lexer/parser implementation includes the render delimiters, show marker,
 doc-comment token, and prerequisite expression grammar (matrix literals,

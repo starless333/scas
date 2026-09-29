@@ -103,7 +103,21 @@ print(det(A));                 // -2
 print(inverse(A));             // [[-2, 1], [3/2, -1/2]]
 print(solve_linear(A, b));     // [1, 2]
 print(dot([1, 2], [3, 4]));    // 11
+print(A * A);                  // [[7, 10], [15, 22]]
+print(A * b);                  // [27, 59]
+print(A');                     // [[1, 3], [2, 4]]
 ```
+
+Matrix products are available through either operator syntax or the `matmul`
+builtin. `A * B` and `matmul(A, B)` perform matrix × matrix multiplication;
+`A * v` and `matmul(A, v)` treat the vector as a column vector. Inner
+dimensions must align.
+The postfix form `A'` is equivalent to `transpose(A)` and binds more tightly
+than exponentiation and multiplication.
+
+Square matrices accept bounded integer powers through `A^n`. SCAS uses binary
+exponentiation, returns the identity for `A^0`, and computes negative powers
+from the exact inverse. Negative powers of singular matrices are errors.
 
 Every operation also has a documenting form with a `_steps` suffix:
 `transpose_steps`, `trace_steps`, `det_steps`, `rank_steps`, `rref_steps`,

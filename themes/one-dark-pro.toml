@@ -1,0 +1,23 @@
+name = "One Dark Pro"
+dark = true
+
+[ui]
+background = "#21252b"
+panel = "#282c34"
+editor = "#282c34"
+text = "#abb2bf"
+muted = "#7f848e"
+accent = "#61afef"
+selection = "#3e4451"
+
+[syntax]
+plain = "#abb2bf"
+keyword = "#c678dd"
+number = "#d19a66"
+string = "#98c379"
+comment = "#5c6370"
+doc_comment = "#7f848e"
+identifier = "#e06c75"
+operator = "#56b6c2"
+delimiter = "#abb2bf"
+render_marker = "#61afef"

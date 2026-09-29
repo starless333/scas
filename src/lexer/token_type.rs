@@ -16,8 +16,9 @@ pub enum TokenType {
     RightBrace, // done
     Comma,      // done
     Dot,        // done
-    Colon,      // done
-    Semicolon,  // done
+    Apostrophe,
+    Colon,     // done
+    Semicolon, // done
     FlowOperator,
     RenderLeftBrace,
     RenderRightBrace,

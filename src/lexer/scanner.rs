@@ -153,6 +153,7 @@ impl Scanner {
             ';' => self.add_token(TokenType::Semicolon),
             ',' => self.add_token(TokenType::Comma),
             '.' => self.add_token(TokenType::Dot),
+            '\'' => self.add_token(TokenType::Apostrophe),
             ':' => self.add_token(TokenType::Colon),
             '=' => {
                 if self.check('=') {
@@ -545,5 +546,15 @@ mod tests {
             (scanner.errors()[1].line, scanner.errors()[1].column),
             (1, 3)
         );
+    }
+
+    #[test]
+    fn scans_postfix_transpose_apostrophe() {
+        let mut scanner = Scanner::new("A' * A");
+        let tokens = scanner.scan_tokens();
+        assert_eq!(tokens[0].token_type, TokenType::Identifier);
+        assert_eq!(tokens[1].token_type, TokenType::Apostrophe);
+        assert_eq!((tokens[1].column, tokens[1].length), (2, 1));
+        assert_eq!(tokens[2].token_type, TokenType::Star);
     }
 }

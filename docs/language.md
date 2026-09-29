@@ -16,7 +16,13 @@ unary `! - ~`, `* / %` and implicit multiplication, `+ -`, shifts, `&`, `xor`,
 
 Arrays use `[a, b, c]`. Matrices use comma-separated columns and semicolon row
 separators, for example `[1, 2; 3, 4]`. `A[i, j]` is equivalent to `A[i][j]`.
-Rows must be rectangular. Names may contain underscores, so `x_1` is one name.
+Rows must be rectangular. Matrix multiplication uses `A * B`; multiplying a
+matrix by a vector with `A * v` treats the vector as a column vector. The
+equivalent explicit forms are `matmul(A, B)` and `matmul(A, v)`. Names may
+contain underscores, so `x_1` is one name. Matrix transpose may be written as
+either `A'` or `transpose(A)`; the apostrophe is a chainable postfix operator.
+Square matrices may be raised to bounded integer powers with `A^n`; zero gives
+the identity and negative exponents use the exact matrix inverse.
 
 The real numeric promotion order is integer, rational, decimal; a complex
 operand promotes arithmetic to complex. Integer division is an exact reduced

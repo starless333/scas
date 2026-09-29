@@ -1,8 +1,10 @@
 # SCAS editor themes
 
-The editor ships with Gruber Darker (the default) and Paper Light. Open
-**Editor settings**, enter a theme file path, and choose **Load** to add another
-scheme for the current session.
+The editor ships with a broad set of familiar developer palettes: Dark Modern,
+Light Modern, One Dark Pro, Dracula, Tokyo Night, Catppuccin Mocha, Nord,
+GitHub Dark, Solarized Dark, Monokai, Gruber Darker, and Paper Light. Open
+**Settings**, choose a color scheme, or enter a theme file path and choose
+**Load** to add another scheme for the current session.
 
 Themes are TOML files. Every field is required, and colors accept `#RRGGBB` or
 `#RRGGBBAA`:

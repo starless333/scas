@@ -69,15 +69,19 @@ Build and launch the optional native editor with:
 cargo run --features gui --bin scas-gui
 ```
 
-The preview includes a `.scas` file tree, a syntax-highlighted editor,
-background execution with an output panel, save support, and Greek input.
+The preview uses a compact VS Code/Zed-style workspace with an activity rail,
+Explorer, syntax-highlighted editor, split document preview, OUTPUT/PROBLEMS
+dock, background execution, save support, and Greek input. Workspace tabs also
+provide a persistent interactive REPL with live typeset input/results and a
+reserved graphing-calculator canvas.
 When `latex` and `dvipng` are installed, the live preview is typeset by LaTeX
 itself in Computer Modern; the native structured renderer remains a fallback
 when those commands are unavailable.
-Gruber Darker is the default color scheme; Editor settings can switch to the
-bundled light scheme, load a custom TOML theme or font, and change the editor
-font family and size. See [`themes/README.md`](themes/README.md) for the theme
-format. Greek shortcut expansion is enabled by default, turning inputs such as
+Dark Modern is the default color scheme. Settings can switch among 12 bundled
+developer themes—including light and dark options—load a custom TOML theme or
+font, and change the editor font family and size. See
+[`themes/README.md`](themes/README.md) for the theme format. Greek shortcut
+expansion is enabled by default, turning inputs such as
 `\pi`, `\gamma`, or `\theta` into `π`, `γ`, or `θ`; it can be disabled from the
 editor toolbar. Unicode identifiers are valid source; `π` and
 `τ` are built-in constant aliases and `Γ` calls the Gamma function. Use
@@ -218,7 +222,8 @@ is structural for arrays and exact across numeric representations (for
 example, `1 / 2 == 0.5`). Functions and blocks use lexical scope.
 
 Exponentiation is right-associative; all other binary operators are
-left-associative. From tightest to loosest, precedence is postfix operations,
+left-associative. From tightest to loosest, precedence is postfix calls,
+indexing, and matrix transpose (`A'`),
 exponentiation, unary operators, multiplication/division/remainder, addition/
 subtraction, shifts, bitwise `&`, `xor`, bitwise `|`, comparisons, equality,
 `and`, then `or`. Adjacency (`2x`, `2(x + 1)`, `(x + 1)y`) means
@@ -320,7 +325,9 @@ domain are promoted to principal complex values, so `sqrt(-1)` is `i` and
 and `erfc` are arbitrary-precision real functions; complex arguments to those
 four functions are explicitly unsupported. See
 [`docs/math-functions.md`](docs/math-functions.md) for branch conventions,
-exactness, precision, and the complete support table.
+exactness and precision. The self-contained
+[`official function reference`](docs/math-functions.html) documents every
+currently registered mathematical builtin.
 
 Symbolic inputs remain symbolic and safe elementary identities are applied:
 
@@ -396,6 +403,10 @@ let matrix = [1, 2; 3, 4];
 print(matrix[1, 0]); // 3; equivalent to matrix[1][0]
 print(det(matrix));
 print(inverse(matrix));
+print(matrix'); // transpose; equivalent to transpose(matrix)
+print(matrix * matrix); // matrix × matrix
+print(matrix * [5, 11]); // matrix × column vector
+print(matrix^5); // square-matrix power by binary exponentiation
 // In a render block, `rref(matrix) =>;` documents every row operation.
 print(rref_steps(matrix)); // explicit structured-work form; prints the final result
 ```

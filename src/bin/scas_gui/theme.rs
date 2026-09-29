@@ -75,14 +75,37 @@ fn parse_hex(value: &str) -> Result<Color32, String> {
 }
 
 impl Theme {
-    pub fn gruber_darker() -> Self {
-        toml::from_str(include_str!("../../../themes/gruber-darker.toml"))
-            .expect("the bundled Gruber Darker theme must be valid")
+    fn bundled(source: &str) -> Self {
+        toml::from_str(source).expect("bundled themes must be valid")
     }
 
-    pub fn paper_light() -> Self {
-        toml::from_str(include_str!("../../../themes/paper-light.toml"))
-            .expect("the bundled Paper Light theme must be valid")
+    pub fn bundled_themes() -> Vec<Self> {
+        vec![
+            Self::bundled(include_str!("../../../themes/dark-modern.toml")),
+            Self::bundled(include_str!("../../../themes/light-modern.toml")),
+            Self::bundled(include_str!("../../../themes/one-dark-pro.toml")),
+            Self::bundled(include_str!("../../../themes/dracula.toml")),
+            Self::bundled(include_str!("../../../themes/tokyo-night.toml")),
+            Self::bundled(include_str!("../../../themes/catppuccin-mocha.toml")),
+            Self::bundled(include_str!("../../../themes/nord.toml")),
+            Self::bundled(include_str!("../../../themes/github-dark.toml")),
+            Self::bundled(include_str!("../../../themes/solarized-dark.toml")),
+            Self::bundled(include_str!("../../../themes/monokai.toml")),
+            Self::bundled(include_str!("../../../themes/gruber-darker.toml")),
+            Self::bundled(include_str!("../../../themes/paper-light.toml")),
+        ]
+    }
+
+    pub fn contrast_on_accent(&self) -> Color32 {
+        let accent = self.ui.accent.0;
+        let luminance = 0.2126 * f32::from(accent.r())
+            + 0.7152 * f32::from(accent.g())
+            + 0.0722 * f32::from(accent.b());
+        if luminance > 150.0 {
+            Color32::from_rgb(24, 24, 24)
+        } else {
+            Color32::WHITE
+        }
     }
 
     pub fn load(path: &Path) -> Result<Self, String> {
@@ -109,22 +132,22 @@ impl Theme {
         style.visuals.hyperlink_color = self.ui.accent.0;
         style.visuals.widgets.noninteractive.bg_fill = self.ui.panel.0;
         style.visuals.widgets.noninteractive.fg_stroke.color = self.ui.text.0;
-        style.visuals.widgets.inactive.bg_fill = self.ui.editor.0;
+        style.visuals.widgets.inactive.bg_fill = self.ui.panel.0;
         style.visuals.widgets.inactive.fg_stroke.color = self.ui.text.0;
-        style.visuals.widgets.inactive.rounding = egui::Rounding::same(7.0);
+        style.visuals.widgets.inactive.rounding = egui::Rounding::same(2.0);
         style.visuals.widgets.inactive.bg_stroke =
-            egui::Stroke::new(1.0, self.ui.muted.0.gamma_multiply(0.34));
+            egui::Stroke::new(1.0, self.ui.muted.0.gamma_multiply(0.28));
         style.visuals.widgets.hovered.bg_fill = self.ui.selection.0;
         style.visuals.widgets.hovered.fg_stroke.color = self.ui.text.0;
-        style.visuals.widgets.hovered.rounding = egui::Rounding::same(7.0);
-        style.visuals.widgets.hovered.expansion = 0.5;
+        style.visuals.widgets.hovered.rounding = egui::Rounding::same(2.0);
+        style.visuals.widgets.hovered.expansion = 0.0;
         style.visuals.widgets.active.bg_fill = self.ui.accent.0;
-        style.visuals.widgets.active.fg_stroke.color = self.ui.background.0;
-        style.visuals.widgets.active.rounding = egui::Rounding::same(7.0);
-        style.visuals.window_rounding = egui::Rounding::same(12.0);
+        style.visuals.widgets.active.fg_stroke.color = self.contrast_on_accent();
+        style.visuals.widgets.active.rounding = egui::Rounding::same(2.0);
+        style.visuals.window_rounding = egui::Rounding::same(4.0);
         style.visuals.window_shadow = egui::epaint::Shadow {
-            offset: egui::vec2(0.0, 8.0),
-            blur: 22.0,
+            offset: egui::vec2(0.0, 6.0),
+            blur: 18.0,
             spread: 0.0,
             color: egui::Color32::from_black_alpha(80),
         };
@@ -136,18 +159,32 @@ impl Theme {
             spread: 2.0,
             color: egui::Color32::from_black_alpha(95),
         };
-        style.spacing.item_spacing = egui::vec2(9.0, 8.0);
-        style.spacing.button_padding = egui::vec2(11.0, 6.0);
-        style.spacing.window_margin = egui::Margin::same(14.0);
-        style.spacing.combo_width = 180.0;
-        style.animation_time = 0.12;
+        style.spacing.item_spacing = egui::vec2(6.0, 4.0);
+        style.spacing.button_padding = egui::vec2(7.0, 3.0);
+        style.spacing.window_margin = egui::Margin::same(12.0);
+        style.spacing.combo_width = 210.0;
+        style.spacing.indent = 14.0;
+        style.spacing.interact_size.y = 24.0;
+        style.animation_time = 0.16;
         style.text_styles.insert(
             egui::TextStyle::Heading,
-            egui::FontId::new(21.0, egui::FontFamily::Proportional),
+            egui::FontId::new(16.0, egui::FontFamily::Proportional),
+        );
+        style.text_styles.insert(
+            egui::TextStyle::Body,
+            egui::FontId::new(13.0, egui::FontFamily::Proportional),
         );
         style.text_styles.insert(
             egui::TextStyle::Button,
-            egui::FontId::new(13.0, egui::FontFamily::Proportional),
+            egui::FontId::new(12.0, egui::FontFamily::Proportional),
+        );
+        style.text_styles.insert(
+            egui::TextStyle::Small,
+            egui::FontId::new(11.0, egui::FontFamily::Proportional),
+        );
+        style.text_styles.insert(
+            egui::TextStyle::Monospace,
+            egui::FontId::new(13.0, egui::FontFamily::Monospace),
         );
         context.set_style(style);
     }
@@ -159,8 +196,13 @@ mod tests {
 
     #[test]
     fn bundled_themes_parse() {
-        assert_eq!(Theme::gruber_darker().name, "Gruber Darker");
-        assert!(!Theme::paper_light().dark);
+        let themes = Theme::bundled_themes();
+        assert_eq!(themes.len(), 12);
+        assert_eq!(themes[0].name, "Dark Modern");
+        assert!(themes.iter().any(|theme| theme.name == "Dark Modern"));
+        assert!(themes
+            .iter()
+            .any(|theme| theme.name == "Light Modern" && !theme.dark));
     }
 
     #[test]

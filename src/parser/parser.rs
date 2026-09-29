@@ -631,6 +631,15 @@ impl Parser {
                         },
                     );
                 }
+            } else if self.match_token(&[TokenType::Apostrophe]) {
+                let span = expr.span.through(self.previous_span());
+                expr = Expr::new(
+                    span,
+                    ExprKind::Unary {
+                        op: UnaryOp::Transpose,
+                        expr: Box::new(expr),
+                    },
+                );
             } else {
                 break;
             }
@@ -968,5 +977,30 @@ mod tests {
             &source[variable.span.byte_start..variable.span.byte_end],
             "x"
         );
+    }
+
+    #[test]
+    fn transpose_is_a_chainable_postfix_expression() {
+        let source = "print(A''[0]);";
+        let mut scanner = Scanner::new(source);
+        let tokens = scanner.scan_tokens().clone();
+        let program = Parser::new(tokens).parse().unwrap();
+        let StatementKind::Print(expression) = &program[0].kind else {
+            panic!("expected print statement");
+        };
+        assert_eq!(
+            &source[expression.span.byte_start..expression.span.byte_end],
+            "A''[0]"
+        );
+        let ExprKind::Index { target, .. } = &expression.kind else {
+            panic!("expected indexing after transpose");
+        };
+        assert!(matches!(
+            target.kind,
+            ExprKind::Unary {
+                op: UnaryOp::Transpose,
+                ..
+            }
+        ));
     }
 }

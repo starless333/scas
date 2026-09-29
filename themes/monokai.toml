@@ -1,0 +1,23 @@
+name = "Monokai"
+dark = true
+
+[ui]
+background = "#1e1f1c"
+panel = "#272822"
+editor = "#272822"
+text = "#f8f8f2"
+muted = "#a7a69b"
+accent = "#a6e22e"
+selection = "#49483e"
+
+[syntax]
+plain = "#f8f8f2"
+keyword = "#f92672"
+number = "#ae81ff"
+string = "#e6db74"
+comment = "#75715e"
+doc_comment = "#66d9ef"
+identifier = "#a6e22e"
+operator = "#f92672"
+delimiter = "#f8f8f2"
+render_marker = "#66d9ef"

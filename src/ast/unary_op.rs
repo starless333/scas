@@ -4,4 +4,5 @@ pub enum UnaryOp {
     Not,
     BitNot,
     Tilde,
+    Transpose,
 }

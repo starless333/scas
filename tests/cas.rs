@@ -218,12 +218,20 @@ fn linear_algebra_library_computes_exact_results_and_step_variants() {
             r#"
             let A = [1, 2; 3, 4];
             print(transpose(A));
+            print(A');
+            print(A' * [5, 11]);
+            print([1, 2, 3; 4, 5, 6]');
             print(trace(A));
             print(det(A));
             print(rank([1, 2; 2, 4]));
             print(rref(A));
             print(inverse(A));
             print(matmul(A, A));
+            print(A * A);
+            print(matmul(A, [5, 11]));
+            print(A * [5, 11]);
+            print([1, 2, 3; 4, 5, 6] * [7, 8; 9, 10; 11, 12]);
+            print([1, 2, 3; 4, 5, 6] * [1, 2, 3]);
             print(dot([1, 2, 3], [4, 5, 6]));
             print(cross([1, 2, 3], [4, 5, 6]));
             print(norm([3, 4]));
@@ -231,13 +239,58 @@ fn linear_algebra_library_computes_exact_results_and_step_variants() {
             "#,
         ),
         concat!(
-            "[[1, 3], [2, 4]]\n5\n-2\n1\n[[1, 0], [0, 1]]\n",
+            "[[1, 3], [2, 4]]\n[[1, 3], [2, 4]]\n[38, 54]\n",
+            "[[1, 4], [2, 5], [3, 6]]\n5\n-2\n1\n[[1, 0], [0, 1]]\n",
             "[[-2, 1], [3/2, -1/2]]\n[[7, 10], [15, 22]]\n",
+            "[[7, 10], [15, 22]]\n[27, 59]\n[27, 59]\n",
+            "[[58, 64], [139, 154]]\n[14, 32]\n",
             "32\n[-3, 6, -3]\n5\n[1, 2]\n",
         )
     );
     let steps = output("print(rref_steps([1, 2; 3, 4]));");
     assert_eq!(steps, "[[1, 0], [0, 1]]\n");
+    assert_eq!(output("let A = [1, 2; 3, 4]; print(A'' == A);"), "true\n");
+    assert_eq!(
+        runtime_error("print([1, 2; 3, 4] * [1, 2, 3]);"),
+        "* matrix and vector dimensions do not align",
+    );
+}
+
+#[test]
+fn square_matrices_support_integer_powers_by_squaring() {
+    assert_eq!(
+        output(
+            r#"
+            let A = [1, 1; 1, 0];
+            print(A^0);
+            print(A^1);
+            print(A^2);
+            print(A^10);
+            print([1, 2; 3, 4]^-1);
+            print([1, 2; 3, 4]^2 * [1, 0]);
+            "#,
+        ),
+        concat!(
+            "[[1, 0], [0, 1]]\n[[1, 1], [1, 0]]\n[[2, 1], [1, 1]]\n",
+            "[[89, 55], [55, 34]]\n[[-2, 1], [3/2, -1/2]]\n[7, 15]\n",
+        ),
+    );
+    assert_eq!(
+        runtime_error("print([1, 2, 3; 4, 5, 6]^2);"),
+        "matrix power expects a square matrix",
+    );
+    assert_eq!(
+        runtime_error("print([1, 2; 3, 4]^(1/2));"),
+        "matrix exponent must be an integer",
+    );
+    assert_eq!(
+        runtime_error("print([1, 2; 3, 4]^n);"),
+        "matrix exponent must be an integer",
+    );
+    assert_eq!(
+        runtime_error("print([1, 2; 2, 4]^-1);"),
+        "matrix is singular and has no inverse",
+    );
 }
 
 #[test]

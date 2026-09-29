@@ -113,7 +113,7 @@ unary           ::= ("!" | "-" | "~") unary | exponent
 
 exponent        ::= postfix ("^" exponent)?
 
-postfix         ::= primary ("(" argument_list? ")" | "[" index_list "]")*
+postfix         ::= primary ("(" argument_list? ")" | "[" index_list "]" | "'")*
 
 index_list      ::= expression ("," expression)*
 

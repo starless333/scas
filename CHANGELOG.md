@@ -5,6 +5,12 @@ SCAS follows Semantic Versioning. User-visible changes accumulate under
 
 ## Unreleased
 
+- Added `A'` postfix matrix-transpose notation and matrix multiplication for
+  matrix × matrix and matrix × column-vector operands.
+- Added square-matrix integer powers using binary exponentiation, including
+  identity and exact inverse behavior for zero and negative exponents.
+- Added native IDE tabs for a live-typeset persistent REPL and a reserved
+  graphing-calculator workspace.
 - Replaced machine-precision math with arbitrary-precision real and complex
   elementary evaluation, exact symbolic constants, and explicit `evalf`.
 - Added principal complex branches, first-class complex arithmetic, exact

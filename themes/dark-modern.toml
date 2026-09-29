@@ -1,0 +1,23 @@
+name = "Dark Modern"
+dark = true
+
+[ui]
+background = "#181818"
+panel = "#1f1f1f"
+editor = "#1e1e1e"
+text = "#cccccc"
+muted = "#9d9d9d"
+accent = "#007acc"
+selection = "#264f78"
+
+[syntax]
+plain = "#d4d4d4"
+keyword = "#c586c0"
+number = "#b5cea8"
+string = "#ce9178"
+comment = "#6a9955"
+doc_comment = "#608b4e"
+identifier = "#9cdcfe"
+operator = "#d4d4d4"
+delimiter = "#ffd700"
+render_marker = "#4ec9b0"

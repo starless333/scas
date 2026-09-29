@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Official reference for every mathematical function currently supported by SCAS.">
+  <title>SCAS Mathematical Function Reference</title>
+  <style>
+    :root { color-scheme: light dark; --bg:#101418; --panel:#171d23; --text:#e7edf3; --muted:#a9b5c0; --line:#34404b; --accent:#62a9ff; --code:#0b0f13; }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin:0; background:var(--bg); color:var(--text); font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif; }
+    a { color:var(--accent); text-underline-offset:.18em; }
+    code, pre { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; }
+    code { overflow-wrap:anywhere; }
+    pre { margin:1rem 0; padding:1rem; background:var(--code); border:1px solid var(--line); border-radius:8px; white-space:pre-wrap; overflow-wrap:anywhere; }
+    .shell { display:grid; grid-template-columns:minmax(13rem,18rem) minmax(0,1fr); max-width:90rem; margin:auto; }
+    nav { position:sticky; top:0; height:100vh; overflow:auto; padding:2rem 1.25rem; border-right:1px solid var(--line); }
+    nav strong { display:block; margin-bottom:.7rem; }
+    nav a { display:block; padding:.2rem 0; color:var(--muted); text-decoration:none; }
+    nav a:hover, nav a:focus-visible { color:var(--text); }
+    main { min-width:0; max-width:75rem; padding:clamp(1.5rem,4vw,4rem); }
+    header { border-bottom:1px solid var(--line); padding-bottom:2rem; margin-bottom:2rem; }
+    h1 { font-size:clamp(2rem,5vw,4rem); line-height:1.05; letter-spacing:-.03em; margin:0 0 1rem; }
+    h2 { margin-top:3rem; padding-top:1rem; border-top:1px solid var(--line); }
+    .lede { max-width:70ch; color:var(--muted); font-size:1.1rem; }
+    .note { padding:1rem; background:var(--panel); border:1px solid var(--line); border-radius:8px; }
+    .table-wrap { overflow-x:auto; }
+    table { width:100%; border-collapse:collapse; font-size:.95rem; }
+    th, td { padding:.65rem .75rem; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
+    th { color:var(--muted); font-size:.78rem; letter-spacing:.06em; text-transform:uppercase; }
+    td:first-child { white-space:nowrap; }
+    footer { margin-top:4rem; padding-top:1rem; border-top:1px solid var(--line); color:var(--muted); }
+    @media (max-width:760px) { .shell { display:block; } nav { position:static; width:auto; height:auto; border-right:0; border-bottom:1px solid var(--line); columns:2; } nav strong { column-span:all; } main { padding:1.25rem; } }
+    @media (prefers-color-scheme:light) { :root { --bg:#f7f9fb; --panel:#fff; --text:#17212b; --muted:#536271; --line:#ccd5de; --accent:#075dab; --code:#eef2f5; } }
+  </style>
+</head>
+<body>
+<div class="shell">
+  <nav aria-label="Function families">
+    <strong>SCAS reference</strong>
+    <a href="#model">Evaluation model</a><a href="#constants">Constants</a><a href="#numeric">Numeric utilities</a>
+    <a href="#elementary">Elementary functions</a><a href="#special">Special functions</a><a href="#symbolic">Symbolic algebra</a>
+    <a href="#assumptions">Assumptions</a><a href="#calculus">Calculus</a><a href="#polynomials">Polynomials</a>
+    <a href="#linear-algebra">Linear algebra</a><a href="#documenting">Documenting variants</a><a href="#errors">Domains and errors</a>
+  </nav>
+  <main>
+    <header>
+      <h1>Mathematical function reference</h1>
+      <p class="lede">The official reference for every mathematical builtin currently registered by SCAS 0.1.0. Signatures use <code>x</code> for a value, <code>expr</code> for a symbolic expression, <code>v</code> for a vector, and <code>A</code> for a matrix.</p>
+    </header>
+
+    <section id="model">
+      <h2>Evaluation model</h2>
+      <p>Integers and rationals remain exact. Decimals are arbitrary precision. Elementary functions support arbitrary-precision real and principal-branch complex evaluation. Exact expressions remain symbolic when SCAS cannot produce a safe exact result; use <code>evalf(expr)</code> or a decimal input to request approximation.</p>
+      <pre><code>print(sin(pi / 6));       // 1/2
+print(sqrt(2));           // sqrt(2)
+print(evalf(sqrt(2)));    // decimal at the active precision
+print([1, 2; 3, 4] * [5, 6]); // [17, 39]</code></pre>
+      <p class="note">The default precision is 100 significant digits. Batch mode accepts <code>--precision N</code>; the REPL accepts <code>:precision N</code>. Exact poles, incompatible dimensions, and unsupported domains are runtime errors rather than sentinel values.</p>
+    </section>
+
+    <section id="constants"><h2>Constants</h2><div class="table-wrap"><table><thead><tr><th>Name</th><th>Meaning</th><th>Aliases / notes</th></tr></thead><tbody>
+      <tr><td><code>pi</code></td><td>Exact symbolic π.</td><td><code>π</code></td></tr><tr><td><code>e</code></td><td>Exact symbolic Euler constant.</td><td>Use <code>evalf(e)</code> to approximate.</td></tr>
+      <tr><td><code>tau</code></td><td>Exact symbolic 2π.</td><td><code>τ</code></td></tr><tr><td><code>phi</code></td><td>Exact symbolic golden ratio.</td><td><code>φ</code>; identities such as <code>phi^2 = phi + 1</code> are recognized.</td></tr>
+    </tbody></table></div></section>
+
+    <section id="numeric"><h2>Numeric utilities</h2><div class="table-wrap"><table><thead><tr><th>Signature</th><th>Result</th><th>Domain</th></tr></thead><tbody>
+      <tr><td><code>abs(x)</code></td><td>Absolute value or complex magnitude.</td><td>Real or complex number; assumption-aware symbolics.</td></tr>
+      <tr><td><code>sign(x)</code></td><td>−1, 0, or 1.</td><td>Real values only.</td></tr>
+      <tr><td><code>floor(x)</code>, <code>ceil(x)</code></td><td>Directed integer rounding.</td><td>Real values only.</td></tr>
+      <tr><td><code>round(x)</code>, <code>trunc(x)</code></td><td>Nearest integer or truncation toward zero.</td><td>Real values only.</td></tr>
+      <tr><td><code>min(a, b)</code>, <code>max(a, b)</code></td><td>Smaller or larger operand.</td><td>Ordered real values.</td></tr>
+      <tr><td><code>hypot(x, y)</code></td><td>Stable √(x²+y²).</td><td>Real values.</td></tr>
+      <tr><td><code>gcd(a, b)</code>, <code>lcm(a, b)</code></td><td>Greatest common divisor or least common multiple.</td><td>Integers.</td></tr>
+      <tr><td><code>degrees(x)</code>, <code>radians(x)</code></td><td>Convert radians to degrees or degrees to radians.</td><td>Numeric or symbolic angle.</td></tr>
+      <tr><td><code>evalf(expr)</code></td><td>Approximate an exact or symbolic expression at active precision.</td><td>Numerically evaluable expression.</td></tr>
+    </tbody></table></div></section>
+
+    <section id="elementary"><h2>Elementary functions</h2><div class="table-wrap"><table><thead><tr><th>Signature</th><th>Meaning</th><th>Domain / branch</th></tr></thead><tbody>
+      <tr><td><code>sqrt(x)</code></td><td>Square root.</td><td>Principal complex branch; exact roots stay exact.</td></tr>
+      <tr><td><code>cbrt(x)</code></td><td>Cube root.</td><td>Real root for real input; principal root for complex input.</td></tr>
+      <tr><td><code>exp(x)</code></td><td>eˣ.</td><td>Real or complex.</td></tr>
+      <tr><td><code>ln(x)</code>, <code>log(x)</code></td><td>Natural logarithm.</td><td>Principal complex branch.</td></tr>
+      <tr><td><code>log(value, base)</code></td><td>Logarithm in an explicit base.</td><td>Computed as <code>ln(value) / ln(base)</code>.</td></tr>
+      <tr><td><code>log10(x)</code>, <code>log2(x)</code></td><td>Base-10 or base-2 logarithm.</td><td>Principal complex branch.</td></tr>
+      <tr><td><code>sin(x)</code>, <code>cos(x)</code>, <code>tan(x)</code></td><td>Primary trigonometric functions.</td><td>Real or complex; exact special angles are recognized.</td></tr>
+      <tr><td><code>sec(x)</code>, <code>csc(x)</code>, <code>cot(x)</code></td><td>Reciprocal trigonometric functions.</td><td>Real or complex; exact poles are errors.</td></tr>
+      <tr><td><code>asin(x)</code>, <code>acos(x)</code>, <code>atan(x)</code></td><td>Inverse trigonometric functions.</td><td>Principal complex branches.</td></tr>
+      <tr><td><code>atan2(y, x)</code></td><td>Quadrant-aware angle.</td><td>Real inputs only.</td></tr>
+      <tr><td><code>sinh(x)</code>, <code>cosh(x)</code>, <code>tanh(x)</code></td><td>Hyperbolic functions.</td><td>Real or complex.</td></tr>
+      <tr><td><code>asinh(x)</code>, <code>acosh(x)</code>, <code>atanh(x)</code></td><td>Inverse hyperbolic functions.</td><td>Principal complex branches.</td></tr>
+    </tbody></table></div></section>
+
+    <section id="special"><h2>Special functions</h2><div class="table-wrap"><table><thead><tr><th>Signature</th><th>Meaning</th><th>Notes</th></tr></thead><tbody>
+      <tr><td><code>erf(x)</code></td><td>Error function.</td><td>Arbitrary-precision real implementation.</td></tr><tr><td><code>erfc(x)</code></td><td>Complementary error function.</td><td>Arbitrary-precision real implementation.</td></tr>
+      <tr><td><code>gamma(x)</code></td><td>Gamma function.</td><td>Alias <code>Γ(x)</code>; real non-pole inputs.</td></tr><tr><td><code>lgamma(x)</code></td><td><code>ln(abs(gamma(x)))</code>.</td><td>Real non-pole inputs.</td></tr>
+    </tbody></table></div></section>
+
+    <section id="symbolic"><h2>Symbolic algebra</h2><div class="table-wrap"><table><thead><tr><th>Signature</th><th>Behavior</th></tr></thead><tbody>
+      <tr><td><code>simplify(expr)</code></td><td>Applies safe local and algebraic simplifications without forcing expansion.</td></tr>
+      <tr><td><code>expand(expr)</code></td><td>Expands through a canonical sparse multivariate polynomial representation.</td></tr>
+      <tr><td><code>factor(expr)</code></td><td>Factors content, common monomials, square/cube identities, square-free factors, and rational roots.</td></tr>
+      <tr><td><code>apart(expr)</code></td><td>Partial-fraction decomposition for supported proper rational functions with distinct rational linear factors.</td></tr>
+      <tr><td><code>horner(expr)</code></td><td>Rewrites a polynomial into Horner form.</td></tr>
+      <tr><td><code>collect(expr, variable)</code></td><td>Collects terms by powers of a variable.</td></tr>
+      <tr><td><code>subs(expr, variable, value)</code></td><td>Substitutes and evaluates a symbolic expression.</td></tr>
+      <tr><td><code>solve(expr, variable)</code></td><td>Solves supported polynomial and invertible elementary equations; polynomial numeric fallback covers all complex roots through degree 64.</td></tr>
+    </tbody></table></div></section>
+
+    <section id="assumptions"><h2>Assumptions</h2><p>Assumption calls attach session-local facts to a variable and return that value. Contradictory sign assumptions are rejected.</p><div class="table-wrap"><table><thead><tr><th>Signature</th><th>Fact recorded</th></tr></thead><tbody>
+      <tr><td><code>assume_real(x)</code></td><td>x is real.</td></tr><tr><td><code>assume_integer(x)</code></td><td>x is an integer and therefore real.</td></tr>
+      <tr><td><code>assume_nonzero(x)</code></td><td>x ≠ 0.</td></tr><tr><td><code>assume_nonnegative(x)</code></td><td>x ≥ 0 and real.</td></tr>
+      <tr><td><code>assume_positive(x)</code></td><td>x &gt; 0, real, nonnegative, and nonzero.</td></tr><tr><td><code>assume_negative(x)</code></td><td>x &lt; 0, real, and nonzero.</td></tr>
+    </tbody></table></div></section>
+
+    <section id="calculus"><h2>Calculus</h2><div class="table-wrap"><table><thead><tr><th>Signature</th><th>Behavior</th></tr></thead><tbody>
+      <tr><td><code>derivative(expr, variable)</code></td><td>Symbolic derivative across algebraic, elementary, hyperbolic, inverse, error, and assumption-qualified absolute-value rules.</td></tr>
+      <tr><td><code>integral(expr, variable)</code></td><td>Symbolic antiderivative for supported elementary families; otherwise returns an explicit unevaluated integral.</td></tr>
+      <tr><td><code>gradient(expr, [variables])</code></td><td>Vector of first partial derivatives.</td></tr>
+      <tr><td><code>jacobian([expressions], [variables])</code></td><td>Matrix of first partial derivatives.</td></tr>
+      <tr><td><code>hessian(expr, [variables])</code></td><td>Matrix of second partial derivatives.</td></tr>
+      <tr><td><code>definite_integral(expr, variable, lower, upper)</code></td><td>Evaluates bounds using a supported symbolic antiderivative.</td></tr>
+    </tbody></table></div></section>
+
+    <section id="polynomials"><h2>Polynomial tools</h2><p>These functions operate exactly on univariate polynomials over rational coefficients and take the variable explicitly.</p><div class="table-wrap"><table><thead><tr><th>Signature</th><th>Result</th></tr></thead><tbody>
+      <tr><td><code>degree(expr, variable)</code></td><td>Polynomial degree.</td></tr><tr><td><code>coefficients(expr, variable)</code></td><td>Coefficient vector in ascending degree.</td></tr>
+      <tr><td><code>resultant(a, b, variable)</code></td><td>Exact Sylvester resultant.</td></tr><tr><td><code>discriminant(expr, variable)</code></td><td>Polynomial discriminant.</td></tr>
+      <tr><td><code>polynomial_gcd(a, b, variable)</code></td><td>Normalized polynomial greatest common divisor.</td></tr><tr><td><code>polynomial_divrem(a, b, variable)</code></td><td><code>[quotient, remainder]</code> from exact Euclidean division.</td></tr>
+    </tbody></table></div></section>
+
+    <section id="linear-algebra"><h2>Linear algebra</h2><p>Vectors are arrays and matrices use semicolon-separated rows, such as <code>[1, 2; 3, 4]</code>. Entries may be exact numbers or symbolic expressions.</p><div class="table-wrap"><table><thead><tr><th>Signature</th><th>Result</th></tr></thead><tbody>
+      <tr><td><code>transpose(A)</code> or <code>A'</code></td><td>Matrix transpose. The apostrophe is a chainable postfix operator.</td></tr><tr><td><code>trace(A)</code></td><td>Sum of a square matrix's diagonal.</td></tr>
+      <tr><td><code>det(A)</code></td><td>Exact determinant of a square matrix.</td></tr><tr><td><code>rank(A)</code></td><td>Rank found by exact row reduction.</td></tr>
+      <tr><td><code>rref(A)</code></td><td>Reduced row-echelon form.</td></tr><tr><td><code>inverse(A)</code></td><td>Inverse of a nonsingular square matrix.</td></tr>
+      <tr><td><code>matmul(A, B)</code></td><td>Matrix × matrix product. The <code>A * B</code> operator is equivalent.</td></tr>
+      <tr><td><code>matmul(A, v)</code></td><td>Matrix × column-vector product. The <code>A * v</code> operator is equivalent.</td></tr>
+      <tr><td><code>A^n</code></td><td>Square-matrix integer power using binary exponentiation. Zero returns the identity; negative powers use the exact inverse.</td></tr>
+      <tr><td><code>dot(u, v)</code></td><td>Dot product of equal-length vectors.</td></tr><tr><td><code>cross(u, v)</code></td><td>Three-dimensional cross product.</td></tr>
+      <tr><td><code>norm(v)</code></td><td>Euclidean vector norm.</td></tr><tr><td><code>solve_linear(A, b)</code></td><td>Unique solution of <code>Ax=b</code>.</td></tr>
+    </tbody></table></div>
+    <pre><code>let A = [1, 2; 3, 4];
+let B = [2, 0; 1, 2];
+print(A');          // [[1, 3], [2, 4]]
+print(A * B);       // [[4, 4], [10, 8]]
+print(A * [5, 11]); // [27, 59]</code></pre></section>
+
+    <section id="documenting"><h2>Documenting variants</h2><p>Each function below returns the normal result plus structured derivation data used by the document renderer: <code>transpose_steps</code>, <code>trace_steps</code>, <code>det_steps</code>, <code>rank_steps</code>, <code>rref_steps</code>, <code>inverse_steps</code>, <code>matmul_steps</code>, <code>dot_steps</code>, <code>cross_steps</code>, <code>norm_steps</code>, and <code>solve_linear_steps</code>. Their arguments match the corresponding base function. Inside a render marker, <code>function(args) =&gt;;</code> automatically selects the documenting variant.</p></section>
+
+    <section id="errors"><h2>Domains, branches, and errors</h2><ul>
+      <li>Complex elementary results use conventional principal branches. Complex numbers are intentionally unordered.</li>
+      <li><code>atan2</code>, <code>hypot</code>, ordering, rounding, <code>min</code>, <code>max</code>, and <code>sign</code> require real inputs.</li>
+      <li>Complex <code>gamma</code>, <code>lgamma</code>, <code>erf</code>, and <code>erfc</code> are explicitly unsupported.</li>
+      <li>Matrix dimensions must align, row shapes must be rectangular, and inverse/linear-solve inputs must meet their uniqueness requirements.</li>
+      <li>Resource ceilings produce structured <code>limit error</code> diagnostics.</li>
+    </ul></section>
+    <footer>SCAS 0.1.0 · This file is self-contained and may be opened directly in a browser.</footer>
+  </main>
+</div>
+</body>
+</html>

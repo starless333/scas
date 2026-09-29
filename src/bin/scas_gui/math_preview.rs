@@ -47,6 +47,13 @@ pub fn show_document(
     }
 }
 
+pub fn show_expression(ui: &mut egui::Ui, latex: &str, color: Color32, size: f32) {
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 1.5;
+        render(ui, &parse(latex), size, color);
+    });
+}
+
 fn show_prose(ui: &mut egui::Ui, prose: &str, color: Color32, scale: f32) {
     for line in prose.lines() {
         if let Some(title) = latex_heading(line, r"\section*{") {
