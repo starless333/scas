@@ -72,7 +72,8 @@ At $x = 3$ the slope is $8$.
 
 ### 3.2 Render blocks `\{ ... \}`
 - Statements execute in order, exactly as in a normal block.
-- Each statement produces at most one aligned row.
+- Each semicolon-terminated statement produces a new aligned row. Commands
+  chained with a comma share one row and are separated by `\quad`.
 - **Scope: a render block does not introduce a new scope**, so definitions remain visible afterward.
 - Rendering per statement kind:
 
@@ -83,6 +84,7 @@ At $x = 3$ the slope is $8$.
 | `a = e;`, `a += e;` | `a &= e` (compound ops expand, e.g. `a &= a + e`) |
 | `e;` | `e` (typeset as written, not evaluated for display) |
 | `e =>;` | `e &= value` |
+| `let a = e, b = f;` | `a = e \quad b = f` |
 | `print(e);` | not typeset (executes only) |
 | `return e;` | not typeset by default |
 | `if` / `while` / `for` | executes; not typeset. Emit an informational diagnostic. |
@@ -91,7 +93,13 @@ At $x = 3$ the slope is $8$.
 ### 3.3 Render lines `\[ ... \]`
 - Contains exactly one expression, optionally followed by `=>`.
 - Emits `\[ ... \]` (or `equation*`).
-- Without `=>`: typeset the expression as written. With `=>`: `expr = value`.
+- Without `=>`: typeset the expression as written. With `=>`, ordinary values
+  use `expr = value`, transformations use `\implies`, `solve(f, x)` expands to
+  `f = 0 \implies x = ...`, and `_steps` functions emit their intermediate rows.
+  Linear-algebra derivations include the exact row operation beside each
+  `A \sim A'` transition; integration adds `+C` and a differentiation check.
+- Single-letter variables use normal italic mathematical notation. Longer
+  identifiers are upright.
 
 ### 3.4 Interpolation `#{ expr }`
 - `expr` is parsed with the normal expression grammar and evaluated in the current scope at that point in source order.

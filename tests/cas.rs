@@ -50,6 +50,31 @@ fn canonical_arithmetic_collects_terms_powers_and_factors() {
 }
 
 #[test]
+fn exact_polynomial_invariants_and_euclidean_tools_are_available() {
+    assert_eq!(
+        output(
+            r#"
+            print(resultant(x^2 + 1, x + 1, x));
+            print(resultant(x^2 - 1, x - 1, x));
+            print(discriminant(x^3 - 3x + 2, x));
+            print(degree(3x^4 - 1, x));
+            print(coefficients(3x^2 + 2x - 1, x));
+            print(polynomial_gcd(x^3-x, x^2-1, x));
+            print(polynomial_divrem(x^3-1, x-1, x));
+            "#,
+        ),
+        concat!(
+            "2\n0\n0\n4\n[-1, 2, 3]\n",
+            "x ^ 2 - 1\n[x ^ 2 + x + 1, 0]\n",
+        ),
+    );
+    assert_eq!(
+        runtime_error("print(polynomial_divrem(x, 0, x));"),
+        "polynomial_divrem: polynomial_divrem divisor must be nonzero",
+    );
+}
+
+#[test]
 fn substitution_solving_and_calculus_have_safe_fallbacks() {
     assert_eq!(
         output(
@@ -184,6 +209,63 @@ fn fractions_are_combined_reduced_and_checked() {
         ),
     );
     assert_eq!(runtime_error("print(x/(x-x));"), "division by zero in '/'");
+}
+
+#[test]
+fn linear_algebra_library_computes_exact_results_and_step_variants() {
+    assert_eq!(
+        output(
+            r#"
+            let A = [1, 2; 3, 4];
+            print(transpose(A));
+            print(trace(A));
+            print(det(A));
+            print(rank([1, 2; 2, 4]));
+            print(rref(A));
+            print(inverse(A));
+            print(matmul(A, A));
+            print(dot([1, 2, 3], [4, 5, 6]));
+            print(cross([1, 2, 3], [4, 5, 6]));
+            print(norm([3, 4]));
+            print(solve_linear(A, [5, 11]));
+            "#,
+        ),
+        concat!(
+            "[[1, 3], [2, 4]]\n5\n-2\n1\n[[1, 0], [0, 1]]\n",
+            "[[-2, 1], [3/2, -1/2]]\n[[7, 10], [15, 22]]\n",
+            "32\n[-3, 6, -3]\n5\n[1, 2]\n",
+        )
+    );
+    let steps = output("print(rref_steps([1, 2; 3, 4]));");
+    assert_eq!(steps, "[[1, 0], [0, 1]]\n");
+}
+
+#[test]
+fn expanded_calculus_and_multivariable_tools_remain_exact() {
+    assert_eq!(
+        output(
+            r#"
+            print(derivative(phi*x, x));
+            print(integral(ln(x), x));
+            print(integral(asin(x), x));
+            print(integral(sec(x), x));
+            print(gradient(x^2+y^2, [x,y]));
+            print(jacobian([x*y, x+y], [x,y]));
+            print(hessian(x^2+x*y+y^2, [x,y]));
+            print(definite_integral(x^2, x, 0, 2));
+            "#,
+        ),
+        concat!(
+            "phi\n",
+            "ln(x) * x - x\n",
+            "asin(x) * x + sqrt(-(x ^ 2) + 1)\n",
+            "ln(sec(x) + tan(x))\n",
+            "[2 * x, 2 * y]\n",
+            "[[y, x], [1, 1]]\n",
+            "[[2, 1], [1, 2]]\n",
+            "8/3\n",
+        )
+    );
 }
 
 #[test]

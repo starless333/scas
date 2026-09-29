@@ -69,6 +69,8 @@ pub struct Polynomial {
 }
 
 impl Polynomial {
+    const MAX_RESULTANT_SIZE: usize = 128;
+
     pub fn solve_expression(
         expression: &SymbolicExpr,
         variable: Symbol,
@@ -80,6 +82,186 @@ impl Polynomial {
             return None;
         }
         Some(Self::solve_coefficients(coefficients))
+    }
+
+    pub fn degree_expression(
+        expression: &SymbolicExpr,
+        variable: Symbol,
+        symbols: &SymbolTable,
+    ) -> Result<usize, String> {
+        let (_, coefficients) = Self::coefficients_in(expression, variable, symbols)?;
+        coefficients
+            .len()
+            .checked_sub(1)
+            .ok_or_else(|| "degree is undefined for the zero polynomial".to_owned())
+    }
+
+    pub fn coefficient_expressions(
+        expression: &SymbolicExpr,
+        variable: Symbol,
+        symbols: &SymbolTable,
+    ) -> Result<Vec<Rc<SymbolicExpr>>, String> {
+        let (_, coefficients) = Self::coefficients_in(expression, variable, symbols)?;
+        if coefficients.is_empty() {
+            return Ok(vec![Self::integer_expression(0)]);
+        }
+        Ok(coefficients
+            .into_iter()
+            .map(|coefficient| Rc::new(SymbolicExpr::Number(Number::from_rational(coefficient))))
+            .collect())
+    }
+
+    pub fn divrem_expressions(
+        dividend: &SymbolicExpr,
+        divisor: &SymbolicExpr,
+        variable: Symbol,
+        symbols: &SymbolTable,
+    ) -> Result<(Rc<SymbolicExpr>, Rc<SymbolicExpr>), String> {
+        let (variable, dividend) = Self::coefficients_in(dividend, variable, symbols)?;
+        let (_, divisor) = Self::coefficients_in(divisor, variable.symbol, symbols)?;
+        if divisor.is_empty() {
+            return Err("polynomial_divrem divisor must be nonzero".to_owned());
+        }
+        let (quotient, remainder) = Self::divide_coefficients(dividend, &divisor)
+            .ok_or_else(|| "polynomial division failed".to_owned())?;
+        Ok((
+            Self::from_univariate(variable.clone(), quotient).to_expression(),
+            Self::from_univariate(variable, remainder).to_expression(),
+        ))
+    }
+
+    pub fn gcd_expression(
+        left: &SymbolicExpr,
+        right: &SymbolicExpr,
+        variable: Symbol,
+        symbols: &SymbolTable,
+    ) -> Result<Rc<SymbolicExpr>, String> {
+        let (variable, left) = Self::coefficients_in(left, variable, symbols)?;
+        let (_, right) = Self::coefficients_in(right, variable.symbol, symbols)?;
+        if left.is_empty() && right.is_empty() {
+            return Err("polynomial_gcd is undefined for two zero polynomials".to_owned());
+        }
+        let gcd = Self::polynomial_gcd(left, right);
+        Ok(Self::from_univariate(variable, gcd).to_expression())
+    }
+
+    pub fn resultant_expression(
+        left: &SymbolicExpr,
+        right: &SymbolicExpr,
+        variable: Symbol,
+        symbols: &SymbolTable,
+    ) -> Result<BigRational, String> {
+        let (_, left) = Self::coefficients_in(left, variable, symbols)?;
+        let (_, right) = Self::coefficients_in(right, variable, symbols)?;
+        Self::resultant_coefficients(&left, &right)
+    }
+
+    pub fn discriminant_expression(
+        expression: &SymbolicExpr,
+        variable: Symbol,
+        symbols: &SymbolTable,
+    ) -> Result<BigRational, String> {
+        let (_, coefficients) = Self::coefficients_in(expression, variable, symbols)?;
+        let Some(degree) = coefficients.len().checked_sub(1) else {
+            return Err("discriminant is undefined for the zero polynomial".to_owned());
+        };
+        if degree <= 1 {
+            return Ok(BigRational::one());
+        }
+        let derivative = coefficients
+            .iter()
+            .enumerate()
+            .skip(1)
+            .map(|(exponent, coefficient)| coefficient * BigInt::from(exponent))
+            .collect::<Vec<_>>();
+        let resultant = Self::resultant_coefficients(&coefficients, &derivative)?;
+        let leading = coefficients
+            .last()
+            .expect("a nonzero polynomial has a leading coefficient");
+        let sign = if degree * (degree - 1) / 2 % 2 == 0 {
+            BigRational::one()
+        } else {
+            -BigRational::one()
+        };
+        Ok(sign * resultant / leading)
+    }
+
+    fn coefficients_in(
+        expression: &SymbolicExpr,
+        variable: Symbol,
+        symbols: &SymbolTable,
+    ) -> Result<(Variable, Vec<BigRational>), String> {
+        let variable = Variable {
+            name: symbols.resolve(variable).to_owned(),
+            symbol: variable,
+        };
+        let polynomial = Self::from_expression(expression, symbols)
+            .ok_or_else(|| "expected a polynomial with rational coefficients".to_owned())?;
+        let mut coefficients = polynomial
+            .coefficients_for(&variable)
+            .ok_or_else(|| "expression is not univariate in the requested variable".to_owned())?;
+        Self::trim_coefficients(&mut coefficients);
+        Ok((variable, coefficients))
+    }
+
+    fn resultant_coefficients(
+        left: &[BigRational],
+        right: &[BigRational],
+    ) -> Result<BigRational, String> {
+        if left.is_empty() || right.is_empty() {
+            return Ok(BigRational::zero());
+        }
+        let left_degree = left.len() - 1;
+        let right_degree = right.len() - 1;
+        let size = left_degree + right_degree;
+        if size > Self::MAX_RESULTANT_SIZE {
+            return Err(format!(
+                "resultant matrix dimension {size} exceeds the limit of {}",
+                Self::MAX_RESULTANT_SIZE
+            ));
+        }
+        if size == 0 {
+            return Ok(BigRational::one());
+        }
+        let mut matrix = vec![vec![BigRational::zero(); size]; size];
+        for row in 0..right_degree {
+            for exponent in 0..=left_degree {
+                matrix[row][row + exponent] = left[left_degree - exponent].clone();
+            }
+        }
+        for row in 0..left_degree {
+            for exponent in 0..=right_degree {
+                matrix[right_degree + row][row + exponent] = right[right_degree - exponent].clone();
+            }
+        }
+        Ok(Self::rational_determinant(matrix))
+    }
+
+    fn rational_determinant(mut matrix: Vec<Vec<BigRational>>) -> BigRational {
+        let mut determinant = BigRational::one();
+        for column in 0..matrix.len() {
+            let Some(pivot) = (column..matrix.len()).find(|&row| !matrix[row][column].is_zero())
+            else {
+                return BigRational::zero();
+            };
+            if pivot != column {
+                matrix.swap(pivot, column);
+                determinant = -determinant;
+            }
+            let pivot_value = matrix[column][column].clone();
+            determinant *= &pivot_value;
+            for row in column + 1..matrix.len() {
+                if matrix[row][column].is_zero() {
+                    continue;
+                }
+                let factor = &matrix[row][column] / &pivot_value;
+                for entry in column + 1..matrix.len() {
+                    let amount = &factor * &matrix[column][entry];
+                    matrix[row][entry] -= amount;
+                }
+            }
+        }
+        determinant
     }
 
     fn solve_coefficients(mut coefficients: Vec<BigRational>) -> Vec<Rc<SymbolicExpr>> {

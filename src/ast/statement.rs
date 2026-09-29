@@ -64,5 +64,8 @@ pub enum StatementKind {
         expression: Expr,
         show_result: bool,
     },
+    /// Several commands separated by commas and terminated by one semicolon.
+    /// They execute in the same scope and form one row in a render block.
+    Chain(Vec<Statement>),
     Show(Expr),
 }

@@ -70,7 +70,7 @@ fn build_command_emits_a_complete_latex_document() {
     assert!(output.status.success(), "{}", text(&output.stderr));
     assert!(latex.contains(r"\usepackage{amsmath}"));
     assert!(latex.contains(r"Value: 2"));
-    assert!(latex.contains(r"\frac{\mathrm{x}}{4} = \frac{1}{2}"));
+    assert!(latex.contains(r"\frac{x}{4} = \frac{1}{2}"));
     assert!(latex.ends_with("\\end{document}\n"));
 }
 

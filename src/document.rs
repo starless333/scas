@@ -95,10 +95,25 @@ impl Document {
 
 /// Parse, execute, and assemble one self-documenting SCAS source file.
 pub fn build(source: &str) -> Result<Document, ExecutionError> {
-    build_with_options(source, BuildOptions::default())
+    build_with_options_and_limits(source, BuildOptions::default(), Limits::default())
 }
 
 pub fn build_with_options(source: &str, options: BuildOptions) -> Result<Document, ExecutionError> {
+    build_with_options_and_limits(source, options, Limits::default())
+}
+
+/// Build a live document with a caller-selected evaluation budget. Editors
+/// use this to keep expensive or accidental computations from monopolizing a
+/// machine; explicit runs and exports retain the normal full budget.
+pub fn build_with_limits(source: &str, limits: Limits) -> Result<Document, ExecutionError> {
+    build_with_options_and_limits(source, BuildOptions::default(), limits)
+}
+
+fn build_with_options_and_limits(
+    source: &str,
+    options: BuildOptions,
+    limits: Limits,
+) -> Result<Document, ExecutionError> {
     let mut scanner = Scanner::new(source);
     let tokens = scanner.scan_tokens().clone();
     if !scanner.errors().is_empty() {
@@ -106,7 +121,7 @@ pub fn build_with_options(source: &str, options: BuildOptions) -> Result<Documen
     }
     let symbols = scanner.into_symbols();
     let statements = Parser::new(tokens).parse().map_err(ExecutionError::Parse)?;
-    let mut interpreter = Interpreter::with_limits(symbols, io::sink(), Limits::default());
+    let mut interpreter = Interpreter::with_limits(symbols, io::sink(), limits);
     let mut document = Document {
         packages: options.packages,
         ..Document::default()
@@ -137,10 +152,10 @@ fn process_top_level(
         } => {
             let source = LatexRenderer::new(interpreter.symbols()).expression(expression);
             let latex = if *show_result {
-                match interpreter.evaluate_expression(expression) {
+                match interpreter.evaluate_documented_expression(expression) {
                     Ok(value) => format!(
-                        r"\[{source} = {}\]",
-                        LatexRenderer::new(interpreter.symbols()).value(&value)
+                        r"\[{}\]",
+                        render_evaluation(expression, &source, &value, interpreter)
                     ),
                     Err(error) => {
                         push_runtime_diagnostic(error, statement.span, document);
@@ -192,16 +207,15 @@ fn render_block(
             }
             StatementKind::Show(expression) => {
                 let text = renderer.expression(expression);
-                Some(match interpreter.evaluate_expression(expression) {
-                    Ok(value) => format!(
-                        "{text} &= {}",
-                        LatexRenderer::new(interpreter.symbols()).value(&value)
-                    ),
-                    Err(error) => {
-                        push_runtime_diagnostic(error, statement.span, document);
-                        format!(r"{text} &= \text{{\textbf{{?}}}}")
-                    }
-                })
+                Some(
+                    match interpreter.evaluate_documented_expression(expression) {
+                        Ok(value) => render_evaluation(expression, &text, &value, interpreter),
+                        Err(error) => {
+                            push_runtime_diagnostic(error, statement.span, document);
+                            format!(r"{text} &= \text{{\textbf{{?}}}}")
+                        }
+                    },
+                )
             }
             StatementKind::Let { name, value } => {
                 let row = value.as_ref().map(|value| {
@@ -244,6 +258,36 @@ fn render_block(
                     r"\operatorname{{{name}}}\left({params}\right) &= {body}"
                 ))
             }
+            StatementKind::Chain(statements) => {
+                let mut parts = Vec::new();
+                for chained in statements {
+                    let renderer = LatexRenderer::new(interpreter.symbols());
+                    match &chained.kind {
+                        StatementKind::Let {
+                            name,
+                            value: Some(value),
+                        } => parts.push(format!(
+                            "{} = {}",
+                            renderer.identifier(interpreter.symbols().resolve(*name)),
+                            renderer.expression(value)
+                        )),
+                        StatementKind::Let { value: None, .. } => {}
+                        StatementKind::Assign { name, value, .. } => parts.push(format!(
+                            "{} = {}",
+                            renderer.identifier(interpreter.symbols().resolve(*name)),
+                            renderer.expression(value)
+                        )),
+                        StatementKind::Expr(expression) => {
+                            parts.push(renderer.expression(expression))
+                        }
+                        _ => {}
+                    }
+                    interpreter
+                        .execute_statement(chained)
+                        .map_err(ExecutionError::Runtime)?;
+                }
+                (!parts.is_empty()).then(|| parts.join(r" \quad "))
+            }
             StatementKind::RenderLine { .. } | StatementKind::RenderBlock(_) => {
                 process_top_level(statement, interpreter, document)?;
                 None
@@ -274,10 +318,179 @@ fn render_block(
         document.fragments.push(DocumentFragment {
             span,
             kind: FragmentKind::AlignedMath,
-            latex: format!(r"\begin{{align*}}{}\end{{align*}}", rows.join(" \\\n")),
+            latex: format!(r"\begin{{align*}}{}\end{{align*}}", rows.join(" \\\\\n")),
         });
     }
     Ok(())
+}
+
+/// Give result markers mathematical meaning instead of blindly appending an
+/// equals sign to every call. Transformations use an implication, while solve
+/// expands its result into the equation(s) for the requested variable.
+fn render_evaluation(
+    expression: &Expr,
+    source: &str,
+    value: &crate::interpreter::value::Value,
+    interpreter: &Interpreter<io::Sink>,
+) -> String {
+    use crate::ast::ExprKind;
+
+    let renderer = LatexRenderer::new(interpreter.symbols());
+    let result = renderer.value(value);
+    let ExprKind::Call { callee, args } = &expression.kind else {
+        return format!("{source} = {result}");
+    };
+    let ExprKind::Variable(function) = callee.kind else {
+        return format!("{source} = {result}");
+    };
+    let name = interpreter.symbols().resolve(function);
+
+    if name == "solve" && args.len() == 2 {
+        let equation = renderer.expression(&args[0]);
+        let variable = renderer.expression(&args[1]);
+        if let crate::interpreter::value::Value::Array(roots) = value {
+            let solutions = if roots.is_empty() {
+                r"\text{no solutions}".to_owned()
+            } else {
+                roots
+                    .iter()
+                    .map(|root| format!("{variable} = {}", renderer.value(root)))
+                    .collect::<Vec<_>>()
+                    .join(r",\quad ")
+            };
+            return format!(r"{equation} = 0 \implies {solutions}");
+        }
+    }
+
+    if name == "derivative" && args.len() == 2 {
+        let function = renderer.expression(&args[0]);
+        let variable = renderer.expression(&args[1]);
+        return format!(
+            r"\begin{{aligned}}f\left({variable}\right)&={function} \\ \frac{{df}}{{d{variable}}}&={result}\end{{aligned}}"
+        );
+    }
+    if name == "integral" && args.len() == 2 {
+        let integrand = renderer.expression(&args[0]);
+        let variable = renderer.expression(&args[1]);
+        return format!(
+            r"\begin{{aligned}}{source}&={result}+C \\ \frac{{d}}{{d{variable}}}\left({result}\right)&={integrand}\end{{aligned}}"
+        );
+    }
+
+    if let crate::interpreter::value::Value::Derivation { result, steps } = value {
+        return render_derivation(name, args, source, result, steps, &renderer);
+    }
+
+    if matches!(
+        name,
+        "simplify"
+            | "expand"
+            | "factor"
+            | "apart"
+            | "horner"
+            | "collect"
+            | "subs"
+            | "rref"
+            | "inverse"
+            | "transpose"
+            | "solve_linear"
+            | "gradient"
+            | "jacobian"
+            | "hessian"
+            | "definite_integral"
+    ) {
+        return format!(r"{source} \implies {result}");
+    }
+    format!("{source} = {result}")
+}
+
+fn render_derivation(
+    name: &str,
+    args: &[Expr],
+    source: &str,
+    result: &crate::interpreter::value::Value,
+    steps: &[crate::interpreter::value::DerivationStep],
+    renderer: &LatexRenderer<'_>,
+) -> String {
+    use crate::interpreter::value::StepOperation;
+
+    let base_name = name.strip_suffix("_steps").unwrap_or(name);
+    let input = match (base_name, args) {
+        ("inverse", [matrix]) => format!(r"\left[{}\mid I\right]", renderer.expression(matrix)),
+        ("solve_linear", [matrix, vector]) => format!(
+            r"\left[{}\mid {}\right]",
+            renderer.expression(matrix),
+            renderer.expression(vector)
+        ),
+        (_, [first, ..]) => renderer.expression(first),
+        _ => source.to_owned(),
+    };
+    let mut rows = Vec::new();
+    for (index, step) in steps.iter().enumerate() {
+        let value = renderer.value(&step.value);
+        match &step.operation {
+            StepOperation::Start => rows.push(format!(r"{input} &= {value}")),
+            StepOperation::SwapRows { first, second } => rows.push(format!(
+                r"&\sim {value} && \left(R_{{{}}}\leftrightarrow R_{{{}}}\right)",
+                first + 1,
+                second + 1
+            )),
+            StepOperation::ScaleRow { row, divisor } => rows.push(format!(
+                r"&\sim {value} && \left(R_{{{}}}\leftarrow \frac{{1}}{{{}}}R_{{{}}}\right)",
+                row + 1,
+                renderer.value(divisor),
+                row + 1
+            )),
+            StepOperation::AddRowMultiple {
+                target,
+                source,
+                factor,
+            } => rows.push(format!(
+                r"&\sim {value} && \left(R_{{{}}}\leftarrow R_{{{}}}-\left({}\right)R_{{{}}}\right)",
+                target + 1,
+                target + 1,
+                renderer.value(factor),
+                source + 1
+            )),
+            StepOperation::Explanation(explanation) => rows.push(format!(
+                r"{} &= {value} && \left({explanation}\right)",
+                if index == 0 { source } else { "" }
+            )),
+        }
+    }
+    rows.push(format!(
+        r"{} &= {}",
+        semantic_result_name(base_name, args, renderer),
+        renderer.value(result)
+    ));
+    format!(r"\begin{{aligned}}{}\end{{aligned}}", rows.join(" \\\\\n"))
+}
+
+fn semantic_result_name(name: &str, args: &[Expr], renderer: &LatexRenderer<'_>) -> String {
+    match (name, args) {
+        ("rref", [matrix]) => format!(
+            r"\operatorname{{rref}}\left({}\right)",
+            renderer.expression(matrix)
+        ),
+        ("rank", [matrix]) => format!(
+            r"\operatorname{{rank}}\left({}\right)",
+            renderer.expression(matrix)
+        ),
+        ("inverse", [matrix]) => format!(r"{}^{{-1}}", renderer.expression(matrix)),
+        ("solve_linear", [matrix, vector]) => format!(
+            r"\operatorname{{solve}}\left({},{}\right)",
+            renderer.expression(matrix),
+            renderer.expression(vector)
+        ),
+        _ => {
+            let rendered = args
+                .iter()
+                .map(|arg| renderer.expression(arg))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(r"\operatorname{{{name}}}\left({rendered}\right)")
+        }
+    }
 }
 
 fn assign_operator(operator: AssignOp) -> &'static str {
@@ -449,13 +662,9 @@ mod tests {
         let document = build(source).unwrap();
         assert_eq!(document.fragments.len(), 3);
         assert!(document.fragments[0].latex.contains("Current value: 2"));
-        assert!(document.fragments[1].latex.contains(r"\mathrm{x} + 3 = 5"));
-        assert!(document.fragments[2]
-            .latex
-            .contains(r"\mathrm{y} &= \mathrm{x} \cdot 4"));
-        assert!(document.fragments[2]
-            .latex
-            .contains(r"\frac{\mathrm{y}}{2} &= 4"));
+        assert!(document.fragments[1].latex.contains(r"x + 3 = 5"));
+        assert!(document.fragments[2].latex.contains(r"y &= x \cdot 4"));
+        assert!(document.fragments[2].latex.contains(r"\frac{y}{2} = 4"));
         assert!(document.latex().contains(r"\usepackage{amsmath}"));
         assert!(document
             .fragments
@@ -482,5 +691,42 @@ mod tests {
         let latex = document.latex();
         assert!(latex.contains(r"\usepackage{mathtools}"));
         assert!(!latex.contains("bad{package}"));
+    }
+
+    #[test]
+    fn dynamic_results_chains_and_statement_rows_have_semantic_latex() {
+        let document = build(
+            r#"\{
+solve(z^2-z, z) =>;
+let long_name = 2, x = 1;
+x = 3;
+det_steps([1, 2; 3, 4]) =>;
+\}
+"#,
+        )
+        .unwrap();
+        let latex = &document.fragments[0].latex;
+        assert!(latex.contains(r"\mathrm{long}_{\mathrm{name}} = 2 \quad x = 1"));
+        assert!(latex.contains(r"z^{2} - z = 0 \implies"), "{latex}");
+        assert!(latex.contains(r"z = 0"));
+        assert!(latex.contains(r"z = 1"));
+        assert!(latex.contains(r"\begin{aligned}"));
+        assert!(latex.matches("\\\\\n").count() >= 3, "{latex}");
+    }
+
+    #[test]
+    fn row_reduction_documents_each_operation_and_equivalent_matrix() {
+        let document = build(r#"\{ rref([1, 2; 3, 4]) =>; \}"#).unwrap();
+        let latex = &document.fragments[0].latex;
+        assert!(latex.contains(r"\sim"), "{latex}");
+        assert!(
+            latex.contains(r"R_{2}\leftarrow R_{2}-\left(3\right)R_{1}"),
+            "{latex}"
+        );
+        assert!(
+            latex.contains(r"R_{2}\leftarrow \frac{1}{-2}R_{2}"),
+            "{latex}"
+        );
+        assert!(latex.contains(r"\operatorname{rref}"), "{latex}");
     }
 }

@@ -77,10 +77,18 @@ when those commands are unavailable.
 Gruber Darker is the default color scheme; Editor settings can switch to the
 bundled light scheme, load a custom TOML theme or font, and change the editor
 font family and size. See [`themes/README.md`](themes/README.md) for the theme
-format. Enable **Expand \\name** to turn shortcuts such as `\pi`, `\gamma`, or
-`\theta` into `π`, `γ`, or `θ`, or use the symbol bar. Unicode identifiers are valid source; `π` and
+format. Greek shortcut expansion is enabled by default, turning inputs such as
+`\pi`, `\gamma`, or `\theta` into `π`, `γ`, or `θ`; it can be disabled from the
+editor toolbar. Unicode identifiers are valid source; `π` and
 `τ` are built-in constant aliases and `Γ` calls the Gamma function. Use
 Ctrl+Enter to run and Ctrl+S to save the current file.
+
+The editor offers bounded, prefix-based completion for language constructs and
+every built-in function. Press Tab to accept the first suggestion, or use the
+**Snippets** menu for render blocks, documented equations, functions, control
+flow, matrices, and step-by-step linear algebra. Completion is local and does
+not run the parser or evaluator while typing, and suggestions appear directly
+under the text cursor.
 
 `scas --help` lists decimal-precision and execution-limit flags; `--version`
 prints the release version. Redirection and pipelines remain supported.
@@ -361,7 +369,16 @@ solution families are not yet represented by the language's array value.
 The GUI's resizable **LaTeX preview** pane updates from `///` prose and
 `\[ expression \]` render lines. It shows a readable math view, exposes the
 generated LaTeX for copying, and retains the last valid document while an
-expression is incomplete.
+expression is incomplete. **Export TeX** writes a complete document beside the
+current source file, and **Export PDF** invokes `pdflatex` on that document.
+
+Live editing uses cached, serialized system `latex`/`dvipng` rendering by
+default so the preview retains Computer Modern and faithful TeX layout. A fast
+structured renderer remains available as a fallback and can be selected by
+disabling **Computer Modern**. Analysis jobs are debounced, serialized, and
+evaluated with a bounded preview budget so stale expensive calculations cannot
+accumulate background workers. Explicit Run and export actions keep the normal
+full computation budget.
 
 Arrays are immutable, dynamically typed, and may be nested. Indexes are
 zero-based non-negative integers. `+` concatenates two arrays:
@@ -377,7 +394,15 @@ print(second([10, 20]));
 
 let matrix = [1, 2; 3, 4];
 print(matrix[1, 0]); // 3; equivalent to matrix[1][0]
+print(det(matrix));
+print(inverse(matrix));
+// In a render block, `rref(matrix) =>;` documents every row operation.
+print(rref_steps(matrix)); // explicit structured-work form; prints the final result
 ```
+
+The editor expands the complete standard Greek alphabet and common variant
+forms such as `\vartheta` and `\varphi`. `\pi`, `\tau`, and `\phi` resolve to
+the reserved exact constants; other Greek letters remain ordinary symbols.
 
 | Category | Operators |
 | --- | --- |

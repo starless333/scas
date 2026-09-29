@@ -65,6 +65,38 @@ pub enum Builtin {
     AssumeNegative,
     AssumeInteger,
     AssumeReal,
+    Transpose,
+    Trace,
+    Determinant,
+    Rank,
+    Rref,
+    Inverse,
+    Matmul,
+    Dot,
+    Cross,
+    Norm,
+    SolveLinear,
+    DeterminantSteps,
+    RrefSteps,
+    InverseSteps,
+    MatmulSteps,
+    SolveLinearSteps,
+    TransposeSteps,
+    TraceSteps,
+    RankSteps,
+    DotSteps,
+    CrossSteps,
+    NormSteps,
+    Gradient,
+    Jacobian,
+    Hessian,
+    DefiniteIntegral,
+    Degree,
+    Coefficients,
+    Resultant,
+    Discriminant,
+    PolynomialGcd,
+    PolynomialDivRem,
 }
 
 impl Builtin {
@@ -126,6 +158,38 @@ impl Builtin {
         ("assume_negative", Builtin::AssumeNegative),
         ("assume_integer", Builtin::AssumeInteger),
         ("assume_real", Builtin::AssumeReal),
+        ("transpose", Builtin::Transpose),
+        ("trace", Builtin::Trace),
+        ("det", Builtin::Determinant),
+        ("rank", Builtin::Rank),
+        ("rref", Builtin::Rref),
+        ("inverse", Builtin::Inverse),
+        ("matmul", Builtin::Matmul),
+        ("dot", Builtin::Dot),
+        ("cross", Builtin::Cross),
+        ("norm", Builtin::Norm),
+        ("solve_linear", Builtin::SolveLinear),
+        ("det_steps", Builtin::DeterminantSteps),
+        ("rref_steps", Builtin::RrefSteps),
+        ("inverse_steps", Builtin::InverseSteps),
+        ("matmul_steps", Builtin::MatmulSteps),
+        ("solve_linear_steps", Builtin::SolveLinearSteps),
+        ("transpose_steps", Builtin::TransposeSteps),
+        ("trace_steps", Builtin::TraceSteps),
+        ("rank_steps", Builtin::RankSteps),
+        ("dot_steps", Builtin::DotSteps),
+        ("cross_steps", Builtin::CrossSteps),
+        ("norm_steps", Builtin::NormSteps),
+        ("gradient", Builtin::Gradient),
+        ("jacobian", Builtin::Jacobian),
+        ("hessian", Builtin::Hessian),
+        ("definite_integral", Builtin::DefiniteIntegral),
+        ("degree", Builtin::Degree),
+        ("coefficients", Builtin::Coefficients),
+        ("resultant", Builtin::Resultant),
+        ("discriminant", Builtin::Discriminant),
+        ("polynomial_gcd", Builtin::PolynomialGcd),
+        ("polynomial_divrem", Builtin::PolynomialDivRem),
     ];
 
     pub fn name(self) -> &'static str {
@@ -146,6 +210,31 @@ pub struct UserFunction {
     /// functions. This expands calls to functions already in scope.
     pub display_body: Option<Value>,
     pub closure: Env,
+}
+
+#[derive(Debug, Clone)]
+pub enum StepOperation {
+    Start,
+    SwapRows {
+        first: usize,
+        second: usize,
+    },
+    ScaleRow {
+        row: usize,
+        divisor: Value,
+    },
+    AddRowMultiple {
+        target: usize,
+        source: usize,
+        factor: Value,
+    },
+    Explanation(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct DerivationStep {
+    pub value: Value,
+    pub operation: StepOperation,
 }
 
 #[derive(Debug, Clone)]
@@ -219,6 +308,11 @@ pub enum Value {
     Symbolic(Rc<SymbolicExpr>),
     Function(Rc<UserFunction>),
     Builtin(Builtin),
+    /// A computed value accompanied by structured working for document output.
+    Derivation {
+        result: Rc<Value>,
+        steps: Rc<Vec<DerivationStep>>,
+    },
 }
 
 impl Value {
@@ -239,6 +333,9 @@ impl Value {
             (Value::Symbolic(a), Value::Symbolic(b)) => a.equals(b),
             (Value::Function(a), Value::Function(b)) => Rc::ptr_eq(a, b),
             (Value::Builtin(a), Value::Builtin(b)) => a == b,
+            (Value::Derivation { result: a, .. }, Value::Derivation { result: b, .. }) => {
+                a.equals(b)
+            }
             _ => false,
         }
     }
@@ -256,6 +353,7 @@ impl Value {
             Value::Symbolic(_) => "symbolic expression",
             Value::Function(_) => "function",
             Value::Builtin(_) => "builtin function",
+            Value::Derivation { result, .. } => result.type_name(),
         }
     }
 }

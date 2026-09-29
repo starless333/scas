@@ -19,6 +19,7 @@ pub enum MathConstant {
     Pi,
     E,
     Tau,
+    Phi,
 }
 
 impl MathConstant {
@@ -27,6 +28,7 @@ impl MathConstant {
             Self::Pi => "pi",
             Self::E => "e",
             Self::Tau => "tau",
+            Self::Phi => "phi",
         }
     }
 }
@@ -137,6 +139,11 @@ pub(super) fn evaluate_constant(
         MathConstant::Pi => DBig::pi(precision),
         MathConstant::E => DBig::ONE.with_precision(precision).value().exp(),
         MathConstant::Tau => DBig::from(2).with_precision(precision).value() * DBig::pi(precision),
+        MathConstant::Phi => {
+            let one = DBig::ONE.with_precision(precision).value();
+            let five = DBig::from(5).with_precision(precision).value();
+            (one + five.sqrt()) / DBig::from(2)
+        }
     };
     decimal_number(value)
 }

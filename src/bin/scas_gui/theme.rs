@@ -108,17 +108,20 @@ impl Theme {
         style.visuals.selection.stroke.color = self.ui.text.0;
         style.visuals.hyperlink_color = self.ui.accent.0;
         style.visuals.widgets.noninteractive.bg_fill = self.ui.panel.0;
-        style.visuals.widgets.noninteractive.fg_stroke.color = self.ui.muted.0;
-        style.visuals.widgets.inactive.bg_fill = self.ui.background.0;
+        style.visuals.widgets.noninteractive.fg_stroke.color = self.ui.text.0;
+        style.visuals.widgets.inactive.bg_fill = self.ui.editor.0;
         style.visuals.widgets.inactive.fg_stroke.color = self.ui.text.0;
-        style.visuals.widgets.inactive.rounding = egui::Rounding::same(5.0);
+        style.visuals.widgets.inactive.rounding = egui::Rounding::same(7.0);
+        style.visuals.widgets.inactive.bg_stroke =
+            egui::Stroke::new(1.0, self.ui.muted.0.gamma_multiply(0.34));
         style.visuals.widgets.hovered.bg_fill = self.ui.selection.0;
         style.visuals.widgets.hovered.fg_stroke.color = self.ui.text.0;
-        style.visuals.widgets.hovered.rounding = egui::Rounding::same(5.0);
+        style.visuals.widgets.hovered.rounding = egui::Rounding::same(7.0);
+        style.visuals.widgets.hovered.expansion = 0.5;
         style.visuals.widgets.active.bg_fill = self.ui.accent.0;
         style.visuals.widgets.active.fg_stroke.color = self.ui.background.0;
-        style.visuals.widgets.active.rounding = egui::Rounding::same(5.0);
-        style.visuals.window_rounding = egui::Rounding::same(9.0);
+        style.visuals.widgets.active.rounding = egui::Rounding::same(7.0);
+        style.visuals.window_rounding = egui::Rounding::same(12.0);
         style.visuals.window_shadow = egui::epaint::Shadow {
             offset: egui::vec2(0.0, 8.0),
             blur: 22.0,
@@ -127,9 +130,25 @@ impl Theme {
         };
         style.visuals.panel_fill = self.ui.panel.0;
         style.visuals.faint_bg_color = self.ui.background.0;
-        style.spacing.item_spacing = egui::vec2(8.0, 7.0);
-        style.spacing.button_padding = egui::vec2(10.0, 6.0);
-        style.spacing.window_margin = egui::Margin::same(12.0);
+        style.visuals.popup_shadow = egui::epaint::Shadow {
+            offset: egui::vec2(0.0, 8.0),
+            blur: 24.0,
+            spread: 2.0,
+            color: egui::Color32::from_black_alpha(95),
+        };
+        style.spacing.item_spacing = egui::vec2(9.0, 8.0);
+        style.spacing.button_padding = egui::vec2(11.0, 6.0);
+        style.spacing.window_margin = egui::Margin::same(14.0);
+        style.spacing.combo_width = 180.0;
+        style.animation_time = 0.12;
+        style.text_styles.insert(
+            egui::TextStyle::Heading,
+            egui::FontId::new(21.0, egui::FontFamily::Proportional),
+        );
+        style.text_styles.insert(
+            egui::TextStyle::Button,
+            egui::FontId::new(13.0, egui::FontFamily::Proportional),
+        );
         context.set_style(style);
     }
 }

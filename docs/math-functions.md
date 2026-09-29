@@ -7,13 +7,15 @@ contract.
 
 ## Exactness and `evalf`
 
-`pi`, `e`, and `tau` are symbolic constants. Exact integer and rational inputs
+`pi`, `e`, `tau`, and the golden ratio `phi` (also `π`, `τ`, and `φ`) are
+symbolic constants. Exact integer and rational inputs
 remain exact whenever SCAS knows the result, and otherwise remain symbolic.
 
 ```scas
 print(sin(pi / 6));    // 1/2
 print(log(8, 2));      // 3
 print(gamma(6));       // 120
+print(phi^2);          // phi + 1
 print(sqrt(2));        // sqrt(2)
 print(evalf(sqrt(2))); // decimal at the active precision
 print(sqrt(2.0));      // decimal input also requests approximation
@@ -53,7 +55,7 @@ Complex numbers are intentionally unordered.
 
 | Family | Functions | Numeric domain |
 | --- | --- | --- |
-| Constants | `pi`, `e`, `tau` | exact symbolic; real approximation through `evalf` |
+| Constants | `pi`, `e`, `tau`, `phi` | exact symbolic; real approximation through `evalf` |
 | Roots and powers | `sqrt`, `cbrt`, `^` | real and complex |
 | Exponential/logarithmic | `exp`, `ln`, `log`, `log10`, `log2` | real and complex |
 | Trigonometric | `sin`, `cos`, `tan`, `sec`, `csc`, `cot` | real and complex |
@@ -62,12 +64,55 @@ Complex numbers are intentionally unordered.
 | Special | `erf`, `erfc`, `gamma`, `lgamma` | real |
 | Utilities | `abs`, `sign`, `floor`, `ceil`, `round`, `trunc`, `min`, `max`, `hypot`, `degrees`, `radians` | real, except complex `abs` and angle conversion |
 | Integer utilities | `gcd`, `lcm` | integers |
+| Polynomial tools | `degree`, `coefficients`, `resultant`, `discriminant`, `polynomial_gcd`, `polynomial_divrem` | exact univariate polynomials over the rationals |
+| Linear algebra | `transpose`, `trace`, `det`, `rank`, `rref`, `inverse`, `matmul`, `dot`, `cross`, `norm`, `solve_linear` | exact or symbolic vectors and rectangular matrices |
 
 `lgamma(x)` means `ln(abs(gamma(x)))` for real non-pole inputs. The real
 special functions use arbitrary-precision series, continued fractions,
 reflection, recurrence, and asymptotic expansions as appropriate. Complex
 `gamma`, `lgamma`, `erf`, and `erfc` are not implemented; SCAS returns a clear
 runtime error rather than degrading their precision.
+
+## Polynomial invariants and Euclidean operations
+
+The polynomial tools take the variable explicitly. `coefficients` returns the
+coefficient list in ascending degree, and `polynomial_divrem` returns
+`[quotient, remainder]`:
+
+```scas
+print(resultant(x^2 + 1, x + 1, x));       // 2
+print(discriminant(x^2 + 3x + 2, x));       // 1
+print(coefficients(3x^2 + 2x - 1, x));     // [-1, 2, 3]
+print(polynomial_gcd(x^3-x, x^2-1, x));    // x^2 - 1
+print(polynomial_divrem(x^3-1, x-1, x));   // [x^2 + x + 1, 0]
+```
+
+These operations are exact over rational coefficients. Resultants use an exact
+rational Sylvester determinant and reject matrices above a fixed dimension
+rather than allowing an accidental unbounded GUI workload.
+
+## Linear algebra
+
+Matrices use the existing row-separated literal syntax and vectors use ordinary
+arrays. Linear algebra therefore works with exact integers, rationals, and
+symbolic entries without introducing a separate numeric matrix type.
+
+```scas
+let A = [1, 2; 3, 4], b = [5, 11];
+print(det(A));                 // -2
+print(inverse(A));             // [[-2, 1], [3/2, -1/2]]
+print(solve_linear(A, b));     // [1, 2]
+print(dot([1, 2], [3, 4]));    // 11
+```
+
+Every operation also has a documenting form with a `_steps` suffix:
+`transpose_steps`, `trace_steps`, `det_steps`, `rank_steps`, `rref_steps`,
+`inverse_steps`, `matmul_steps`, `dot_steps`, `cross_steps`, `norm_steps`, and
+`solve_linear_steps`. The explicit names return structured work when called
+directly; ordinary calls such as `rref(A) =>;` automatically select that
+documented execution. Row reduction records and displays every row
+swap, scale, and row replacement beside the corresponding `A \sim A'`
+transition. The unsuffixed forms return only the result.
 
 ## Assumptions and safe simplification
 
@@ -101,7 +146,14 @@ inverse-hyperbolic functions; and `erf`, `erfc`, and assumption-qualified
 Integration recognizes polynomial powers, affine reciprocals, affine roots,
 exponential, sine, cosine, tangent, hyperbolic sine/cosine, `sec(x)^2`,
 `csc(x)^2`, `sec(x)tan(x)`, and `csc(x)cot(x)`, including affine substitution.
-It returns an explicit unevaluated `integral(...)` when no safe rule is known.
+It also covers logarithms, secant/cosecant, inverse trigonometric and inverse
+hyperbolic functions, and `erf`/`erfc`. It returns an explicit unevaluated
+`integral(...)` when no safe rule is known.
+
+Multivariable and bounded-calculus tools are available as
+`gradient(f, [x, y])`, `jacobian([f, g], [x, y])`,
+`hessian(f, [x, y])`, and `definite_integral(f, x, a, b)`. Dynamic integral
+rendering includes the constant of integration and a derivative check.
 
 ## Resource and error model
 

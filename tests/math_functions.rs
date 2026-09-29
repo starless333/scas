@@ -53,6 +53,16 @@ fn constants_and_common_angles_stay_exact_until_evalf() {
 }
 
 #[test]
+fn golden_ratio_is_a_reserved_exact_constant() {
+    assert_eq!(
+        output("print(phi); print(φ); print(phi == φ); print(phi^2); print(1/phi);"),
+        "phi\nphi\ntrue\nphi + 1\nphi - 1\n"
+    );
+    let approximation = output_at_precision("print(evalf(phi));", 30);
+    assert!(approximation.starts_with("1.618033988749894848204586834"));
+}
+
+#[test]
 fn unicode_math_aliases_are_executable_source() {
     assert_eq!(
         output("print(sin(π / 6)); print(Γ(5)); print(π == pi); print(τ == tau);"),

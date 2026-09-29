@@ -169,20 +169,51 @@ impl Parser {
     fn variable_declaration(&mut self) -> ParseResult<StatementKind> {
         // `.symbol` is a `Copy` u32 id from the interner -- no
         // allocation, no need to touch the symbol table here.
-        let name = self
+        let name_token = self
             .consume(TokenType::Identifier, "expected a variable name")?
-            .symbol;
+            .clone();
+        let name = name_token.symbol;
 
         let mut value = None;
         if self.match_token(&[TokenType::Equal]) {
             value = Some(self.expression()?);
         }
 
-        self.consume(
-            TokenType::Semicolon,
-            "expected `;` after variable declaration",
-        )?;
-        Ok(StatementKind::Let { name, value })
+        let first = Statement::new(
+            SourceSpan::from_token(&name_token).through(self.previous_span()),
+            StatementKind::Let { name, value },
+        );
+        if !self.match_token(&[TokenType::Comma]) {
+            self.consume(
+                TokenType::Semicolon,
+                "expected `;` after variable declaration",
+            )?;
+            return Ok(first.kind);
+        }
+
+        let mut declarations = vec![first];
+        loop {
+            // `let a = 1, b = 2;` deliberately mirrors ordinary mathematical
+            // declaration lists; repeating `let` would make the comma noisy.
+            let start = self.peek_span();
+            let name = self
+                .consume(TokenType::Identifier, "expected a variable name after `,`")?
+                .symbol;
+            let value = if self.match_token(&[TokenType::Equal]) {
+                Some(self.expression()?)
+            } else {
+                None
+            };
+            declarations.push(Statement::new(
+                start.through(self.previous_span()),
+                StatementKind::Let { name, value },
+            ));
+            if !self.match_token(&[TokenType::Comma]) {
+                break;
+            }
+        }
+        self.consume(TokenType::Semicolon, "expected `;` after declaration list")?;
+        Ok(StatementKind::Chain(declarations))
     }
 
     fn function_declaration(&mut self) -> ParseResult<StatementKind> {
@@ -355,6 +386,7 @@ impl Parser {
     }
 
     fn expression_statement(&mut self) -> ParseResult<StatementKind> {
+        let first_start = self.peek_span();
         let stmt = self.parse_assignment_or_expr()?;
         if self.match_token(&[TokenType::FatArrow]) {
             let StatementKind::Expr(expression) = stmt else {
@@ -362,6 +394,22 @@ impl Parser {
             };
             self.consume(TokenType::Semicolon, "expected `;` after `=>`")?;
             return Ok(StatementKind::Show(expression));
+        }
+        if self.match_token(&[TokenType::Comma]) {
+            let mut statements = vec![Statement::new(
+                first_start.through(self.previous_span()),
+                stmt,
+            )];
+            loop {
+                let start = self.peek_span();
+                let kind = self.parse_assignment_or_expr()?;
+                statements.push(Statement::new(start.through(self.previous_span()), kind));
+                if !self.match_token(&[TokenType::Comma]) {
+                    break;
+                }
+            }
+            self.consume(TokenType::Semicolon, "expected `;` after command chain")?;
+            return Ok(StatementKind::Chain(statements));
         }
         self.consume(TokenType::Semicolon, "expected `;` after statement")?;
         Ok(stmt)

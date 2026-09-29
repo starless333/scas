@@ -97,9 +97,9 @@ fn formula_card(ui: &mut egui::Ui, rows: &[&str], accent: Color32, muted: Color3
         .rounding(8.0 * scale)
         .inner_margin(egui::Margin::symmetric(18.0 * scale, 14.0 * scale))
         .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
             for row in rows {
-                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                    ui.add_space(4.0);
+                ui.with_layout(Layout::top_down(Align::Center), |ui| {
                     render(
                         ui,
                         &parse(row.replace('&', "").trim()),
