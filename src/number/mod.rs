@@ -48,10 +48,7 @@ impl Number {
     pub fn is_exact(&self) -> bool {
         matches!(self, Number::Integer(_) | Number::Rational(_))
     }
-    pub fn constant(
-        constant: MathConstant,
-        precision: u64,
-    ) -> Result<Number, MathEvaluationError> {
+    pub fn constant(constant: MathConstant, precision: u64) -> Result<Number, MathEvaluationError> {
         transcendental::evaluate_constant(constant, precision)
     }
     pub fn from_rational(value: BigRational) -> Number {
@@ -241,7 +238,7 @@ impl fmt::Display for Number {
                     if imaginary.is_one() {
                         return formatter.write_str("i");
                     }
-                    if imaginary == BigDecimal::from(-1) {
+                    if imaginary == -1 {
                         return formatter.write_str("-i");
                     }
                     return write!(formatter, "{imaginary}i");

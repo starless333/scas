@@ -18,6 +18,24 @@ These decisions close the open items in `DOCUMENTER.md`.
   rows: `[1, 2; 3, 4]`. Whitespace alone never separates elements.
 - Subscripted names such as `x_1` are ordinary identifiers and render as
   `x_{1}`.
+- The desktop GUI uses `egui` through `eframe`. It is a Rust-native,
+  cross-platform stack with a small application-state model and a path to a
+  future WASM build. The first editor uses egui's built-in text buffer; a rope
+  buffer can replace it when profiling shows that large files require one.
+  Execution runs on a worker thread so evaluation never blocks painting.
+- The live preview debounces edits and renders the generated source with the
+  system `latex` and `dvipng` commands, producing genuine Computer Modern
+  output. A small native structured-math renderer remains the fallback when a
+  TeX installation is unavailable. The export path remains canonical LaTeX.
+- Greek editor shortcuts are stored as Unicode source, not merely painted as
+  alternate glyphs. `π` and `τ` are executable aliases for the corresponding
+  constants, and `Γ` is an alias for the Gamma function. Other Greek letters
+  remain normal symbolic identifiers.
+- Editor color schemes are UTF-8 TOML files with `[ui]` and `[syntax]` color
+  tables. Colors use CSS-style `#RRGGBB` or `#RRGGBBAA` values. This keeps
+  themes human-editable and makes every syntax category available without
+  recompiling. Gruber Darker is the default, with Paper Light included as a
+  light alternative.
 
 The lexer/parser implementation includes the render delimiters, show marker,
 doc-comment token, and prerequisite expression grammar (matrix literals,

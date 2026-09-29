@@ -11,6 +11,7 @@ Symbolic computer algebra system
 
 USAGE:
     scas [OPTIONS] [FILE]
+    scas build FILE [OUTPUT.tex]
 
 OPTIONS:
     -h, --help                 Show this help
@@ -34,6 +35,10 @@ fn parse_number<T: std::str::FromStr>(flag: &str, value: Option<String>) -> Resu
 }
 
 fn main() -> ExitCode {
+    let raw_args = env::args().skip(1).collect::<Vec<_>>();
+    if raw_args.first().is_some_and(|argument| argument == "build") {
+        return build_document(&raw_args[1..]);
+    }
     let mut options = ExecutionOptions::default();
     let mut source_path = None;
     let mut args = env::args().skip(1);
@@ -108,5 +113,41 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    ExitCode::SUCCESS
+}
+
+fn build_document(arguments: &[String]) -> ExitCode {
+    if arguments.is_empty() || arguments.len() > 2 {
+        eprintln!("error: usage: scas build FILE [OUTPUT.tex]");
+        return ExitCode::FAILURE;
+    }
+    let input_path = &arguments[0];
+    let source = match fs::read_to_string(input_path) {
+        Ok(source) => source,
+        Err(error) => {
+            eprintln!("error: failed to read `{input_path}`: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let document = match scas::document::build(&source) {
+        Ok(document) => document,
+        Err(error) => {
+            eprintln!("{}", error.render(&source, input_path));
+            return ExitCode::FAILURE;
+        }
+    };
+    let output_path = arguments.get(1).cloned().unwrap_or_else(|| {
+        let mut path = std::path::PathBuf::from(input_path);
+        path.set_extension("tex");
+        path.to_string_lossy().into_owned()
+    });
+    if let Err(error) = fs::write(&output_path, document.latex()) {
+        eprintln!("error: failed to write `{output_path}`: {error}");
+        return ExitCode::FAILURE;
+    }
+    for diagnostic in &document.diagnostics {
+        eprintln!("{:?}: {}", diagnostic.severity, diagnostic.message);
+    }
+    println!("Built {output_path}");
     ExitCode::SUCCESS
 }

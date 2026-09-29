@@ -16,10 +16,23 @@ categories = ["science::mathematics", "command-line-utilities"]
 bigdecimal = "0.4"
 dashu-cmplx = "=0.6.1"
 dashu-float = "=0.6.1"
+eframe = { version = "0.28", optional = true, default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
+image = { version = "0.25.6", optional = true, default-features = false, features = ["png"] }
 num-bigint = "0.4"
 num-integer = "0.1"
 num-rational = "0.4"
 num-traits = "0.2"
+serde = { version = "1", optional = true, features = ["derive"] }
+toml = { version = "0.8", optional = true }
+
+[features]
+default = []
+gui = ["dep:eframe", "dep:image", "dep:serde", "dep:toml"]
+
+[[bin]]
+name = "scas-gui"
+path = "src/bin/scas-gui.rs"
+required-features = ["gui"]
 
 [[bench]]
 name = "baselines"

@@ -1,0 +1,23 @@
+name = "Paper Light"
+dark = false
+
+[ui]
+background = "#f4f1ea"
+panel = "#e8e3d8"
+editor = "#fffdf7"
+text = "#2e3440"
+muted = "#667085"
+accent = "#8f3f71"
+selection = "#cbd8e8"
+
+[syntax]
+plain = "#2e3440"
+keyword = "#8f3f71"
+number = "#b35c1e"
+string = "#397249"
+comment = "#7a8177"
+doc_comment = "#665c9e"
+identifier = "#2e3440"
+operator = "#8f3f71"
+delimiter = "#8b5a2b"
+render_marker = "#245b8a"

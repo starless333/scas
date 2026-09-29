@@ -1,8 +1,9 @@
 use crate::ast::binary_op::BinaryOp;
 use crate::ast::unary_op::UnaryOp;
-use crate::interpreter::value::SymbolicExpr;
+use crate::interpreter::value::{Builtin, SymbolicExpr};
 use crate::lexer::symbol::{Symbol, SymbolTable};
-use crate::number::Number;
+use crate::number::{ComplexNumber, Number};
+use bigdecimal::BigDecimal;
 use num_bigint::BigInt;
 use num_integer::Integer;
 use num_rational::BigRational;
@@ -10,6 +11,48 @@ use num_traits::{One, Signed, ToPrimitive, Zero};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::rc::Rc;
+use std::str::FromStr;
+
+#[derive(Clone, Copy, Debug)]
+struct Complex64 {
+    real: f64,
+    imaginary: f64,
+}
+
+impl Complex64 {
+    fn add(self, other: Self) -> Self {
+        Self {
+            real: self.real + other.real,
+            imaginary: self.imaginary + other.imaginary,
+        }
+    }
+
+    fn sub(self, other: Self) -> Self {
+        Self {
+            real: self.real - other.real,
+            imaginary: self.imaginary - other.imaginary,
+        }
+    }
+
+    fn mul(self, other: Self) -> Self {
+        Self {
+            real: self.real * other.real - self.imaginary * other.imaginary,
+            imaginary: self.real * other.imaginary + self.imaginary * other.real,
+        }
+    }
+
+    fn div(self, other: Self) -> Self {
+        let denominator = other.real * other.real + other.imaginary * other.imaginary;
+        Self {
+            real: (self.real * other.real + self.imaginary * other.imaginary) / denominator,
+            imaginary: (self.imaginary * other.real - self.real * other.imaginary) / denominator,
+        }
+    }
+
+    fn magnitude(self) -> f64 {
+        self.real.hypot(self.imaginary)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct Variable {
@@ -36,18 +79,244 @@ impl Polynomial {
         if found_variable.symbol != variable || coefficients.len() <= 1 {
             return None;
         }
-        let mut roots = Self::root_candidates(&coefficients)
+        Some(Self::solve_coefficients(coefficients))
+    }
+
+    fn solve_coefficients(mut coefficients: Vec<BigRational>) -> Vec<Rc<SymbolicExpr>> {
+        let mut roots = Vec::new();
+
+        // Pull out every rational root exactly, including roots of a polynomial
+        // whose remaining factor has irrational or complex roots.
+        for candidate in Self::root_candidates(&coefficients) {
+            let mut found = false;
+            while coefficients.len() > 1
+                && Self::evaluate_coefficients(&coefficients, &candidate).is_zero()
+            {
+                let Some(quotient) = Self::synthetic_divide(&coefficients, &candidate) else {
+                    break;
+                };
+                coefficients = quotient;
+                found = true;
+            }
+            if found {
+                roots.push(Rc::new(SymbolicExpr::Number(Number::from_rational(
+                    candidate,
+                ))));
+            }
+        }
+
+        match coefficients.len().saturating_sub(1) {
+            0 => {}
+            1 => {
+                let root = -&coefficients[0] / &coefficients[1];
+                roots.push(Rc::new(SymbolicExpr::Number(Number::from_rational(root))));
+            }
+            2 => roots.extend(Self::quadratic_roots(&coefficients)),
+            _ => roots.extend(Self::numeric_roots(&coefficients)),
+        }
+        roots
+    }
+
+    fn quadratic_roots(coefficients: &[BigRational]) -> Vec<Rc<SymbolicExpr>> {
+        let (constant, linear, quadratic) = (&coefficients[0], &coefficients[1], &coefficients[2]);
+        let discriminant =
+            linear * linear - BigRational::from_integer(BigInt::from(4)) * quadratic * constant;
+        let denominator = BigRational::from_integer(BigInt::from(2)) * quadratic;
+        let discriminant_number = Number::from_rational(discriminant.clone());
+        if let Some(root) = discriminant_number.exact_root(2) {
+            let root = root
+                .try_to_rational()
+                .expect("an exact rational root stays rational");
+            let mut result = vec![
+                Rc::new(SymbolicExpr::Number(Number::from_rational(
+                    (-linear - &root) / &denominator,
+                ))),
+                Rc::new(SymbolicExpr::Number(Number::from_rational(
+                    (-linear + root) / denominator,
+                ))),
+            ];
+            if result[0].equals(&result[1]) {
+                result.pop();
+            }
+            return result;
+        }
+
+        if discriminant.is_negative() {
+            let magnitude = Number::from_rational(discriminant.abs());
+            if let Some(root) = magnitude
+                .exact_root(2)
+                .and_then(|value| value.try_to_rational())
+            {
+                let real = -linear / &denominator;
+                let imaginary_coefficient = (root / &denominator).abs();
+                let imaginary_unit = Rc::new(SymbolicExpr::Number(Number::Complex(
+                    ComplexNumber::new(BigDecimal::from(0), BigDecimal::from(1)),
+                )));
+                let imaginary = if imaginary_coefficient.is_one() {
+                    imaginary_unit
+                } else {
+                    Self::binary(
+                        Rc::new(SymbolicExpr::Number(Number::from_rational(
+                            imaginary_coefficient,
+                        ))),
+                        BinaryOp::Mul,
+                        imaginary_unit,
+                    )
+                };
+                let real = Rc::new(SymbolicExpr::Number(Number::from_rational(real)));
+                let negative = if matches!(real.as_ref(), SymbolicExpr::Number(number) if number.is_zero())
+                {
+                    Rc::new(SymbolicExpr::Unary {
+                        op: UnaryOp::Neg,
+                        expr: Rc::clone(&imaginary),
+                    })
+                } else {
+                    Self::binary(Rc::clone(&real), BinaryOp::Sub, Rc::clone(&imaginary))
+                };
+                let positive = if matches!(real.as_ref(), SymbolicExpr::Number(number) if number.is_zero())
+                {
+                    imaginary
+                } else {
+                    Self::binary(real, BinaryOp::Add, imaginary)
+                };
+                return vec![negative, positive];
+            }
+        }
+
+        let negative_discriminant = discriminant.is_negative();
+        let positive_discriminant = Number::from_rational(discriminant.abs());
+        let radical = positive_discriminant.exact_root(2).map_or_else(
+            || {
+                Rc::new(SymbolicExpr::Call {
+                    function: Builtin::Sqrt,
+                    args: vec![Rc::new(SymbolicExpr::Number(positive_discriminant))],
+                })
+            },
+            |root| Rc::new(SymbolicExpr::Number(root)),
+        );
+        let radical = if negative_discriminant {
+            Self::binary(
+                radical,
+                BinaryOp::Mul,
+                Rc::new(SymbolicExpr::Number(Number::Complex(ComplexNumber::new(
+                    BigDecimal::from(0),
+                    BigDecimal::from(1),
+                )))),
+            )
+        } else {
+            radical
+        };
+        let negative_linear = Rc::new(SymbolicExpr::Number(Number::from_rational(-linear)));
+        let denominator = Rc::new(SymbolicExpr::Number(Number::from_rational(denominator)));
+        [BinaryOp::Sub, BinaryOp::Add]
             .into_iter()
-            .filter(|root| Self::evaluate_coefficients(&coefficients, root).is_zero())
+            .map(|op| {
+                Self::binary(
+                    Self::binary(Rc::clone(&negative_linear), op, Rc::clone(&radical)),
+                    BinaryOp::Div,
+                    Rc::clone(&denominator),
+                )
+            })
+            .collect()
+    }
+
+    /// Durand-Kerner finds every complex root at once. Exact/rational factors
+    /// have already been removed, so this is only the fallback for irreducible
+    /// degree-three-and-higher factors.
+    fn numeric_roots(coefficients: &[BigRational]) -> Vec<Rc<SymbolicExpr>> {
+        let Some(values) = coefficients
+            .iter()
+            .map(ToPrimitive::to_f64)
+            .collect::<Option<Vec<_>>>()
+        else {
+            return Vec::new();
+        };
+        let degree = values.len() - 1;
+        let leading = values[degree];
+        if degree > 64 || !leading.is_finite() || leading == 0.0 {
+            return Vec::new();
+        }
+        let radius = 1.0
+            + values[..degree]
+                .iter()
+                .map(|value| (value / leading).abs())
+                .fold(0.0_f64, f64::max);
+        let mut roots = (0..degree)
+            .map(|index| {
+                let angle = std::f64::consts::TAU * (index as f64 + 0.271_828) / degree as f64;
+                Complex64 {
+                    real: radius * angle.cos(),
+                    imaginary: radius * angle.sin(),
+                }
+            })
             .collect::<Vec<_>>();
-        roots.sort();
-        roots.dedup();
-        Some(
-            roots
-                .into_iter()
-                .map(|root| Rc::new(SymbolicExpr::Number(Number::from_rational(root))))
-                .collect(),
-        )
+        for _ in 0..2_000 {
+            let previous = roots.clone();
+            let mut largest_delta = 0.0_f64;
+            for index in 0..degree {
+                let value = values.iter().rev().fold(
+                    Complex64 {
+                        real: 0.0,
+                        imaginary: 0.0,
+                    },
+                    |accumulator, coefficient| {
+                        accumulator.mul(previous[index]).add(Complex64 {
+                            real: *coefficient,
+                            imaginary: 0.0,
+                        })
+                    },
+                );
+                let denominator = previous
+                    .iter()
+                    .enumerate()
+                    .filter(|(other, _)| *other != index)
+                    .fold(
+                        Complex64 {
+                            real: 1.0,
+                            imaginary: 0.0,
+                        },
+                        |product, (_, root)| product.mul(previous[index].sub(*root)),
+                    );
+                if denominator.magnitude() <= f64::EPSILON {
+                    continue;
+                }
+                let delta = value.div(denominator);
+                roots[index] = previous[index].sub(delta);
+                largest_delta = largest_delta.max(delta.magnitude());
+            }
+            if largest_delta < 1e-13 {
+                break;
+            }
+        }
+        for root in &mut roots {
+            if root.real.abs() < 1e-12 {
+                root.real = 0.0;
+            }
+            if root.imaginary.abs() < 1e-12 {
+                root.imaginary = 0.0;
+            }
+        }
+        roots.sort_by(|left, right| {
+            if (left.real - right.real).abs() < 1e-10 {
+                left.imaginary.total_cmp(&right.imaginary)
+            } else {
+                left.real.total_cmp(&right.real)
+            }
+        });
+        roots.dedup_by(|left, right| left.sub(*right).magnitude() < 1e-10);
+        roots
+            .into_iter()
+            .filter_map(|root| {
+                let real = BigDecimal::from_str(&format!("{:.14}", root.real)).ok()?;
+                let imaginary = BigDecimal::from_str(&format!("{:.14}", root.imaginary)).ok()?;
+                let number = if imaginary.is_zero() {
+                    Number::Decimal(real)
+                } else {
+                    Number::Complex(ComplexNumber::new(real, imaginary))
+                };
+                Some(Rc::new(SymbolicExpr::Number(number)))
+            })
+            .collect()
     }
 
     pub fn from_expression(expression: &SymbolicExpr, symbols: &SymbolTable) -> Option<Self> {

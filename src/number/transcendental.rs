@@ -136,9 +136,7 @@ pub(super) fn evaluate_constant(
     let value = match constant {
         MathConstant::Pi => DBig::pi(precision),
         MathConstant::E => DBig::ONE.with_precision(precision).value().exp(),
-        MathConstant::Tau => {
-            DBig::from(2).with_precision(precision).value() * DBig::pi(precision)
-        }
+        MathConstant::Tau => DBig::from(2).with_precision(precision).value() * DBig::pi(precision),
     };
     decimal_number(value)
 }
@@ -152,9 +150,10 @@ fn complex_number(value: DecimalComplex) -> Result<Number, MathEvaluationError> 
     let (real, imaginary) = value.into_parts();
     let real = BigDecimal::from_str(&real.to_string())
         .map_err(|error| MathEvaluationError(format!("cannot convert real result: {error}")))?;
-    let imaginary = BigDecimal::from_str(&imaginary.to_string())
-        .map_err(|error| MathEvaluationError(format!("cannot convert imaginary result: {error}")))?;
-    if imaginary == BigDecimal::from(0) {
+    let imaginary = BigDecimal::from_str(&imaginary.to_string()).map_err(|error| {
+        MathEvaluationError(format!("cannot convert imaginary result: {error}"))
+    })?;
+    if imaginary == 0 {
         Ok(Number::Decimal(real))
     } else {
         Ok(Number::Complex(ComplexNumber::new(real, imaginary)))
@@ -246,8 +245,7 @@ pub(super) fn evaluate_unary(
         )));
     }
     if function == UnaryMathFunction::Atanh
-        && (number == &Number::Integer(BigInt::one())
-            || number == &Number::Integer(-BigInt::one()))
+        && (number == &Number::Integer(BigInt::one()) || number == &Number::Integer(-BigInt::one()))
     {
         return Err(MathEvaluationError(
             "atanh has poles at -1 and 1".to_string(),
@@ -309,12 +307,12 @@ pub(super) fn evaluate_unary(
         UnaryMathFunction::Asinh => Some(value.asinh()),
         UnaryMathFunction::Acosh if value >= DBig::ONE => Some(value.acosh()),
         UnaryMathFunction::Atanh if value > -DBig::ONE && value < DBig::ONE => Some(value.atanh()),
-        UnaryMathFunction::Degrees => Some(
-            value * DBig::from(180).with_precision(precision).value() / DBig::pi(precision),
-        ),
-        UnaryMathFunction::Radians => Some(
-            value * DBig::pi(precision) / DBig::from(180).with_precision(precision).value(),
-        ),
+        UnaryMathFunction::Degrees => {
+            Some(value * DBig::from(180).with_precision(precision).value() / DBig::pi(precision))
+        }
+        UnaryMathFunction::Radians => {
+            Some(value * DBig::pi(precision) / DBig::from(180).with_precision(precision).value())
+        }
         UnaryMathFunction::Erf
         | UnaryMathFunction::Erfc
         | UnaryMathFunction::Gamma
@@ -337,18 +335,14 @@ fn bernoulli_numbers(maximum: usize) -> Vec<BigRational> {
     for m in 0..=maximum {
         work[m] = BigRational::new(BigInt::one(), BigInt::from(m + 1));
         for j in (1..=m).rev() {
-            work[j - 1] = BigRational::from_integer(BigInt::from(j))
-                * (&work[j - 1] - &work[j]);
+            work[j - 1] = BigRational::from_integer(BigInt::from(j)) * (&work[j - 1] - &work[j]);
         }
         numbers[m] = work[0].clone();
     }
     numbers
 }
 
-fn rational_float(
-    value: &BigRational,
-    precision: usize,
-) -> Result<DBig, MathEvaluationError> {
+fn rational_float(value: &BigRational, precision: usize) -> Result<DBig, MathEvaluationError> {
     let numerator = decimal_float(&value.numer().to_string(), precision)?;
     let denominator = decimal_float(&value.denom().to_string(), precision)?;
     Ok(numerator / denominator)
@@ -363,7 +357,9 @@ fn log_gamma_positive(mut value: DBig, precision: usize) -> Result<DBig, MathEva
         ));
     }
     let threshold_integer = precision.saturating_mul(2).saturating_add(32);
-    let threshold = DBig::from(threshold_integer).with_precision(work_precision).value();
+    let threshold = DBig::from(threshold_integer)
+        .with_precision(work_precision)
+        .value();
     let one = DBig::ONE.with_precision(work_precision).value();
     let half = decimal_float("0.5", work_precision)?;
     let mut correction = DBig::ZERO.with_precision(work_precision).value();
@@ -392,16 +388,16 @@ fn log_gamma_positive(mut value: DBig, precision: usize) -> Result<DBig, MathEva
     Ok(result - correction)
 }
 
-fn gamma_real(
-    value: DBig,
-    precision: usize,
-    logarithm: bool,
-) -> Result<DBig, MathEvaluationError> {
+fn gamma_real(value: DBig, precision: usize, logarithm: bool) -> Result<DBig, MathEvaluationError> {
     let work_precision = precision.saturating_add(16);
     let value = value.with_precision(work_precision).value();
     if value > DBig::ZERO {
         let log_gamma = log_gamma_positive(value, work_precision)?;
-        return Ok(if logarithm { log_gamma } else { log_gamma.exp() });
+        return Ok(if logarithm {
+            log_gamma
+        } else {
+            log_gamma.exp()
+        });
     }
     if value.fract() == DBig::ZERO {
         return Err(MathEvaluationError(
@@ -473,18 +469,22 @@ fn erf_real(
             b += DBig::from(2).with_precision(work_precision).value();
             d = &an * &d + &b;
             if d == DBig::ZERO {
-                d = tiny.clone();
+                d.clone_from(&tiny);
             }
             c = &b + &an / &c;
             if c == DBig::ZERO {
-                c = tiny.clone();
+                c.clone_from(&tiny);
             }
             d = one.clone() / d;
             h *= &d * &c;
         }
         one.clone() - prefactor * h
     };
-    let erf = if negative { -positive_erf } else { positive_erf };
+    let erf = if negative {
+        -positive_erf
+    } else {
+        positive_erf
+    };
     Ok(if complementary { one - erf } else { erf })
 }
 

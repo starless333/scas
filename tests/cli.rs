@@ -48,6 +48,32 @@ fn source_file_and_precision_flag_are_supported() {
     assert_eq!(text(&output.stderr), "");
 }
 
+#[test]
+fn build_command_emits_a_complete_latex_document() {
+    let base = std::env::temp_dir().join(format!("scas-build-{}", std::process::id()));
+    let source_path = base.with_extension("scas");
+    let output_path = base.with_extension("tex");
+    fs::write(
+        &source_path,
+        "let x = 2;\n/// Value: #{ x }\n\\[ x / 4 => \\]\n",
+    )
+    .unwrap();
+    let output = Command::new(BINARY)
+        .arg("build")
+        .arg(&source_path)
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    let latex = fs::read_to_string(&output_path).unwrap();
+    fs::remove_file(source_path).unwrap();
+    fs::remove_file(output_path).unwrap();
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert!(latex.contains(r"\usepackage{amsmath}"));
+    assert!(latex.contains(r"Value: 2"));
+    assert!(latex.contains(r"\frac{\mathrm{x}}{4} = \frac{1}{2}"));
+    assert!(latex.ends_with("\\end{document}\n"));
+}
+
 fn fixtures(directory: &str) -> Vec<PathBuf> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")

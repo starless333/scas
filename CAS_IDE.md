@@ -35,8 +35,8 @@ See `docs/DOCUMENTER.md` for the full design of the documenter.
 - [x] Render block scope (shared versus new)
 - [x] Interpolation delimiter (`#{ }`)
 - [x] Raw LaTeX escape hatch syntax
-- [ ] GUI framework, text buffer approach, math rendering approach
-- [ ] Theme file format
+- [x] GUI framework, initial text-buffer approach, and LaTeX-backed live preview
+- [x] Theme file format (TOML; see `themes/README.md`)
 
 ---
 
@@ -52,53 +52,53 @@ See `docs/DOCUMENTER.md` for the full design of the documenter.
 
 ### Semantics
 - [x] Execute render blocks in source order with the decided scoping
-- [ ] `expr;` typesets as written; `expr =>;` typesets `expr = value`
-- [ ] Interpolation evaluates in current scope; errors render a visible placeholder
-- [ ] Silent execution of control flow inside render blocks, with an info diagnostic
+- [x] `expr;` typesets as written; `expr =>;` typesets `expr = value`
+- [x] Interpolation evaluates in current scope; errors render a visible placeholder
+- [x] Silent execution of control flow inside render blocks, with an info diagnostic
 
 ### Renderer (AST and values to LaTeX)
 - [x] **Total** source-expression renderer (exhaustive `match`; new nodes fail to compile without a rule)
 - [x] Precedence-aware parenthesization
 - [x] `\frac`, `^{}`, `\sqrt`, implicit multiplication as juxtaposition
-- [ ] **User-extensible function template table** (TOML), with `\operatorname` fallback
-- [ ] Values: integers, rationals, floats, booleans, strings, `nil`
+- [x] **User-extensible function template table** (TOML), with `\operatorname` fallback
+- [x] Values: integers, rationals, floats, booleans, strings, `nil`
 - [x] Source matrices and vectors as `pmatrix`
-- [ ] Identifier mapping (Greek names, subscripts), overridable
+- [x] Identifier mapping (Greek names, subscripts), overridable
 - [x] Raw LaTeX string escape hatch in the source-expression renderer
 
 ### Assembly
-- [ ] Emit fragments in source order, each tagged with its **source span**
-- [ ] Preamble template (`amsmath`, `amssymb`, `booktabs`, user packages)
-- [ ] CLI: `mycas build file.cas` produces a `.tex` file
+- [x] Emit fragments in source order, each tagged with its **source span**
+- [x] Preamble template (`amsmath`, `amssymb`, `booktabs`, user packages)
+- [x] CLI: `scas build file.scas` produces a `.tex` file
 
 ### Tests (start here, keep growing)
 - [ ] **Golden tests**: `.cas` to expected `.tex` (`insta`)
 - [ ] Compile every golden output with Tectonic in CI
-- [ ] Property tests: renderer never panics, output braces balance
+- [x] Property tests: renderer never panics, output braces balance
 - [ ] Round-trip: parse, print, parse
 
 ---
 
 ## Phase 2: Core IDE (MVP)
 
-- [ ] Text editor: cursor, selection, undo/redo, clipboard, scrolling
-- [ ] **Syntax highlighting** from your lexer, with doc comments highlighted as LaTeX and render markers visually distinct from `{ }`
-- [ ] **Arbitrary color schemes** (ship Gruber Darker plus one light theme; load custom themes from file)
-- [ ] **File tree** sidebar
+- [x] Text editor: cursor, selection, undo/redo, clipboard, scrolling
+- [x] **Syntax highlighting** from your lexer, with doc comments highlighted as LaTeX and render markers visually distinct from `{ }`
+- [x] **Arbitrary color schemes** (ship Gruber Darker plus one light theme; load custom themes from file)
+- [x] **File tree** sidebar
 - [ ] Tabs or multiple buffers
-- [ ] **Run button** and shortcut; output panel
-- [ ] **Live LaTeX preview** pane, driven by documenter output
+- [x] **Run button** and shortcut; output panel
+- [x] **Live LaTeX preview** pane, driven by documenter output
 - [ ] **Debounced, off-thread rendering**
-- [ ] Preview keeps the **last good render** on parse errors
+- [x] Preview keeps the **last good render** on parse errors
 - [ ] Save/open, dirty indicator, autosave or unsaved-changes prompt
-- [ ] Line numbers, current-line highlight
+- [x] Line numbers, current-line highlight
 
 ---
 
 ## Phase 3: Language intelligence
 
-- [ ] **Inline diagnostics** (squiggles, hover messages) using the documenter's diagnostics table
-- [ ] Diagnostics panel
+- [x] **Inline diagnostics** (underlines, hover messages) using lexer/parser/documenter diagnostics
+- [x] Diagnostics panel
 - [ ] **Autocomplete** for built-ins, user functions, and function-template names
 - [ ] **Signature help**
 - [ ] **Hover to evaluate** any expression

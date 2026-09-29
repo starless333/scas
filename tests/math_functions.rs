@@ -53,6 +53,14 @@ fn constants_and_common_angles_stay_exact_until_evalf() {
 }
 
 #[test]
+fn unicode_math_aliases_are_executable_source() {
+    assert_eq!(
+        output("print(sin(π / 6)); print(Γ(5)); print(π == pi); print(τ == tau);"),
+        "1/2\n24\ntrue\ntrue\n"
+    );
+}
+
+#[test]
 fn principal_complex_branches_and_arithmetic_are_first_class() {
     assert_eq!(
         output_at_precision(

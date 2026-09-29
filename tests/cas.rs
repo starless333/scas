@@ -76,6 +76,39 @@ fn substitution_solving_and_calculus_have_safe_fallbacks() {
 }
 
 #[test]
+fn solver_handles_complex_polynomials_and_inverse_transcendentals() {
+    assert_eq!(
+        output(
+            r#"
+            print(solve(x^2 + 1, x));
+            print(solve(x^2 - 2, x));
+            print(solve(sin(x) - 1/2, x));
+            print(solve(cos(2x + 1), x));
+            print(solve(tan(3x) - 1, x));
+            print(solve(exp(2x + 1) - 7, x));
+            print(solve(log(x) - 2, x));
+            print(solve(2^x - 8, x));
+            "#,
+        ),
+        concat!(
+            "[-i, i]\n",
+            "[-sqrt(8) / 2, sqrt(8) / 2]\n",
+            "[asin(1/2), pi - asin(1/2)]\n",
+            "[(acos(0) - 1) / 2, (-acos(0) - 1) / 2]\n",
+            "[atan(1) / 3]\n",
+            "[(ln(7) - 1) / 2]\n",
+            "[exp(2)]\n",
+            "[log(8, 2)]\n",
+        ),
+    );
+
+    assert_eq!(
+        output("print(solve(x^3 - 2, x));"),
+        "[-0.62996052494744 - 1.09112363597172i, -0.62996052494744 + 1.09112363597172i, 1.25992104989487]\n"
+    );
+}
+
+#[test]
 fn calculus_handles_general_derivatives_and_linear_substitution() {
     assert_eq!(
         output(

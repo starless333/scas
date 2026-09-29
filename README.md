@@ -61,6 +61,27 @@ cargo build --release
 ./target/release/scas path/to/program.scas
 ```
 
+## Desktop GUI (early preview)
+
+Build and launch the optional native editor with:
+
+```sh
+cargo run --features gui --bin scas-gui
+```
+
+The preview includes a `.scas` file tree, a syntax-highlighted editor,
+background execution with an output panel, save support, and Greek input.
+When `latex` and `dvipng` are installed, the live preview is typeset by LaTeX
+itself in Computer Modern; the native structured renderer remains a fallback
+when those commands are unavailable.
+Gruber Darker is the default color scheme; Editor settings can switch to the
+bundled light scheme, load a custom TOML theme or font, and change the editor
+font family and size. See [`themes/README.md`](themes/README.md) for the theme
+format. Enable **Expand \\name** to turn shortcuts such as `\pi`, `\gamma`, or
+`\theta` into `π`, `γ`, or `θ`, or use the symbol bar. Unicode identifiers are valid source; `π` and
+`τ` are built-in constant aliases and `Γ` calls the Gamma function. Use
+Ctrl+Enter to run and Ctrl+S to save the current file.
+
 `scas --help` lists decimal-precision and execution-limit flags; `--version`
 prints the release version. Redirection and pipelines remain supported.
 
@@ -315,6 +336,11 @@ print(apart(1 / (x^2 - 1)));        // partial fractions
 print(horner(2x^3 - 6x^2 + 1));     // Horner form
 print(subs(x^2 + 2x + 1, x, 3));    // 16
 print(solve(x^2 - 5x + 6, x));      // [2, 3]
+print(solve(x^2 + 1, x));            // [-i, i]
+print(solve(x^3 - 2, x));            // all three approximate complex roots
+print(solve(sin(x) - 1/2, x));       // principal solutions
+print(solve(exp(2x + 1) - 7, x));    // [(ln(7) - 1) / 2]
+print(solve(2^x - 8, x));            // [log(8, 2)]
 print(derivative(x^3 + sin(x), x));  // 3*x^2 + cos(x)
 print(integral(sqrt(x), x));         // 2*sqrt(x)^3/3
 ```
@@ -324,6 +350,18 @@ print(integral(sqrt(x), x));         // 2*sqrt(x)^3/3
 identities, square-free decomposition, and rational-root factorization.
 `apart` currently supports proper rational functions whose denominator splits
 into distinct rational linear factors.
+
+`solve` keeps rational roots exact, uses the exact quadratic formula for real
+and complex quadratics, and finds every complex root numerically for remaining
+univariate polynomial factors through degree 64. It also inverts affine-argument
+trigonometric, hyperbolic, exponential, and logarithmic expressions. Trig
+results are the distinct principal branches; periodic integer-parameter
+solution families are not yet represented by the language's array value.
+
+The GUI's resizable **LaTeX preview** pane updates from `///` prose and
+`\[ expression \]` render lines. It shows a readable math view, exposes the
+generated LaTeX for copying, and retains the last valid document while an
+expression is incomplete.
 
 Arrays are immutable, dynamically typed, and may be nested. Indexes are
 zero-based non-negative integers. `+` concatenates two arrays:
