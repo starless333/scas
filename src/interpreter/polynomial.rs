@@ -551,9 +551,15 @@ impl Polynomial {
         let numerator = Self::from_expression(left, symbols)?;
         let denominator = Self::from_expression(right, symbols)?;
         let (variable, denominator_coefficients) = denominator.univariate_coefficients()?;
-        let numerator_coefficients = numerator.coefficients_for(&variable)?;
+        let mut numerator_coefficients = numerator.coefficients_for(&variable)?;
+        // Improper fractions divide first: the quotient becomes a
+        // polynomial summand and only the remainder is decomposed.
+        let mut quotient = None;
         if numerator_coefficients.len() >= denominator_coefficients.len() {
-            return None;
+            let (divided, remainder) =
+                Self::divide_coefficients(numerator_coefficients, &denominator_coefficients)?;
+            numerator_coefficients = remainder;
+            quotient = Some(divided);
         }
 
         let mut roots = Vec::new();
@@ -623,7 +629,105 @@ impl Polynomial {
                 ),
             });
         }
-        result
+        match (quotient, result) {
+            (Some(quotient), rest) => {
+                let quotient = Self::from_univariate(variable, quotient).to_expression();
+                Some(match rest {
+                    None => quotient,
+                    Some(rest) => Self::binary(quotient, BinaryOp::Add, rest),
+                })
+            }
+            (None, result) => result,
+        }
+    }
+
+    /// Combines a sum of fractions into a single fraction (`together`),
+    /// the inverse of `apart`. Shared univariate content is cancelled.
+    pub fn together_expression(
+        expression: &SymbolicExpr,
+        symbols: &SymbolTable,
+    ) -> Option<Rc<SymbolicExpr>> {
+        let mut terms: Vec<(Polynomial, Polynomial)> = Vec::new();
+        Self::collect_fraction_terms(expression, symbols, true, &mut terms)?;
+        let one = || Self::constant(BigRational::one());
+        let mut denominator = one();
+        for (_, term_denominator) in &terms {
+            denominator = denominator.mul(term_denominator);
+        }
+        let mut numerator: Option<Polynomial> = None;
+        for (index, (term_numerator, _)) in terms.iter().enumerate() {
+            let mut cofactor = one();
+            for (other_index, (_, other_denominator)) in terms.iter().enumerate() {
+                if other_index != index {
+                    cofactor = cofactor.mul(other_denominator);
+                }
+            }
+            let contribution = term_numerator.mul(&cofactor);
+            numerator = Some(match numerator {
+                None => contribution,
+                Some(previous) => previous.add(&contribution),
+            });
+        }
+        let numerator = numerator?;
+        let mut numerator = numerator.expanded_expression();
+        let mut denominator = denominator.expanded_expression();
+        if let Some((reduced_numerator, reduced_denominator)) =
+            Self::reduce_fraction(&numerator, &denominator, symbols)
+        {
+            numerator = reduced_numerator;
+            denominator = reduced_denominator;
+        }
+        Some(Self::binary(numerator, BinaryOp::Div, denominator))
+    }
+
+    /// Collects `left ± right` recursively into (numerator, denominator)
+    /// polynomial pairs, negating the numerator of subtracted terms.
+    fn collect_fraction_terms(
+        expression: &SymbolicExpr,
+        symbols: &SymbolTable,
+        positive: bool,
+        out: &mut Vec<(Polynomial, Polynomial)>,
+    ) -> Option<()> {
+        let sign = |polynomial: Polynomial| {
+            if positive {
+                polynomial
+            } else {
+                polynomial.scaled(-BigRational::one())
+            }
+        };
+        match expression {
+            SymbolicExpr::Binary {
+                left,
+                op: BinaryOp::Add,
+                right,
+            } => {
+                Self::collect_fraction_terms(left, symbols, positive, out)?;
+                Self::collect_fraction_terms(right, symbols, positive, out)
+            }
+            SymbolicExpr::Binary {
+                left,
+                op: BinaryOp::Sub,
+                right,
+            } => {
+                Self::collect_fraction_terms(left, symbols, positive, out)?;
+                Self::collect_fraction_terms(right, symbols, !positive, out)
+            }
+            SymbolicExpr::Binary {
+                left,
+                op: BinaryOp::Div,
+                right,
+            } => {
+                let numerator = sign(Self::from_expression(left, symbols)?);
+                let denominator = Self::from_expression(right, symbols)?;
+                out.push((numerator, denominator));
+                Some(())
+            }
+            _ => {
+                let numerator = sign(Self::from_expression(expression, symbols)?);
+                out.push((numerator, Self::constant(BigRational::one())));
+                Some(())
+            }
+        }
     }
 
     pub fn reduce_fraction(

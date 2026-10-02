@@ -1,7 +1,7 @@
 //! Fast, allocation-conscious rendering of source AST expressions to LaTeX.
 
 use crate::ast::{BinaryOp, Expr, ExprKind, UnaryOp};
-use crate::interpreter::value::{SymbolicExpr, Value};
+use crate::interpreter::value::{Builtin, SymbolicExpr, Value};
 use crate::lexer::SymbolTable;
 use crate::number::Number;
 use num_traits::Signed;
@@ -356,6 +356,23 @@ impl<'a> LatexRenderer<'a> {
                 self.write_expr(argument, 0, output);
                 output.push_str(r"\right)");
             }
+            ("log", [argument, base]) => {
+                output.push_str(r"\log_{");
+                self.write_expr(base, 0, output);
+                output.push_str(r"}\left(");
+                self.write_expr(argument, 0, output);
+                output.push_str(r"\right)");
+            }
+            ("log10", [argument]) => {
+                output.push_str(r"\log_{10}\left(");
+                self.write_expr(argument, 0, output);
+                output.push_str(r"\right)");
+            }
+            ("log2", [argument]) => {
+                output.push_str(r"\log_{2}\left(");
+                self.write_expr(argument, 0, output);
+                output.push_str(r"\right)");
+            }
             (name, [argument]) if unary_command(name).is_some() => {
                 output.push_str(unary_command(name).expect("guarded above"));
                 output.push_str(r"\left(");
@@ -557,24 +574,53 @@ impl<'a> LatexRenderer<'a> {
                     output.push_str(r"\right)");
                 }
             }
-            SymbolicExpr::Call { function, args } => {
-                let name = function.name();
-                if let Some(command) = unary_command(name).filter(|_| args.len() == 1) {
-                    output.push_str(command);
-                } else {
-                    output.push_str(r"\operatorname{");
-                    output.push_str(name);
+            SymbolicExpr::Call { function, args } => match (function, args.as_slice()) {
+                (Builtin::Sqrt, [argument]) => {
+                    output.push_str(r"\sqrt{");
+                    self.write_symbolic(argument, 0, output);
                     output.push('}');
                 }
-                output.push_str(r"\left(");
-                for (index, argument) in args.iter().enumerate() {
-                    if index != 0 {
-                        output.push_str(", ");
-                    }
+                (Builtin::Cbrt, [argument]) => {
+                    output.push_str(r"\sqrt[3]{");
                     self.write_symbolic(argument, 0, output);
+                    output.push('}');
                 }
-                output.push_str(r"\right)");
-            }
+                (Builtin::Log, [argument, base]) => {
+                    output.push_str(r"\log_{");
+                    self.write_symbolic(base, 0, output);
+                    output.push_str(r"}\left(");
+                    self.write_symbolic(argument, 0, output);
+                    output.push_str(r"\right)");
+                }
+                (Builtin::Log10, [argument]) => {
+                    output.push_str(r"\log_{10}\left(");
+                    self.write_symbolic(argument, 0, output);
+                    output.push_str(r"\right)");
+                }
+                (Builtin::Log2, [argument]) => {
+                    output.push_str(r"\log_{2}\left(");
+                    self.write_symbolic(argument, 0, output);
+                    output.push_str(r"\right)");
+                }
+                _ => {
+                    let name = function.name();
+                    if let Some(command) = unary_command(name).filter(|_| args.len() == 1) {
+                        output.push_str(command);
+                    } else {
+                        output.push_str(r"\operatorname{");
+                        output.push_str(name);
+                        output.push('}');
+                    }
+                    output.push_str(r"\left(");
+                    for (index, argument) in args.iter().enumerate() {
+                        if index != 0 {
+                            output.push_str(", ");
+                        }
+                        self.write_symbolic(argument, 0, output);
+                    }
+                    output.push_str(r"\right)");
+                }
+            },
         }
     }
 }
@@ -772,6 +818,7 @@ mod tests {
     use crate::ast::StatementKind;
     use crate::lexer::Scanner;
     use crate::parser::Parser;
+    use std::rc::Rc;
 
     fn render(source: &str) -> String {
         let source = format!("print({source});");
@@ -797,6 +844,58 @@ mod tests {
         );
         assert_eq!(render("integral(sqrt(x), x)"), r"\int \sqrt{x}\,dx");
         assert_eq!(render("2 * x + 3x"), r"2 \cdot x + 3x");
+    }
+
+    #[test]
+    fn renders_roots_and_logarithms_as_natural_math() {
+        assert_eq!(render("sqrt(x)"), r"\sqrt{x}");
+        assert_eq!(render("cbrt(x)"), r"\sqrt[3]{x}");
+        assert_eq!(render("log(x)"), r"\log\left(x\right)");
+        assert_eq!(render("log(x, b)"), r"\log_{b}\left(x\right)");
+        assert_eq!(render("log10(x)"), r"\log_{10}\left(x\right)");
+        assert_eq!(render("log2(x)"), r"\log_{2}\left(x\right)");
+        assert_eq!(render("ln(x)"), r"\ln\left(x\right)");
+
+        // Evaluated results take the value renderer, which must agree.
+        let mut scanner = Scanner::new("x b");
+        let _ = scanner.scan_tokens();
+        let mut symbols = scanner.into_symbols();
+        let x = symbols.intern("x");
+        let b = symbols.intern("b");
+        let renderer = LatexRenderer::new(&symbols);
+        let variable = |symbol| Value::Symbolic(Rc::new(SymbolicExpr::Variable(symbol)));
+        let call = |function: Builtin, arguments: Vec<Value>| {
+            Value::Symbolic(Rc::new(SymbolicExpr::Call {
+                function,
+                args: arguments
+                    .into_iter()
+                    .map(|argument| match argument {
+                        Value::Symbolic(expression) => expression,
+                        _ => unreachable!("test builds symbolic arguments"),
+                    })
+                    .collect(),
+            }))
+        };
+        assert_eq!(
+            renderer.value(&call(Builtin::Sqrt, vec![variable(x)])),
+            r"\sqrt{x}"
+        );
+        assert_eq!(
+            renderer.value(&call(Builtin::Cbrt, vec![variable(x)])),
+            r"\sqrt[3]{x}"
+        );
+        assert_eq!(
+            renderer.value(&call(Builtin::Log, vec![variable(x), variable(b)])),
+            r"\log_{b}\left(x\right)"
+        );
+        assert_eq!(
+            renderer.value(&call(Builtin::Log10, vec![variable(x)])),
+            r"\log_{10}\left(x\right)"
+        );
+        assert_eq!(
+            renderer.value(&call(Builtin::Log2, vec![variable(x)])),
+            r"\log_{2}\left(x\right)"
+        );
     }
 
     #[test]

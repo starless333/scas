@@ -52,8 +52,9 @@ The assumptions system tracks facts such as `real(x)`, `x > 0`, `x != 0`, and
 - [x] Keep denominator signs positive
 - [x] `a/b + c/d -> (a*d + b*c)/(b*d)` followed by GCD cancellation
 - [x] Detect division by zero before cancellation
-- [x] Partial fractions via `apart` for proper fractions with distinct rational
-      linear factors
+- [x] Partial fractions via `apart` for fractions with distinct rational
+      linear factors (improper fractions are divided first; `together`
+      recombines sums into one fraction as the inverse)
 
 ## Polynomial identities
 

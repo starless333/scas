@@ -128,20 +128,31 @@ documented execution. Row reduction records and displays every row
 swap, scale, and row replacement beside the corresponding `A \sim A'`
 transition. The unsuffixed forms return only the result.
 
-## Assumptions and safe simplification
+## Constraints and assumptions
 
-An unbound symbol has no implicit real, positive, or nonzero property. Use the
-assumption functions when a conditional identity is intended:
+An unbound symbol has no implicit real, positive, or nonzero property. SCAS
+deliberately prefers an unsimplified correct expression over a branch-unsafe
+rewrite, so every conditional identity is gated on an explicit constraint.
 
-- `assume_real(x)`
-- `assume_integer(x)` (also implies real)
-- `assume_nonzero(x)`
-- `assume_nonnegative(x)` (also implies real)
-- `assume_positive(x)` (also implies real, nonnegative, and nonzero)
-- `assume_negative(x)` (also implies real and nonzero)
+### Named helpers
 
-The general form `assume(constraint)` accepts a single comparison over one
-variable or an `and` combination of them:
+Each helper records a fact about one variable and returns that variable, so
+calls can be chained or placed inline:
+
+| Call | Fact recorded | Also implies |
+| --- | --- | --- |
+| `assume_real(x)` | `x` is real | — |
+| `assume_integer(x)` | `x` is an integer | real |
+| `assume_nonzero(x)` | `x ≠ 0` | — |
+| `assume_nonnegative(x)` | `x ≥ 0` | real |
+| `assume_positive(x)` | `x > 0` | real, nonnegative, nonzero |
+| `assume_negative(x)` | `x < 0` | real, nonzero |
+
+### Constraint form: `assume(constraint)`
+
+The general form accepts a single comparison over one variable, or an `and`
+combination of comparisons. The comparison operators are `==`, `!=`, `<`,
+`<=`, `>`, and `>=`:
 
 ```scas
 assume(x == 3);        // equality: substitutes into later expressions
@@ -150,42 +161,219 @@ assume(z != 0);
 forget_assumptions();  // clears every recorded fact
 ```
 
-Each comparison must put a plain variable on one side; symbolic bounds such
-as `y < x + 1` are allowed but never conflict-check numerically. A later
+Each comparison must put a plain variable on one side — or be linear in a
+single variable, in which case it is normalized first: `assume(x + 1 > 0)`
+records `x > -1`, and `assume(2 * x < 6)` records `x < 3`. Symbolic bounds
+such as `y < x + 1` are allowed but never conflict-check numerically. A later
 `assume` whose comparison folds to a concrete boolean through existing
 equality facts is treated as a consistency check: `true` is accepted without
-adding a fact, and `false` is rejected as a contradiction. Range facts drive
-the same domain-safe simplifications as the named helpers (`assume(y > 0)`
-permits `sqrt(y^2) -> abs(y)`).
+adding a fact, and `false` is rejected as a contradiction. Contradictions are
+detected between every pair of recorded facts: equality versus a bound
+(`assume(a > 2); assume(a == 3)` passes, `assume(c > 0); assume(c == 0)` is
+rejected), two numeric bounds with an empty interval (`assume(b > 2);
+assume(b < 1)`), and sign claims across the named tools and `assume`
+(`assume(d == 0); assume_positive(d)` names `d` in the error). Range facts
+drive the same domain-safe simplifications as the named helpers
+(`assume(y > 0)` unlocks the positive-real rewrites).
 
-For example, SCAS retains `x/x`, `sqrt(x^2)`, `exp(ln(x))`, and `ln(exp(x))`
-for an unconstrained symbol. After `assume_real(x)`, it may use
-`sqrt(x^2) = abs(x)` and `ln(exp(x)) = x`. After `assume_positive(x)`, all four
-expressions simplify to their usual positive-real forms. Contradictory sign
-assumptions are rejected.
+Equality facts are definitional: after `assume(x == 3)`, later expressions
+see `x` as `3`. `forget_assumptions()` clears every recorded fact at once.
 
-Assumptions are session-local and currently attach to variables, not arbitrary
-compound expressions. SCAS deliberately prefers an unsimplified correct
-expression over a branch-unsafe rewrite.
+### What each fact unlocks
 
-## Calculus coverage
+For an unconstrained symbol SCAS retains `x/x`, `sqrt(x^2)`, `exp(ln(x))`,
+and `ln(exp(x))` verbatim. The rewrites unlocked by each fact:
 
-Differentiation includes algebraic powers; roots; exponential and logarithmic
-functions; trigonometric, inverse-trigonometric, hyperbolic, and
-inverse-hyperbolic functions; and `erf`, `erfc`, and assumption-qualified
-`abs`.
+| Fact | Identities it permits |
+| --- | --- |
+| real | `ln(exp(x)) -> x`, `sqrt(x^2) -> abs(x)` |
+| nonzero | `x/x -> 1`, `x % x -> 0`, `x^a/x^b -> x^(a-b)`, `exp(ln(x)) -> x` |
+| nonnegative | `abs(x) -> x`, `sqrt(x^2) -> x` |
+| positive | all of the above, and the positive-log/exponent forms (`log(a^n) -> n*log(a)` for `a > 0`) |
+| integer | parity and divisibility reasoning where relevant |
 
-Integration recognizes polynomial powers, affine reciprocals, affine roots,
-exponential, sine, cosine, tangent, hyperbolic sine/cosine, `sec(x)^2`,
-`csc(x)^2`, `sec(x)tan(x)`, and `csc(x)cot(x)`, including affine substitution.
-It also covers logarithms, secant/cosecant, inverse trigonometric and inverse
-hyperbolic functions, and `erf`/`erfc`. It returns an explicit unevaluated
-`integral(...)` when no safe rule is known.
+Assumptions are session-local and currently attach to variables, not
+arbitrary compound expressions. The constraint system is also what qualifies
+`abs` differentiation (`derivative(abs(x), x)` needs a sign fact) and the
+symmetry shortcuts in `definite_integral`.
 
-Multivariable and bounded-calculus tools are available as
-`gradient(f, [x, y])`, `jacobian([f, g], [x, y])`,
-`hessian(f, [x, y])`, and `definite_integral(f, x, a, b)`. Dynamic integral
-rendering includes the constant of integration and a derivative check.
+## Calculus: derivative and integral coverage
+
+### `derivative(expr, variable)`
+
+Differentiation is closed over the whole elementary language:
+
+- **Structure**: constants, variables (other names are constants with respect
+to `variable`), sums/differences, constant multiples, products (product
+rule), quotients (quotient rule), and general powers `f^g` via logarithmic
+differentiation (`derivative(x^x, x)` works). Linearity is applied first and
+the result is simplified immediately.
+- **Composed functions** (chain rule through any affine or general inner
+expression): `sqrt`, `cbrt`, general powers `x^n`, `exp`, `ln`, `log10`,
+`log2`, `sin`, `cos`, `tan`, `sec`, `csc`, `cot`, `asin`, `acos`, `atan`,
+`sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh`, `erf`, and `erfc`.
+- **Assumption-qualified**: `abs(x)` differentiates to `sign(x)` only when a
+sign fact is known; otherwise the derivative is kept unsimplified.
+- **Higher derivatives** come from repeated calls
+(`derivative(derivative(f, x), x)`).
+
+Anything outside these rules remains as an explicit unevaluated
+`derivative(...)` rather than guessing.
+
+### `integral(expr, variable)`
+
+Integration applies linearity first (sums split, constant factors pull out),
+then matches the integrand against the rule set below. Affine arguments
+`a*x + b` are handled everywhere with the correct `1/a` substitution factor.
+
+| Integrand | Result family |
+| --- | --- |
+| `c * (a*x + b)^n`, integer `n ≠ -1` | power rule |
+| `c / (a*x + b)` (constant numerator) | `c * ln(a*x + b) / a` |
+| `sqrt(a*x + b)`, `cbrt(a*x + b)` | root rule |
+| `exp(a*x + b)` | exponential |
+| `ln(a*x + b)`, `log10(...)`, `log2(...)` | by-parts logarithm forms |
+| `sin`, `cos`, `tan`, `sec`, `csc` of `a*x + b` | trigonometric |
+| `sinh`, `cosh` of `a*x + b` | hyperbolic |
+| `asin`, `acos`, `atan` of `a*x + b` | inverse trigonometric |
+| `asinh`, `acosh`, `atanh` of `a*x + b` | inverse hyperbolic |
+| `erf(a*x + b)`, `erfc(a*x + b)` | error functions |
+| `sec^2`, `csc^2` of `a*x + b` | tangent/cotangent |
+| `sec*tan`, `csc*cot` (same affine argument) | secant/cosecant |
+| `p(x) * g(a*x + b)`, `g` in `exp`, `sin`, `cos`, `sinh`, `cosh` | **by parts** (tabular rule, polynomial degree ≤ 8) |
+| rational with distinct rational linear factors | **partial fractions** (`apart` output feeds the rules above; improper fractions are divided first) |
+| `c / (a*x^2 + b)`, positive rational `a`, `b` | tangent substitution: `c * atan(x / sqrt(b/a)) / (a * sqrt(b/a))` |
+| `sin(a*x + b)^2`, `cos(a*x + b)^2` | double-angle halves: `x/2 ∓ sin(2*(a*x + b))/(4*a)` |
+
+Examples of the newer families:
+
+```scas
+print(integral(x*exp(x), x));                  // x*exp(x) - exp(x)
+print(integral(x^2*cos(x), x));                // x^2*sin(x) + 2x*cos(x) - 2sin(x)
+print(integral((3x + 1)/((x - 1)*(x + 2)), x)); // 4/3*ln(x - 1) + 5/3*ln(x + 2)
+print(integral(1/(x^2 + 1), x));               // atan(x)
+print(integral(sin(x)^2, x));                  // x/2 - sin(2x)/4
+```
+
+Improper rational functions, repeated or irreducible-quadratic denominator
+factors, and products of several transcendentals (for example
+`sin(x)*cos(x)`) are not yet decomposed; those return an explicit
+unevaluated `integral(...)`. Nested or out-of-budget forms are never guessed.
+
+### `definite_integral(expr, variable, lower, upper)`
+
+- Evaluates `F(upper) - F(lower)` whenever `integral` finds a closed
+antiderivative (the fundamental theorem on the current rule set).
+- **Linearity**: sums split per term and each term gets the best strategy.
+- **Symmetry**: when `lower == -upper`, an odd integrand evaluates to `0`
+(even without a closed antiderivative) and an even integrand folds to
+`2 * ∫_{0}^{upper}`.
+- When no closed primitive exists, the call stays as an explicit
+unevaluated `definite_integral(...)`; SCAS never substitutes limits into an
+unevaluated integral.
+
+### Multivariable tools
+
+`gradient(f, [x, y])`, `jacobian([f, g], [x, y])`, and `hessian(f, [x, y])`
+build on the same derivative engine. Dynamic integral rendering in documents
+includes the constant of integration and a derivative check.
+
+## Standard library reference
+
+Every builtin registered by SCAS 0.1.0, grouped by family. Signatures use
+`x` for a value, `expr` for a symbolic expression, `v` for a vector, and `A`
+for a matrix. The sections above give the domains; this table is the
+inventory.
+
+### Constants
+
+| Name | Meaning | Notes |
+| --- | --- | --- |
+| `pi` (`π`) | exact π | `evalf(pi)` approximates |
+| `e` | exact Euler number | |
+| `tau` (`τ`) | exact 2π | |
+| `phi` (`φ`) | exact golden ratio | `phi^2 -> phi + 1` is recognized |
+| `i` | complex unit | `i^2 = -1` |
+| `Γ` | uppercase gamma | alias of `gamma` |
+
+### Numeric utilities
+
+| Signature | Result |
+| --- | --- |
+| `abs(x)` | absolute value or complex magnitude |
+| `sign(x)` | −1, 0, or 1 (real) |
+| `floor(x)`, `ceil(x)`, `round(x)`, `trunc(x)` | integer rounding (real) |
+| `min(a, b)`, `max(a, b)` | ordered selection (real) |
+| `hypot(x, y)` | stable √(x²+y²) (real) |
+| `gcd(a, b)`, `lcm(a, b)` | exact integer operations |
+| `degrees(x)`, `radians(x)` | angle conversion |
+| `evalf(expr)` | approximation at the active precision |
+
+### Elementary functions
+
+| Signature | Notes |
+| --- | --- |
+| `sqrt(x)`, `cbrt(x)` | principal complex branches; real cube root preserved |
+| `exp(x)`, `ln(x)` | principal complex branches |
+| `log(x)` | natural logarithm |
+| `log(x, base)`, `log10(x)`, `log2(x)` | `ln(x)/ln(base)` style, same branches |
+| `sin`, `cos`, `tan`, `sec`, `csc`, `cot` | exact at rational multiples of `pi` |
+| `asin`, `acos`, `atan` | inverse trigonometric |
+| `atan2(y, x)` | real only |
+| `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh` | hyperbolic family |
+
+### Special functions
+
+| Signature | Notes |
+| --- | --- |
+| `erf(x)`, `erfc(x)` | real error functions |
+| `gamma(x)`, `lgamma(x)` | real only; `lgamma(x) = ln(abs(gamma(x)))` |
+
+### Symbolic algebra
+
+| Signature | Result |
+| --- | --- |
+| `simplify(expr)` | canonical simplification |
+| `expand(expr)` | distribution and angle-sum expansion |
+| `factor(expr)` | common-content and univariate factoring |
+| `apart(expr)` | partial fractions (distinct rational linear factors; improper fractions are divided first) |
+| `together(expr)` | sum of fractions → single fraction (inverse of `apart`, shared content cancelled) |
+| `horner(expr)` | Horner form |
+| `collect(expr, x)` | collect by powers of `x` |
+| `subs(expr, x, value)` | substitution |
+| `solve(expr, x)` | exact roots where possible, numeric refinement otherwise |
+
+### Constraints (see “Constraints and assumptions” above)
+
+`assume(constraint)`, `assume_real(x)`, `assume_integer(x)`,
+`assume_nonzero(x)`, `assume_nonnegative(x)`, `assume_positive(x)`,
+`assume_negative(x)`, `forget_assumptions()`.
+
+### Calculus (see “Calculus” above)
+
+`derivative(expr, x)`, `integral(expr, x)`, `definite_integral(expr, x, a, b)`,
+`gradient(expr, [vars])`, `jacobian([exprs], [vars])`, `hessian(expr, [vars])`.
+
+### Polynomials
+
+`degree(p, x)`, `coefficients(p, x)`, `resultant(p, q, x)`,
+`discriminant(p, x)`, `polynomial_gcd(p, q, x)`,
+`polynomial_divrem(p, q, x)` — exact univariate operations over the
+rationals (see “Polynomial invariants and Euclidean operations”).
+
+### Linear algebra
+
+`transpose(A)`, `trace(A)`, `det(A)`, `rank(A)`, `rref(A)`, `inverse(A)`,
+`matmul(A, B)`, `dot(u, v)`, `cross(u, v)`, `norm(v)`,
+`solve_linear(A, b)` — exact or symbolic vectors and matrices (see
+“Linear algebra”).
+
+### Documenting variants
+
+Every linear-algebra operation has a `_steps` form: `transpose_steps`,
+`trace_steps`, `det_steps`, `rank_steps`, `rref_steps`, `inverse_steps`,
+`matmul_steps`, `dot_steps`, `cross_steps`, `norm_steps`,
+`solve_linear_steps`. The unsuffixed forms return only the result.
 
 ## Resource and error model
 

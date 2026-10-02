@@ -236,9 +236,33 @@ fn rational_integration_through_partial_fractions() {
             "atan(x / 3)\n",
             "(4 * x - 2 * sin(2 * x)) / 8\n",
             "(12 * x + 2 * sin(6 * x)) / 24\n",
-            "integral(x / (x + 1), x)\n",
+            "-ln(x + 1) + x\n",
             "1 / (x + 1) - 1 / x + 1 / (x - 1)\n",
             "[-1, 0, 1]\n",
+        ),
+    );
+}
+
+#[test]
+fn together_combines_fractions_and_apart_divides_improper_ones() {
+    assert_eq!(
+        output(
+            r#"
+            print(apart((x^2 + 1)/(x + 1)));
+            print(apart(x^3/(x^2 - 1)));
+            print(together(1/x + 1/(x + 1)));
+            print(together(1/(x - 1) - 1/(x + 1)));
+            print(together(1/x + 2/x^2));
+            print(apart(together(1/(x - 1) + 1/(x + 1))));
+            "#,
+        ),
+        concat!(
+            "x - 1 + 2 / (x + 1)\n",
+            "x + (1/2 / (x + 1) + 1/2 / (x - 1))\n",
+            "(2 * x + 1) / (x ^ 2 + x)\n",
+            "2 / (x ^ 2 - 1)\n",
+            "(x + 2) / x ^ 2\n",
+            "1 / (x + 1) + 1 / (x - 1)\n",
         ),
     );
 }

@@ -76,10 +76,15 @@ Legend: `[ ]` todo, `[x]` done.
 - [ ] Rational-root theorem and quadratic/cubic/quartic closed-form root
       rewriting into exact radical form where the discriminant allows.
 - [ ] Multivariate polynomial GCD and division (currently univariate over Q).
-- [ ] `together` (sum of fractions -> single fraction) as the inverse of
+- [x] `together` (sum of fractions -> single fraction) as the inverse of
       `apart`, with full GCD cancellation under known-nonzero conditions.
-- [ ] Improper rational functions in `apart`: polynomial long division first,
-      then partial fractions of the remainder.
+      (Done: `together(expr)` builtin combines sums over a common
+      denominator and cancels shared univariate content via
+      `reduce_fraction`.)
+- [x] Improper rational functions in `apart`: polynomial long division first,
+      then partial fractions of the remainder. (Done: `apart((x^2 + 1) /
+      (x + 1))` now yields `x - 1 + 2 / (x + 1)`, and `integral(x / (x + 1),
+      x)` evaluates to `x - ln(x + 1)` through the same division.)
 - [ ] Partial fractions over repeated linear factors and irreducible
       quadratic factors (currently distinct rational linear factors only —
       see "Current boundaries").
@@ -98,11 +103,22 @@ Legend: `[ ]` todo, `[x]` done.
 
 ### 1.6 Assumptions system upgrades
 
-- [ ] Detect contradictory assumptions (`assume_positive(x)` followed by
-      `assume_negative(x)`) and report instead of silently proceeding.
+- [x] Detect contradictory assumptions (`assume_positive(x)` followed by
+      `assume_negative(x)`) and report instead of silently proceeding. (Done
+      and strengthened: bounds are compared pairwise so empty intervals like
+      `assume(b > 2); assume(b < 1)` are rejected, equality-vs-bound checks
+      follow the `bound op variable` convention (`assume(a > 2);
+      assume(a == 3)` passes instead of falsely conflicting), and the named
+      tools record facts so both directions cross-check
+      (`assume(d == 0); assume_positive(d)` names `d` in the error).)
 - [ ] Propagate derived facts: `x > 0 -> x != 0`, `x integer -> x real`,
-      `x in (0, 1) -> x^2 < x`, etc.
-- [ ] Inequality assumptions on expressions, not just names (`assume(x + 1 > 0)`).
+      `x in (0, 1) -> x^2 < x`, etc. (Partial: `x > 0` now implies nonzero
+      and nonnegative, `x == c` propagates the sign of `c`, and `assume_integer`
+      implies real; conditional rewrites like `x^2 < x` on `(0, 1)` remain.)
+- [x] Inequality assumptions on expressions, not just names (`assume(x + 1 > 0)`).
+      (Done for linear expressions in one variable: the comparison is
+      normalized to a plain bound, so `assume(x + 1 > 0)` records `x > -1`
+      and `assume(2 * x < 6)` records `x < 3`, with full conflict checking.)
 - [ ] `$Assumptions`-style global list plus `Refine`/`assuming` scoped blocks
       (Mathematica parity).
 - [ ] Domain conditions returned alongside results: when a rewrite needs

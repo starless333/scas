@@ -108,19 +108,41 @@ print([1, 2; 3, 4] * [5, 6]); // [17, 39]</code></pre>
       <tr><td><code>solve(expr, variable)</code></td><td>Solves supported polynomial and invertible elementary equations; polynomial numeric fallback covers all complex roots through degree 64.</td></tr>
     </tbody></table></div></section>
 
-    <section id="assumptions"><h2>Assumptions</h2><p>Assumption calls attach session-local facts to a variable and return that value. Contradictory sign assumptions are rejected.</p><div class="table-wrap"><table><thead><tr><th>Signature</th><th>Fact recorded</th></tr></thead><tbody>
+    <section id="assumptions"><h2>Constraints and assumptions</h2><p>Assumption calls attach session-local facts to a variable and return that value. Contradictory sign assumptions are rejected. SCAS deliberately prefers an unsimplified correct expression over a branch-unsafe rewrite, so every conditional identity is gated on an explicit constraint.</p><div class="table-wrap"><table><thead><tr><th>Signature</th><th>Fact recorded</th></tr></thead><tbody>
       <tr><td><code>assume_real(x)</code></td><td>x is real.</td></tr><tr><td><code>assume_integer(x)</code></td><td>x is an integer and therefore real.</td></tr>
       <tr><td><code>assume_nonzero(x)</code></td><td>x ≠ 0.</td></tr><tr><td><code>assume_nonnegative(x)</code></td><td>x ≥ 0 and real.</td></tr>
       <tr><td><code>assume_positive(x)</code></td><td>x &gt; 0, real, nonnegative, and nonzero.</td></tr><tr><td><code>assume_negative(x)</code></td><td>x &lt; 0, real, and nonzero.</td></tr>
+      <tr><td><code>assume(constraint)</code></td><td>A comparison (<code>==</code>, <code>!=</code>, <code>&lt;</code>, <code>&lt;=</code>, <code>&gt;</code>, <code>&gt;=</code>) with a plain variable on one side, or an <code>and</code> combination of them. Equality facts substitute into later expressions; later assumptions that fold to <code>false</code> are rejected as contradictions.</td></tr>
+      <tr><td><code>forget_assumptions()</code></td><td>Clears every recorded fact.</td></tr>
+    </tbody></table></div>
+      <p>What each fact unlocks for an unconstrained symbol <code>x</code> (which keeps <code>x/x</code>, <code>sqrt(x^2)</code>, <code>exp(ln(x))</code>, and <code>ln(exp(x))</code> verbatim):</p>
+      <div class="table-wrap"><table><thead><tr><th>Fact</th><th>Identities it permits</th></tr></thead><tbody>
+      <tr><td>real</td><td><code>ln(exp(x)) -&gt; x</code>, <code>sqrt(x^2) -&gt; abs(x)</code></td></tr>
+      <tr><td>nonzero</td><td><code>x/x -&gt; 1</code>, <code>x % x -&gt; 0</code>, <code>x^a/x^b -&gt; x^(a-b)</code>, <code>exp(ln(x)) -&gt; x</code></td></tr>
+      <tr><td>nonnegative</td><td><code>abs(x) -&gt; x</code>, <code>sqrt(x^2) -&gt; x</code></td></tr>
+      <tr><td>positive</td><td>all of the above plus the positive-log/exponent forms</td></tr>
+      <tr><td>integer</td><td>parity and divisibility reasoning where relevant</td></tr>
     </tbody></table></div></section>
 
     <section id="calculus"><h2>Calculus</h2><div class="table-wrap"><table><thead><tr><th>Signature</th><th>Behavior</th></tr></thead><tbody>
-      <tr><td><code>derivative(expr, variable)</code></td><td>Symbolic derivative across algebraic, elementary, hyperbolic, inverse, error, and assumption-qualified absolute-value rules.</td></tr>
-      <tr><td><code>integral(expr, variable)</code></td><td>Symbolic antiderivative for supported elementary families; otherwise returns an explicit unevaluated integral.</td></tr>
+      <tr><td><code>derivative(expr, variable)</code></td><td>Symbolic derivative across algebraic (sums, products, quotients, general powers), elementary, hyperbolic, inverse, error, and assumption-qualified absolute-value rules, with immediate simplification.</td></tr>
+      <tr><td><code>integral(expr, variable)</code></td><td>Symbolic antiderivative (see the coverage below); otherwise returns an explicit unevaluated integral.</td></tr>
       <tr><td><code>gradient(expr, [variables])</code></td><td>Vector of first partial derivatives.</td></tr>
       <tr><td><code>jacobian([expressions], [variables])</code></td><td>Matrix of first partial derivatives.</td></tr>
       <tr><td><code>hessian(expr, [variables])</code></td><td>Matrix of second partial derivatives.</td></tr>
-      <tr><td><code>definite_integral(expr, variable, lower, upper)</code></td><td>Evaluates bounds using a supported symbolic antiderivative.</td></tr>
+      <tr><td><code>definite_integral(expr, variable, lower, upper)</code></td><td>Fundamental theorem on the antiderivative set, with per-term linearity and odd/even symmetry on symmetric intervals (<code>lower == -upper</code>: odd integrands vanish, even ones fold to <code>2 * ∫₀^upper</code>). No closed primitive means an explicit unevaluated <code>definite_integral</code>.</td></tr>
+    </tbody></table></div>
+      <p>Integration applies linearity first and handles affine arguments <code>a*x + b</code> with the correct substitution factor. Families recognized:</p>
+      <div class="table-wrap"><table><thead><tr><th>Integrand</th><th>Result family</th></tr></thead><tbody>
+      <tr><td><code>c * (a*x + b)^n</code>, integer <code>n ≠ -1</code>; <code>c / (a*x + b)</code></td><td>power rule; <code>c * ln(a*x + b) / a</code></td></tr>
+      <tr><td><code>sqrt</code>, <code>cbrt</code>, <code>exp</code>, <code>ln</code>, <code>log10</code>, <code>log2</code> of <code>a*x + b</code></td><td>root, exponential, and by-parts logarithm forms</td></tr>
+      <tr><td><code>sin</code>, <code>cos</code>, <code>tan</code>, <code>sec</code>, <code>csc</code>, <code>sinh</code>, <code>cosh</code> of <code>a*x + b</code></td><td>trigonometric and hyperbolic</td></tr>
+      <tr><td><code>asin</code>, <code>acos</code>, <code>atan</code>, <code>asinh</code>, <code>acosh</code>, <code>atanh</code>, <code>erf</code>, <code>erfc</code> of <code>a*x + b</code></td><td>inverse and error functions</td></tr>
+      <tr><td><code>sec^2</code>, <code>csc^2</code>, <code>sec*tan</code>, <code>csc*cot</code></td><td>tangent/cotangent and secant/cosecant</td></tr>
+      <tr><td><code>p(x) * g(a*x + b)</code>, <code>g</code> in <code>exp</code>, <code>sin</code>, <code>cos</code>, <code>sinh</code>, <code>cosh</code></td><td>integration by parts (tabular rule, polynomial degree ≤ 8)</td></tr>
+      <tr><td>proper rational, distinct rational linear factors</td><td>partial fractions via <code>apart</code>, integrated term by term</td></tr>
+      <tr><td><code>c / (a*x^2 + b)</code>, positive rational <code>a</code>, <code>b</code></td><td>tangent substitution: <code>c * atan(x / sqrt(b/a)) / (a * sqrt(b/a))</code></td></tr>
+      <tr><td><code>sin(a*x + b)^2</code>, <code>cos(a*x + b)^2</code></td><td>double-angle halves: <code>x/2 ∓ sin(2*(a*x + b))/(4*a)</code></td></tr>
     </tbody></table></div></section>
 
     <section id="polynomials"><h2>Polynomial tools</h2><p>These functions operate exactly on univariate polynomials over rational coefficients and take the variable explicitly.</p><div class="table-wrap"><table><thead><tr><th>Signature</th><th>Result</th></tr></thead><tbody>

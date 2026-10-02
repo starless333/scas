@@ -223,7 +223,73 @@ fn sequential_assume_calls_accumulate_and_consistency_checks_fold() {
             print(sqrt(y^2));
             "#,
         ),
-        "abs(y)\nsqrt(y ^ 2)\n",
+        // `y > 0` marks y positive, exactly like `assume_positive(y)`,
+        // so the square root of the square collapses to y itself.
+        "y\nsqrt(y ^ 2)\n",
+    );
+}
+
+#[test]
+fn contradiction_detection_covers_bound_directions_and_expression_assumptions() {
+    // Consistent bound/equality combinations are accepted (a past bug
+    // reported `a > 2` with `a == 3` as a contradiction).
+    assert_eq!(
+        output("assume(a > 2);\nassume(a == 3);\nprint(a);\n"),
+        "3\n"
+    );
+    // Two numeric bounds conflict only when the interval is empty.
+    assert_eq!(
+        runtime_error("assume(b > 2);\nassume(b < 1);"),
+        "assume contradicts an existing constraint",
+    );
+    assert_eq!(
+        runtime_error("assume(c > 0);\nassume(c == 0);"),
+        "assume contradicts an existing constraint",
+    );
+    assert_eq!(
+        runtime_error("assume(g < 0);\nassume(g == 1);"),
+        "assume contradicts an existing constraint",
+    );
+    // assume_* tools and assume() facts cross-check in both directions.
+    assert_eq!(
+        runtime_error("assume(d == 0);\nassume_positive(d);"),
+        "assume_positive contradicts an existing assumption for 'd'",
+    );
+    assert_eq!(
+        runtime_error("assume_positive(p);\nassume(p == -1);"),
+        "assume contradicts an existing constraint",
+    );
+    assert_eq!(
+        runtime_error("assume_positive(p);\nassume_negative(p);"),
+        "assume_negative contradicts an existing assumption for 'p'",
+    );
+    // Claims consistent with the substituted concrete value pass.
+    assert_eq!(
+        output("assume(h == 3);\nassume_positive(h);\nprint(h);\n"),
+        "3\n",
+    );
+    // Inequality assumptions on linear expressions normalize to plain
+    // variable bounds: `w + 1 > 0` records `w > -1`, `2 * x < 6` records
+    // `x < 3`.
+    assert_eq!(
+        output("assume(w + 1 > 0);\nassume(w == 0);\nprint(w);\n"),
+        "0\n",
+    );
+    assert_eq!(
+        runtime_error("assume(f + 1 > 0);\nassume(f == -5);"),
+        "assume contradicts an existing constraint",
+    );
+    assert_eq!(
+        runtime_error("assume(t - 2 > 0);\nassume(t < 1);"),
+        "assume contradicts an existing constraint",
+    );
+    assert_eq!(
+        output("assume(2 * x < 6);\nassume(x == 0);\nprint(x);\n"),
+        "0\n",
+    );
+    assert_eq!(
+        runtime_error("assume(2 * x < 6);\nassume(x == 4);"),
+        "assume contradicts an existing constraint",
     );
 }
 
