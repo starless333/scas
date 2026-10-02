@@ -1,5 +1,5 @@
 /// SCAS builtin rendering gallery.
-/// Build this file with `scas build tests/render_all_builtins.scas builtins.tex`.
+/// Open this file in the IDE or build it with the SCAS build command.
 \{
     abs(-3);
     sqrt(x);

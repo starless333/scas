@@ -141,6 +141,8 @@ struct LatexRender {
     size: [usize; 2],
 }
 
+type LatexDocumentResult = (u64, Result<Vec<LatexRender>, String>);
+
 struct HighlightCache {
     source: String,
     theme: usize,
@@ -339,11 +341,11 @@ struct ScasApp {
     analysis_result: Option<Receiver<AnalysisResult>>,
     analysis_generation: u64,
     buffer_generation: u64,
-    latex_render: Option<Receiver<(u64, Result<LatexRender, String>)>>,
+    latex_render: Option<Receiver<LatexDocumentResult>>,
     latex_pending: Option<(String, [u8; 3], u64)>,
     last_latex_key: Option<u64>,
     system_latex_preview: bool,
-    latex_texture: Option<egui::TextureHandle>,
+    latex_textures: Vec<egui::TextureHandle>,
     latex_render_error: Option<String>,
     repl_math_receiver: Option<Receiver<(u64, Result<LatexRender, String>)>>,
     repl_math_pending: VecDeque<(u64, String, [u8; 3])>,
@@ -480,7 +482,7 @@ impl ScasApp {
             latex_pending: None,
             last_latex_key: None,
             system_latex_preview: true,
-            latex_texture: None,
+            latex_textures: Vec::new(),
             latex_render_error: None,
             repl_math_receiver: None,
             repl_math_pending: VecDeque::new(),
@@ -1348,15 +1350,6 @@ impl ScasApp {
         {
             return;
         }
-        if !system_latex_preview_suitable(&body) {
-            self.latex_texture = None;
-            self.last_latex_key = Some(key);
-            self.latex_render_error = Some(
-                "Document is too tall for a single LaTeX bitmap; using the scrollable structured preview"
-                    .to_owned(),
-            );
-            return;
-        }
         if self.latex_render.is_some() {
             self.latex_pending = Some((body, color, key));
             return;
@@ -1364,13 +1357,13 @@ impl ScasApp {
         // Never display a texture belonging to a different source document.
         // The structured renderer remains visible while the replacement is
         // typeset, and is also the reliable fallback if LaTeX fails.
-        self.latex_texture = None;
+        self.latex_textures.clear();
         self.last_latex_key = None;
         let (sender, receiver) = mpsc::channel();
         self.latex_render = Some(receiver);
         self.latex_render_error = None;
         std::thread::spawn(move || {
-            let result = render_latex_png(&body, color);
+            let result = render_latex_document_pngs(&body, color);
             let _ = sender.send((key, result));
         });
     }
@@ -1475,17 +1468,24 @@ impl ScasApp {
         };
         let event = receiver.try_recv();
         match event {
-            Ok((key, Ok(render))) => {
+            Ok((key, Ok(renders))) => {
                 if self.last_latex_key.is_some_and(|expected| expected != key) {
                     self.latex_render = None;
                     return;
                 }
-                let image = egui::ColorImage::from_rgba_unmultiplied(render.size, &render.rgba);
-                self.latex_texture = Some(context.load_texture(
-                    "latex-preview",
-                    image,
-                    egui::TextureOptions::LINEAR,
-                ));
+                self.latex_textures = renders
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, render)| {
+                        let image =
+                            egui::ColorImage::from_rgba_unmultiplied(render.size, &render.rgba);
+                        context.load_texture(
+                            format!("latex-preview-{index}"),
+                            image,
+                            egui::TextureOptions::LINEAR,
+                        )
+                    })
+                    .collect();
                 self.last_latex_key = Some(key);
                 self.latex_render_error = None;
                 self.latex_render = None;
@@ -3601,12 +3601,15 @@ impl eframe::App for ScasApp {
                             .show(ui, |ui| {
                                 if let Some(document) = &self.preview_document {
                                     if self.system_latex_preview {
-                                        if let Some(texture) = &self.latex_texture {
-                                            let natural_size = texture.size_vec2();
+                                        if !self.latex_textures.is_empty() {
                                             let page_width = (preview_width - 52.0).max(180.0);
+                                            let widest_chunk = self
+                                                .latex_textures
+                                                .iter()
+                                                .map(|texture| texture.size_vec2().x)
+                                                .fold(1.0, f32::max);
                                             let image_scale =
-                                                (page_width / natural_size.x.max(1.0)).min(4.5);
-                                            let display_size = natural_size * image_scale;
+                                                (page_width / widest_chunk).min(4.5);
                                             ui.with_layout(
                                                 egui::Layout::top_down(egui::Align::Min),
                                                 |ui| {
@@ -3628,12 +3631,16 @@ impl eframe::App for ScasApp {
                                                         .fill(theme.ui.editor.0)
                                                         .inner_margin(egui::Margin::same(18.0))
                                                         .show(ui, |ui| {
-                                                            ui.add(
-                                                                egui::Image::from_texture(texture)
-                                                                    .fit_to_exact_size(
-                                                                        display_size,
-                                                                    ),
-                                                            );
+                                                            for texture in &self.latex_textures {
+                                                                let display_size =
+                                                                    texture.size_vec2() * image_scale;
+                                                                ui.add(
+                                                                    egui::Image::from_texture(
+                                                                        texture,
+                                                                    )
+                                                                    .fit_to_exact_size(display_size),
+                                                                );
+                                                            }
                                                         });
                                                 },
                                             );
@@ -3662,14 +3669,10 @@ impl eframe::App for ScasApp {
                                         });
                                     }
                                     if let Some(error) = &self.latex_render_error {
-                                        if error.starts_with("Document is too tall") {
-                                            ui.small(error);
-                                        } else {
-                                            ui.colored_label(
-                                                self.themes[self.selected_theme].syntax.operator.0,
-                                                format!("{error}; showing structured fallback"),
-                                            );
-                                        }
+                                        ui.colored_label(
+                                            self.themes[self.selected_theme].syntax.operator.0,
+                                            format!("{error}; showing structured fallback"),
+                                        );
                                     }
                                     for diagnostic in &document.diagnostics {
                                         ui.colored_label(
@@ -4861,17 +4864,72 @@ fn live_preview_limits() -> Limits {
     }
 }
 
-/// The external LaTeX path produces one tightly cropped bitmap. Very tall
-/// documents can exceed either dvipng's dimensions or the GPU's maximum
-/// texture size, so those documents belong in the native, scrollable renderer.
-fn system_latex_preview_suitable(body: &str) -> bool {
-    const MAX_BODY_BYTES: usize = 24_000;
-    const MAX_RENDER_ROWS: usize = 64;
-    body.len() <= MAX_BODY_BYTES && body.matches("\\\\\n").count() <= MAX_RENDER_ROWS
+/// Split large aligned documents before rasterization. Each piece is still
+/// typeset by LaTeX, but no individual PNG can grow tall enough to exceed
+/// dvipng or GPU texture limits.
+fn latex_preview_chunks(body: &str) -> Vec<String> {
+    const BEGIN_ALIGN: &str = r"\begin{align*}";
+    const END_ALIGN: &str = r"\end{align*}";
+    const MAX_ROWS: usize = 32;
+    const MAX_BYTES: usize = 16_000;
+
+    let mut chunks = Vec::new();
+    let mut remainder = body;
+    while let Some(begin_offset) = remainder.find(BEGIN_ALIGN) {
+        let prefix = &remainder[..begin_offset];
+        if !prefix.trim().is_empty() {
+            chunks.push(prefix.trim().to_owned());
+        }
+
+        let after_begin = &remainder[begin_offset + BEGIN_ALIGN.len()..];
+        let Some(end_offset) = after_begin.find(END_ALIGN) else {
+            chunks.push(remainder.trim().to_owned());
+            return chunks;
+        };
+        let rows = &after_begin[..end_offset];
+        let mut current = String::new();
+        let mut row_count = 0;
+        for row in rows.split_inclusive("\\\\\n") {
+            if !current.is_empty()
+                && (row_count >= MAX_ROWS || current.len() + row.len() > MAX_BYTES)
+            {
+                chunks.push(format!("{BEGIN_ALIGN}\n{}{END_ALIGN}", current.trim()));
+                current.clear();
+                row_count = 0;
+            }
+            current.push_str(row);
+            row_count += 1;
+        }
+        if !current.trim().is_empty() {
+            chunks.push(format!("{BEGIN_ALIGN}\n{}{END_ALIGN}", current.trim()));
+        }
+        remainder = &after_begin[end_offset + END_ALIGN.len()..];
+    }
+    if !remainder.trim().is_empty() {
+        chunks.push(remainder.trim().to_owned());
+    }
+    if chunks.is_empty() {
+        chunks.push(body.to_owned());
+    }
+    chunks
 }
 
 fn render_repl_math_png(latex: &str, color: [u8; 3]) -> Result<LatexRender, String> {
     render_latex_png(&format!("${latex}$"), color)
+}
+
+fn render_latex_document_pngs(
+    body: &str,
+    color: [u8; 3],
+) -> Result<Vec<LatexRender>, String> {
+    latex_preview_chunks(body)
+        .into_iter()
+        .enumerate()
+        .map(|(index, chunk)| {
+            render_latex_png(&chunk, color)
+                .map_err(|error| format!("LaTeX preview chunk {}: {error}", index + 1))
+        })
+        .collect()
 }
 
 fn render_latex_png(body: &str, color: [u8; 3]) -> Result<LatexRender, String> {
@@ -5042,17 +5100,24 @@ mod tests {
     }
 
     #[test]
-    fn tall_builtin_gallery_uses_the_scrollable_structured_preview() {
+    fn tall_builtin_gallery_is_split_into_safe_computer_modern_chunks() {
         let source = include_str!("../../tests/render_all_builtins.scas");
         let document = scas::document::build_with_limits(source, live_preview_limits()).unwrap();
         assert!(document.fragments.len() >= 2);
-        assert!(!system_latex_preview_suitable(&document.body()));
+        let chunks = latex_preview_chunks(&document.body());
+        assert!(chunks.len() > 2);
+        assert!(chunks
+            .iter()
+            .all(|chunk| chunk.matches("\\\\\n").count() <= 32));
+        assert!(chunks.iter().skip(1).all(|chunk| {
+            chunk.starts_with(r"\begin{align*}") && chunk.ends_with(r"\end{align*}")
+        }));
     }
 
     #[test]
     fn ordinary_documents_still_use_the_computer_modern_preview() {
         let document = scas::document::build(r"\[ integral(x^2, x) => \]").unwrap();
-        assert!(system_latex_preview_suitable(&document.body()));
+        assert_eq!(latex_preview_chunks(&document.body()), [document.body()]);
     }
 
     #[test]
@@ -5381,5 +5446,16 @@ solve(z^2-z, z) =>;
         let plot = render_latex_png(&plot_document.body(), [20, 20, 20]).unwrap();
         assert!(plot.size[0] > 100);
         assert!(plot.size[1] > 50);
+
+        let gallery = scas::document::build_with_limits(
+            include_str!("../../tests/render_all_builtins.scas"),
+            live_preview_limits(),
+        )
+        .unwrap();
+        let pages = render_latex_document_pngs(&gallery.body(), [20, 20, 20]).unwrap();
+        assert!(pages.len() > 2);
+        assert!(pages
+            .iter()
+            .all(|page| page.size[0] > 20 && page.size[1] > 20));
     }
 }
