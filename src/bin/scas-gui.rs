@@ -1348,10 +1348,24 @@ impl ScasApp {
         {
             return;
         }
+        if !system_latex_preview_suitable(&body) {
+            self.latex_texture = None;
+            self.last_latex_key = Some(key);
+            self.latex_render_error = Some(
+                "Document is too tall for a single LaTeX bitmap; using the scrollable structured preview"
+                    .to_owned(),
+            );
+            return;
+        }
         if self.latex_render.is_some() {
             self.latex_pending = Some((body, color, key));
             return;
         }
+        // Never display a texture belonging to a different source document.
+        // The structured renderer remains visible while the replacement is
+        // typeset, and is also the reliable fallback if LaTeX fails.
+        self.latex_texture = None;
+        self.last_latex_key = None;
         let (sender, receiver) = mpsc::channel();
         self.latex_render = Some(receiver);
         self.latex_render_error = None;
@@ -1462,6 +1476,10 @@ impl ScasApp {
         let event = receiver.try_recv();
         match event {
             Ok((key, Ok(render))) => {
+                if self.last_latex_key.is_some_and(|expected| expected != key) {
+                    self.latex_render = None;
+                    return;
+                }
                 let image = egui::ColorImage::from_rgba_unmultiplied(render.size, &render.rgba);
                 self.latex_texture = Some(context.load_texture(
                     "latex-preview",
@@ -1473,6 +1491,10 @@ impl ScasApp {
                 self.latex_render = None;
             }
             Ok((key, Err(error))) => {
+                if self.last_latex_key.is_some_and(|expected| expected != key) {
+                    self.latex_render = None;
+                    return;
+                }
                 self.latex_render_error = Some(error);
                 self.last_latex_key = Some(key);
                 self.latex_render = None;
@@ -3640,10 +3662,14 @@ impl eframe::App for ScasApp {
                                         });
                                     }
                                     if let Some(error) = &self.latex_render_error {
-                                        ui.colored_label(
-                                            self.themes[self.selected_theme].syntax.operator.0,
-                                            format!("{error}; showing structured fallback"),
-                                        );
+                                        if error.starts_with("Document is too tall") {
+                                            ui.small(error);
+                                        } else {
+                                            ui.colored_label(
+                                                self.themes[self.selected_theme].syntax.operator.0,
+                                                format!("{error}; showing structured fallback"),
+                                            );
+                                        }
                                     }
                                     for diagnostic in &document.diagnostics {
                                         ui.colored_label(
@@ -4835,6 +4861,15 @@ fn live_preview_limits() -> Limits {
     }
 }
 
+/// The external LaTeX path produces one tightly cropped bitmap. Very tall
+/// documents can exceed either dvipng's dimensions or the GPU's maximum
+/// texture size, so those documents belong in the native, scrollable renderer.
+fn system_latex_preview_suitable(body: &str) -> bool {
+    const MAX_BODY_BYTES: usize = 24_000;
+    const MAX_RENDER_ROWS: usize = 64;
+    body.len() <= MAX_BODY_BYTES && body.matches("\\\\\n").count() <= MAX_RENDER_ROWS
+}
+
 fn render_repl_math_png(latex: &str, color: [u8; 3]) -> Result<LatexRender, String> {
     render_latex_png(&format!("${latex}$"), color)
 }
@@ -5004,6 +5039,20 @@ mod tests {
             readable_latex(&preview),
             "Quadratic formula\n\n((x + 1))⁄((2x²))"
         );
+    }
+
+    #[test]
+    fn tall_builtin_gallery_uses_the_scrollable_structured_preview() {
+        let source = include_str!("../../tests/render_all_builtins.scas");
+        let document = scas::document::build_with_limits(source, live_preview_limits()).unwrap();
+        assert!(document.fragments.len() >= 2);
+        assert!(!system_latex_preview_suitable(&document.body()));
+    }
+
+    #[test]
+    fn ordinary_documents_still_use_the_computer_modern_preview() {
+        let document = scas::document::build(r"\[ integral(x^2, x) => \]").unwrap();
+        assert!(system_latex_preview_suitable(&document.body()));
     }
 
     #[test]

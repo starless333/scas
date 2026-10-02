@@ -316,6 +316,51 @@ impl<'a> LatexRenderer<'a> {
                 output.push_str(r" \times ");
                 self.write_expr(right, 0, output);
             }
+            ("trace", [argument]) | ("trace_steps", [argument]) => {
+                output.push_str(r"\operatorname{tr}\left(");
+                self.write_expr(argument, 0, output);
+                output.push_str(r"\right)");
+            }
+            ("inverse", [argument]) | ("inverse_steps", [argument]) => {
+                self.write_expr(argument, 13, output);
+                output.push_str(r"^{-1}");
+            }
+            ("limit", [argument, variable, point]) | ("limit", [argument, variable, point, _]) => {
+                output.push_str(r"\lim_{");
+                self.write_expr(variable, 0, output);
+                output.push_str(r"\to ");
+                self.write_expr(point, 0, output);
+                output.push_str("} ");
+                self.write_expr(argument, 0, output);
+            }
+            ("series", [argument, variable, point, order]) => {
+                output.push_str(r"T_{");
+                self.write_expr(order, 0, output);
+                output.push_str(r"}\left[");
+                self.write_expr(argument, 0, output);
+                output.push_str(r"\right]_{");
+                self.write_expr(variable, 0, output);
+                output.push('=');
+                self.write_expr(point, 0, output);
+                output.push('}');
+            }
+            ("sum", [argument, variable, lower, upper])
+            | ("product", [argument, variable, lower, upper]) => {
+                output.push_str(if name == "sum" { r"\sum_{" } else { r"\prod_{" });
+                self.write_expr(variable, 0, output);
+                output.push('=');
+                self.write_expr(lower, 0, output);
+                output.push_str("}^{");
+                self.write_expr(upper, 0, output);
+                output.push_str("} ");
+                self.write_expr(argument, 0, output);
+            }
+            ("multiple_integral", [argument, variables]) => {
+                output.push_str(r"\int\!\cdots\!\int ");
+                self.write_expr(argument, 0, output);
+                output.push_str(r"\,d");
+                self.write_expr(variables, 0, output);
+            }
             ("derivative", [argument, variable]) => {
                 output.push_str(r"\frac{d}{d");
                 self.write_expr(variable, 0, output);

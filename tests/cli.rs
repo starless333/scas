@@ -3,6 +3,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
+use scas::document;
+use scas::interpreter::value::Builtin;
+
 const BINARY: &str = env!("CARGO_BIN_EXE_scas");
 
 fn run(source: &str) -> Output {
@@ -72,6 +75,73 @@ fn build_command_emits_a_complete_latex_document() {
     assert!(latex.contains(r"Value: 2"));
     assert!(latex.contains(r"\frac{x}{4} = \frac{1}{2}"));
     assert!(latex.ends_with("\\end{document}\n"));
+}
+
+#[test]
+fn builtin_rendering_gallery_is_complete_and_buildable() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("render_all_builtins.scas");
+    let source = fs::read_to_string(path).expect("builtin gallery should be readable");
+    for (name, _) in Builtin::ALL {
+        assert!(
+            source.contains(&format!("{name}(")),
+            "builtin gallery is missing {name}"
+        );
+    }
+    let rendered = document::build(&source).expect("builtin gallery should build");
+    assert!(
+        rendered.diagnostics.is_empty(),
+        "{:?}",
+        rendered.diagnostics
+    );
+    assert!(rendered.body().contains(r"\begin{align*}"));
+}
+
+#[test]
+fn html_documentation_suite_covers_every_builtin_and_page() {
+    let docs = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs");
+    let pages = [
+        "index.html",
+        "getting-started.html",
+        "language.html",
+        "builtins.html",
+        "calculus.html",
+        "linear-algebra.html",
+        "documenter.html",
+        "ide.html",
+        "internals.html",
+    ];
+    for page in pages {
+        let source = fs::read_to_string(docs.join(page))
+            .unwrap_or_else(|error| panic!("could not read {page}: {error}"));
+        assert!(
+            source.starts_with("<!doctype html>"),
+            "{page} has no doctype"
+        );
+        assert!(
+            source.contains("assets/site.css"),
+            "{page} has no stylesheet"
+        );
+        assert!(
+            source.contains("assets/site.js"),
+            "{page} has no navigation script"
+        );
+        assert!(
+            source.contains("class=\"skip-link\"")
+                && source.contains("id=\"main-content\"")
+                && source.contains("aria-controls=\"documentation-nav\""),
+            "{page} is missing shared keyboard-navigation affordances"
+        );
+    }
+
+    let reference = fs::read_to_string(docs.join("builtins.html")).unwrap();
+    for (name, _) in Builtin::ALL {
+        assert!(
+            reference.contains(&format!("id=\"{name}\"")),
+            "HTML builtin reference is missing {name}"
+        );
+    }
 }
 
 fn fixtures(directory: &str) -> Vec<PathBuf> {

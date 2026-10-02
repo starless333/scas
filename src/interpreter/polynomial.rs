@@ -224,14 +224,14 @@ impl Polynomial {
             return Ok(BigRational::one());
         }
         let mut matrix = vec![vec![BigRational::zero(); size]; size];
-        for row in 0..right_degree {
+        for (row, matrix_row) in matrix.iter_mut().enumerate().take(right_degree) {
             for exponent in 0..=left_degree {
-                matrix[row][row + exponent] = left[left_degree - exponent].clone();
+                matrix_row[row + exponent] = left[left_degree - exponent].clone();
             }
         }
-        for row in 0..left_degree {
+        for (row, matrix_row) in matrix.iter_mut().skip(right_degree).enumerate() {
             for exponent in 0..=right_degree {
-                matrix[right_degree + row][row + exponent] = right[right_degree - exponent].clone();
+                matrix_row[row + exponent] = right[right_degree - exponent].clone();
             }
         }
         Ok(Self::rational_determinant(matrix))

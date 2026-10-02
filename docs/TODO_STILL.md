@@ -165,31 +165,39 @@ Legend: `[ ]` todo, `[x]` done.
 
 ### 2.2 Calculus
 
-- [ ] Symbolic limits (`limit(sin(x)/x, x, 0)`, one-sided limits, limits at
-      infinity, L'Hôpital-style heuristics).
-- [ ] Series expansions (`series(f, x, a, n)`: Taylor/Laurent, big-O terms),
-      and using them for limits and asymptotics.
-- [ ] Multivariable calculus: partial derivatives exist via `derivative`;
-      add path-aware partials with assumptions, multiple integrals, change of
-      variables, Jacobians of substitutions (`jacobian` exists for vectors).
-- [ ] Symbolic summation and products (`sum(f(k), k, a, b)`), telescoping and
-      known closed forms, Faulhaber formulas.
-- [ ] Differential equations: `dsolve` for first-order linear/separable ODEs,
-      constant-coefficient linear ODEs (long term).
+- [x] Finite symbolic limits (`limit(sin(x)/x, x, 0)`) through direct
+      substitution and a bounded L'Hôpital heuristic. The optional
+      `"left"`/`"right"` syntax is validated; infinity and branch-sensitive
+      directional limits remain future extensions.
+- [x] Taylor polynomials (`series(f, x, a, n)`) through repeated symbolic
+      differentiation, exact point substitution, and factorial scaling.
+      Laurent series and explicit big-O terms remain future extensions.
+- [x] Multivariable differentiation (`gradient`, `jacobian`, `hessian`) and
+      repeated symbolic integration (`multiple_integral(expr, [vars])`).
+      Path-sensitive assumptions and general change-of-variables automation
+      remain future extensions.
+- [x] Exact finite `sum` and `product` over integer ranges, plus symbolic
+      Faulhaber forms through cubes. General telescoping and additional known
+      infinite/symbolic products remain future extensions.
+- [x] `dsolve` for first-order linear ODEs and homogeneous
+      constant-coefficient ODEs through second order. General separable forms
+      and higher-order characteristic polynomials remain future extensions.
 - [ ] Risch-style structure theorems eventually; until then grow the rule
       table (rational functions, erf/Gaussian forms, by-parts families).
 
 ### 2.3 Matrices and linear algebra
 
-- [ ] Eigenvalues/eigenvectors exactly for small matrices, numerically
-      (QR algorithm) beyond 4×4; characteristic polynomial via `det` on
-      `x*I - A`.
-- [ ] LU, QR, Cholesky decompositions with steps variants (matching the
+- [x] Characteristic polynomials and exact eigenvalues/eigenvectors for 1×1
+      and 2×2 matrices, plus diagonal eigenvalues for larger triangular
+      matrices. General higher-order numeric QR eigensolving remains open.
+- [x] LU, QR, Cholesky decompositions with steps variants (matching the
       existing `*_steps` family: `det_steps`, `rref_steps`, …).
-- [ ] Jordan form, matrix exponential, null space / column space bases.
+- [x] Null-space and column-space bases, 2×2 Jordan form, and exact diagonal
+      matrix exponentials. Higher-dimensional Jordan chains and general
+      matrix exponentials remain open.
 - [ ] Structured matrices: symbolic entries with assumptions (e.g.
       det of a Vandermonde), sparse representation for large numeric cases.
-- [ ] Vector spaces: Gram–Schmidt, projections, change of basis.
+- [x] Vector spaces: Gram–Schmidt, projections, change of basis.
 
 ### 2.4 Numeric computation
 

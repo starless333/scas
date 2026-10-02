@@ -68,9 +68,9 @@ The same core powers three product surfaces:
 - Clear errors for poles, unsupported complex special functions, invalid
   dimensions, non-finite results, and exhausted resource budgets.
 
-The complete callable reference is
-[`math-functions.html`](math-functions.html), with branch and precision detail
-also available in [`math-functions.md`](math-functions.md).
+The complete documentation suite begins at [`index.html`](index.html). Its
+callable reference is [`builtins.html`](builtins.html), with branch and
+precision detail also available in [`math-functions.md`](math-functions.md).
 
 ## Symbolic algebra and equation solving
 

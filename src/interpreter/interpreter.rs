@@ -773,7 +773,10 @@ impl<W: Write> Interpreter<W> {
             | Builtin::Integral
             | Builtin::Degree
             | Builtin::Coefficients
-            | Builtin::Discriminant => (2, 2),
+            | Builtin::Discriminant
+            | Builtin::CharacteristicPolynomial
+            | Builtin::Projection
+            | Builtin::ChangeBasis => (2, 2),
             Builtin::Matmul
             | Builtin::Dot
             | Builtin::Cross
@@ -787,7 +790,11 @@ impl<W: Write> Interpreter<W> {
             | Builtin::PolynomialGcd
             | Builtin::PolynomialDivRem => (3, 3),
             Builtin::Gradient | Builtin::Jacobian | Builtin::Hessian => (2, 2),
-            Builtin::DefiniteIntegral => (4, 4),
+            Builtin::DefiniteIntegral | Builtin::Sum | Builtin::Product => (4, 4),
+            Builtin::Limit => (3, 4),
+            Builtin::Series => (4, 4),
+            Builtin::MultipleIntegral => (2, 2),
+            Builtin::Dsolve => (2, 4),
             Builtin::Assume => (1, 1),
             Builtin::ForgetAssumptions => (0, 0),
             _ => (1, 1),
@@ -829,13 +836,38 @@ impl<W: Write> Interpreter<W> {
                 | Builtin::DotSteps
                 | Builtin::CrossSteps
                 | Builtin::NormSteps
+                | Builtin::CharacteristicPolynomial
+                | Builtin::Eigenvalues
+                | Builtin::Eigenvectors
+                | Builtin::Lu
+                | Builtin::Qr
+                | Builtin::Cholesky
+                | Builtin::LuSteps
+                | Builtin::QrSteps
+                | Builtin::CholeskySteps
+                | Builtin::NullSpace
+                | Builtin::ColumnSpace
+                | Builtin::GramSchmidt
+                | Builtin::Projection
+                | Builtin::ChangeBasis
+                | Builtin::MatrixExp
+                | Builtin::JordanForm
         ) {
             return self.call_linear_algebra(builtin, args);
         }
 
         if matches!(
             builtin,
-            Builtin::Gradient | Builtin::Jacobian | Builtin::Hessian | Builtin::DefiniteIntegral
+            Builtin::Gradient
+                | Builtin::Jacobian
+                | Builtin::Hessian
+                | Builtin::DefiniteIntegral
+                | Builtin::Limit
+                | Builtin::Series
+                | Builtin::Sum
+                | Builtin::Product
+                | Builtin::MultipleIntegral
+                | Builtin::Dsolve
         ) {
             return self.call_calculus_tool(builtin, args);
         }
@@ -1462,6 +1494,151 @@ impl<W: Write> Interpreter<W> {
                     Ok(result)
                 }
             }
+            Builtin::CharacteristicPolynomial => {
+                let matrix = self.square_matrix(&args[0], builtin.name())?;
+                if matrix.len() > 6 {
+                    return Err(self.limit_error(
+                        "characteristic_polynomial exact expansion is limited to 6x6 matrices",
+                    ));
+                }
+                let variable = self.value_to_symbolic(args[1].clone())?;
+                let SymbolicExpr::Variable(_) = variable.as_ref() else {
+                    return Err(self.error(
+                        "characteristic_polynomial expects a symbolic variable as its second argument",
+                    ));
+                };
+                let mut characteristic = Vec::with_capacity(matrix.len());
+                for (row_index, row) in matrix.into_iter().enumerate() {
+                    let mut result_row = Vec::with_capacity(row.len());
+                    for (column_index, entry) in row.into_iter().enumerate() {
+                        let diagonal = if row_index == column_index {
+                            Self::symbolic_value(Rc::clone(&variable))
+                        } else {
+                            Self::integer_value(0)
+                        };
+                        result_row.push(self.apply_binary(BinaryOp::Sub, diagonal, entry)?);
+                    }
+                    characteristic.push(result_row);
+                }
+                let result = self.determinant_cofactor(&characteristic)?;
+                match result {
+                    Value::Symbolic(expression) => {
+                        let simplified = self.simplify_symbolic_tree(&expression)?;
+                        let expanded = Polynomial::from_expression(&simplified, &self.symbols)
+                            .map(|polynomial| polynomial.expanded_expression())
+                            .unwrap_or(simplified);
+                        Ok(Self::symbolic_value(expanded))
+                    }
+                    value => Ok(value),
+                }
+            }
+            Builtin::Eigenvalues => self.eigenvalues_value(&args[0]),
+            Builtin::Eigenvectors => self.eigenvectors_value(&args[0]),
+            Builtin::Lu | Builtin::LuSteps => {
+                let matrix = self.square_matrix(&args[0], builtin.name())?;
+                let (lower, upper) = self.lu_decomposition(matrix)?;
+                let result = Value::Array(Rc::new(vec![
+                    Self::matrix_value(lower),
+                    Self::matrix_value(upper),
+                ]));
+                if builtin == Builtin::LuSteps {
+                    Ok(Self::derivation(
+                        result.clone(),
+                        vec![DerivationStep {
+                            value: result,
+                            operation: StepOperation::Explanation(
+                                r"A=LU\quad\text{(Doolittle elimination)}".to_owned(),
+                            ),
+                        }],
+                    ))
+                } else {
+                    Ok(result)
+                }
+            }
+            Builtin::Qr | Builtin::QrSteps => {
+                let matrix = self.matrix(&args[0], builtin.name())?;
+                let (q, r) = self.qr_decomposition(matrix)?;
+                let result =
+                    Value::Array(Rc::new(vec![Self::matrix_value(q), Self::matrix_value(r)]));
+                if builtin == Builtin::QrSteps {
+                    Ok(Self::derivation(
+                        result.clone(),
+                        vec![DerivationStep {
+                            value: result,
+                            operation: StepOperation::Explanation(
+                                r"A=QR\quad\text{(modified Gram--Schmidt)}".to_owned(),
+                            ),
+                        }],
+                    ))
+                } else {
+                    Ok(result)
+                }
+            }
+            Builtin::Cholesky | Builtin::CholeskySteps => {
+                let matrix = self.square_matrix(&args[0], builtin.name())?;
+                let lower = self.cholesky_decomposition(matrix)?;
+                let result = Self::matrix_value(lower);
+                if builtin == Builtin::CholeskySteps {
+                    Ok(Self::derivation(
+                        result.clone(),
+                        vec![DerivationStep {
+                            value: result,
+                            operation: StepOperation::Explanation(r"A=LL^{\mathsf T}".to_owned()),
+                        }],
+                    ))
+                } else {
+                    Ok(result)
+                }
+            }
+            Builtin::NullSpace => self.null_space_value(&args[0]),
+            Builtin::ColumnSpace => self.column_space_value(&args[0]),
+            Builtin::GramSchmidt => {
+                let vectors = self.matrix(&args[0], "gram_schmidt")?;
+                Ok(Value::Array(Rc::new(
+                    self.orthogonalize(vectors, true)?
+                        .into_iter()
+                        .map(|vector| Value::Array(Rc::new(vector)))
+                        .collect(),
+                )))
+            }
+            Builtin::Projection => {
+                let vector = self.vector(&args[0], "projection")?;
+                let onto = self.vector(&args[1], "projection")?;
+                Ok(Value::Array(Rc::new(self.project_vector(&vector, &onto)?)))
+            }
+            Builtin::ChangeBasis => {
+                let vector = self.vector(&args[0], "change_basis")?;
+                let basis = self.square_matrix(&args[1], "change_basis")?;
+                let transposed = Self::transpose_matrix(&basis);
+                let solution = self.call_linear_algebra(
+                    Builtin::SolveLinear,
+                    vec![
+                        Self::matrix_value(transposed),
+                        Value::Array(Rc::new(vector)),
+                    ],
+                )?;
+                Ok(solution)
+            }
+            Builtin::MatrixExp => {
+                let matrix = self.square_matrix(&args[0], "matrix_exp")?;
+                let size = matrix.len();
+                for (row, values) in matrix.iter().enumerate() {
+                    for (column, value) in values.iter().enumerate() {
+                        if row != column && !Self::definitely_zero(value) {
+                            return Err(
+                                self.error("matrix_exp currently requires a diagonal matrix")
+                            );
+                        }
+                    }
+                }
+                let mut result = vec![vec![Self::integer_value(0); size]; size];
+                for index in 0..size {
+                    result[index][index] =
+                        self.call_builtin(Builtin::Exp, vec![matrix[index][index].clone()])?;
+                }
+                Ok(Self::matrix_value(result))
+            }
+            Builtin::JordanForm => self.jordan_form_value(&args[0]),
             Builtin::SolveLinear | Builtin::SolveLinearSteps => {
                 let matrix = self.matrix(&args[0], builtin.name())?;
                 let vector = self.vector(&args[1], builtin.name())?;
@@ -1558,6 +1735,318 @@ impl<W: Write> Interpreter<W> {
         (0..matrix[0].len())
             .map(|column| matrix.iter().map(|row| row[column].clone()).collect())
             .collect()
+    }
+
+    fn dot_values(&self, left: &[Value], right: &[Value]) -> ExecResult<Value> {
+        if left.len() != right.len() {
+            return Err(self.error("vectors must have equal length"));
+        }
+        let mut total = Self::integer_value(0);
+        for (left, right) in left.iter().zip(right) {
+            let term = self.apply_binary(BinaryOp::Mul, left.clone(), right.clone())?;
+            total = self.apply_binary(BinaryOp::Add, total, term)?;
+        }
+        Ok(total)
+    }
+
+    fn project_vector(&self, vector: &[Value], onto: &[Value]) -> ExecResult<Vec<Value>> {
+        if vector.len() != onto.len() {
+            return Err(self.error("projection expects vectors of equal length"));
+        }
+        let denominator = self.dot_values(onto, onto)?;
+        if Self::definitely_zero(&denominator) {
+            return Err(self.error("cannot project onto the zero vector"));
+        }
+        let coefficient =
+            self.apply_binary(BinaryOp::Div, self.dot_values(vector, onto)?, denominator)?;
+        onto.iter()
+            .map(|value| self.apply_binary(BinaryOp::Mul, coefficient.clone(), value.clone()))
+            .collect()
+    }
+
+    fn orthogonalize(
+        &self,
+        vectors: Vec<Vec<Value>>,
+        normalize: bool,
+    ) -> ExecResult<Vec<Vec<Value>>> {
+        if vectors.is_empty() || vectors.iter().any(|row| row.len() != vectors[0].len()) {
+            return Err(self.error("gram_schmidt expects equally sized non-empty vectors"));
+        }
+        let mut result: Vec<Vec<Value>> = Vec::with_capacity(vectors.len());
+        for vector in vectors {
+            let mut orthogonal = vector;
+            for basis in &result {
+                let projection = self.project_vector(&orthogonal, basis)?;
+                for (entry, projected) in orthogonal.iter_mut().zip(projection) {
+                    *entry = self.apply_binary(BinaryOp::Sub, entry.clone(), projected)?;
+                }
+            }
+            let squared = self.dot_values(&orthogonal, &orthogonal)?;
+            if Self::definitely_zero(&squared) {
+                return Err(self.error("vectors are linearly dependent"));
+            }
+            if normalize {
+                let length = self.call_builtin(Builtin::Sqrt, vec![squared])?;
+                for entry in &mut orthogonal {
+                    *entry = self.apply_binary(BinaryOp::Div, entry.clone(), length.clone())?;
+                }
+            }
+            result.push(orthogonal);
+        }
+        Ok(result)
+    }
+
+    fn lu_decomposition(&self, matrix: Matrix) -> ExecResult<(Matrix, Matrix)> {
+        let size = matrix.len();
+        let mut lower = vec![vec![Self::integer_value(0); size]; size];
+        let mut upper = vec![vec![Self::integer_value(0); size]; size];
+        for (index, row) in lower.iter_mut().enumerate() {
+            row[index] = Self::integer_value(1);
+        }
+        for pivot in 0..size {
+            for column in pivot..size {
+                let mut value = matrix[pivot][column].clone();
+                for (index, upper_row) in upper.iter().enumerate().take(pivot) {
+                    let term = self.apply_binary(
+                        BinaryOp::Mul,
+                        lower[pivot][index].clone(),
+                        upper_row[column].clone(),
+                    )?;
+                    value = self.apply_binary(BinaryOp::Sub, value, term)?;
+                }
+                upper[pivot][column] = value;
+            }
+            if Self::definitely_zero(&upper[pivot][pivot]) {
+                return Err(self.error("lu requires nonzero leading pivots"));
+            }
+            for row in pivot + 1..size {
+                let mut value = matrix[row][pivot].clone();
+                for (index, upper_row) in upper.iter().enumerate().take(pivot) {
+                    let term = self.apply_binary(
+                        BinaryOp::Mul,
+                        lower[row][index].clone(),
+                        upper_row[pivot].clone(),
+                    )?;
+                    value = self.apply_binary(BinaryOp::Sub, value, term)?;
+                }
+                lower[row][pivot] =
+                    self.apply_binary(BinaryOp::Div, value, upper[pivot][pivot].clone())?;
+            }
+        }
+        Ok((lower, upper))
+    }
+
+    fn qr_decomposition(&self, matrix: Matrix) -> ExecResult<(Matrix, Matrix)> {
+        let rows = matrix.len();
+        let columns = matrix[0].len();
+        if rows < columns {
+            return Err(self.error("qr expects a matrix with at least as many rows as columns"));
+        }
+        let input_columns = Self::transpose_matrix(&matrix);
+        let q_columns = self.orthogonalize(input_columns.clone(), true)?;
+        let mut r = vec![vec![Self::integer_value(0); columns]; columns];
+        for row in 0..columns {
+            for (column, input) in input_columns.iter().enumerate().skip(row) {
+                r[row][column] = self.dot_values(&q_columns[row], input)?;
+            }
+        }
+        Ok((Self::transpose_matrix(&q_columns), r))
+    }
+
+    fn cholesky_decomposition(&self, matrix: Matrix) -> ExecResult<Matrix> {
+        let size = matrix.len();
+        for row in 0..size {
+            for column in 0..size {
+                if !matrix[row][column].equals(&matrix[column][row]) {
+                    return Err(self.error("cholesky expects a symmetric matrix"));
+                }
+            }
+        }
+        let mut lower = vec![vec![Self::integer_value(0); size]; size];
+        for row in 0..size {
+            for column in 0..=row {
+                let mut value = matrix[row][column].clone();
+                for index in 0..column {
+                    let term = self.apply_binary(
+                        BinaryOp::Mul,
+                        lower[row][index].clone(),
+                        lower[column][index].clone(),
+                    )?;
+                    value = self.apply_binary(BinaryOp::Sub, value, term)?;
+                }
+                if row == column {
+                    if matches!(&value, Value::Number(number) if number.is_negative() || number.is_zero())
+                    {
+                        return Err(self.error("cholesky expects a positive-definite matrix"));
+                    }
+                    lower[row][column] = self.call_builtin(Builtin::Sqrt, vec![value])?;
+                } else {
+                    lower[row][column] =
+                        self.apply_binary(BinaryOp::Div, value, lower[column][column].clone())?;
+                }
+            }
+        }
+        Ok(lower)
+    }
+
+    fn eigenvalues_value(&self, value: &Value) -> ExecResult<Value> {
+        let matrix = self.square_matrix(value, "eigenvalues")?;
+        let triangular = (0..matrix.len())
+            .all(|row| (0..row).all(|column| Self::definitely_zero(&matrix[row][column])))
+            || (0..matrix.len()).all(|row| {
+                (row + 1..matrix.len()).all(|column| Self::definitely_zero(&matrix[row][column]))
+            });
+        if matrix.len() > 2 && triangular {
+            return Ok(Value::Array(Rc::new(
+                matrix
+                    .iter()
+                    .enumerate()
+                    .map(|(index, row)| row[index].clone())
+                    .collect(),
+            )));
+        }
+        match matrix.len() {
+            1 => Ok(Value::Array(Rc::new(vec![matrix[0][0].clone()]))),
+            2 => {
+                let trace =
+                    self.apply_binary(BinaryOp::Add, matrix[0][0].clone(), matrix[1][1].clone())?;
+                let four_ad = self.apply_binary(
+                    BinaryOp::Mul,
+                    Self::integer_value(4),
+                    self.apply_binary(BinaryOp::Mul, matrix[0][0].clone(), matrix[1][1].clone())?,
+                )?;
+                let four_bc = self.apply_binary(
+                    BinaryOp::Mul,
+                    Self::integer_value(4),
+                    self.apply_binary(BinaryOp::Mul, matrix[0][1].clone(), matrix[1][0].clone())?,
+                )?;
+                let trace_squared =
+                    self.apply_binary(BinaryOp::Mul, trace.clone(), trace.clone())?;
+                let discriminant = self.apply_binary(
+                    BinaryOp::Add,
+                    self.apply_binary(BinaryOp::Sub, trace_squared, four_ad)?,
+                    four_bc,
+                )?;
+                let root = self.call_builtin(Builtin::Sqrt, vec![discriminant])?;
+                let plus = self.apply_binary(BinaryOp::Add, trace.clone(), root.clone())?;
+                let minus = self.apply_binary(BinaryOp::Sub, trace, root)?;
+                Ok(Value::Array(Rc::new(vec![
+                    self.apply_binary(BinaryOp::Div, plus, Self::integer_value(2))?,
+                    self.apply_binary(BinaryOp::Div, minus, Self::integer_value(2))?,
+                ])))
+            }
+            _ => Err(self.error("exact eigenvalues currently support matrices up to 2x2")),
+        }
+    }
+
+    fn eigenvectors_value(&self, value: &Value) -> ExecResult<Value> {
+        let matrix = self.square_matrix(value, "eigenvectors")?;
+        if matrix.len() == 1 {
+            return Ok(Value::Array(Rc::new(vec![Value::Array(Rc::new(vec![
+                Self::integer_value(1),
+            ]))])));
+        }
+        if matrix.len() != 2 {
+            return Err(self.error("exact eigenvectors currently support matrices up to 2x2"));
+        }
+        let Value::Array(values) = self.eigenvalues_value(value)? else {
+            unreachable!()
+        };
+        let mut vectors = Vec::new();
+        for eigenvalue in values.iter() {
+            let vector = if !Self::definitely_zero(&matrix[0][1]) {
+                vec![
+                    matrix[0][1].clone(),
+                    self.apply_binary(BinaryOp::Sub, eigenvalue.clone(), matrix[0][0].clone())?,
+                ]
+            } else if !Self::definitely_zero(&matrix[1][0]) {
+                vec![
+                    self.apply_binary(BinaryOp::Sub, eigenvalue.clone(), matrix[1][1].clone())?,
+                    matrix[1][0].clone(),
+                ]
+            } else if eigenvalue.equals(&matrix[0][0]) {
+                vec![Self::integer_value(1), Self::integer_value(0)]
+            } else {
+                vec![Self::integer_value(0), Self::integer_value(1)]
+            };
+            if !vectors
+                .iter()
+                .any(|existing: &Value| existing.equals(&Value::Array(Rc::new(vector.clone()))))
+            {
+                vectors.push(Value::Array(Rc::new(vector)));
+            }
+        }
+        Ok(Value::Array(Rc::new(vectors)))
+    }
+
+    fn null_space_value(&self, value: &Value) -> ExecResult<Value> {
+        let matrix = self.matrix(value, "null_space")?;
+        let columns = matrix[0].len();
+        let (reduced, _, _) = self.rref_with_steps(matrix, None)?;
+        let mut pivot_columns = Vec::new();
+        for row in &reduced {
+            if let Some(column) = row.iter().position(|entry| !Self::definitely_zero(entry)) {
+                pivot_columns.push(column);
+            }
+        }
+        let mut basis = Vec::new();
+        for free in 0..columns {
+            if pivot_columns.contains(&free) {
+                continue;
+            }
+            let mut vector = vec![Self::integer_value(0); columns];
+            vector[free] = Self::integer_value(1);
+            for (row, pivot) in pivot_columns.iter().enumerate() {
+                vector[*pivot] = self.apply_unary(UnaryOp::Neg, reduced[row][free].clone())?;
+            }
+            basis.push(Value::Array(Rc::new(vector)));
+        }
+        Ok(Value::Array(Rc::new(basis)))
+    }
+
+    fn column_space_value(&self, value: &Value) -> ExecResult<Value> {
+        let matrix = self.matrix(value, "column_space")?;
+        let (reduced, _, _) = self.rref_with_steps(matrix.clone(), None)?;
+        let pivot_columns = reduced
+            .iter()
+            .filter_map(|row| row.iter().position(|entry| !Self::definitely_zero(entry)))
+            .collect::<Vec<_>>();
+        let columns = Self::transpose_matrix(&matrix);
+        Ok(Value::Array(Rc::new(
+            pivot_columns
+                .into_iter()
+                .map(|column| Value::Array(Rc::new(columns[column].clone())))
+                .collect(),
+        )))
+    }
+
+    fn jordan_form_value(&self, value: &Value) -> ExecResult<Value> {
+        let matrix = self.square_matrix(value, "jordan_form")?;
+        if matrix.len() == 1 {
+            return Ok(Self::matrix_value(matrix));
+        }
+        if matrix.len() != 2 {
+            return Err(self.error("jordan_form currently supports matrices up to 2x2"));
+        }
+        let Value::Array(values) = self.eigenvalues_value(value)? else {
+            unreachable!()
+        };
+        if values[0].equals(&values[1]) {
+            if Self::definitely_zero(&matrix[0][1])
+                && Self::definitely_zero(&matrix[1][0])
+                && matrix[0][0].equals(&matrix[1][1])
+            {
+                return Ok(Self::matrix_value(matrix));
+            }
+            return Ok(Self::matrix_value(vec![
+                vec![values[0].clone(), Self::integer_value(1)],
+                vec![Self::integer_value(0), values[0].clone()],
+            ]));
+        }
+        Ok(Self::matrix_value(vec![
+            vec![values[0].clone(), Self::integer_value(0)],
+            vec![Self::integer_value(0), values[1].clone()],
+        ]))
     }
 
     fn definitely_zero(value: &Value) -> bool {
@@ -1693,6 +2182,38 @@ impl<W: Write> Interpreter<W> {
         Ok((determinant, history))
     }
 
+    /// Division-free Laplace expansion used for characteristic polynomials.
+    /// The ordinary determinant path uses elimination; that is faster, but
+    /// introduces removable symbolic denominators into `det(xI - A)`.
+    fn determinant_cofactor(&self, matrix: &[Vec<Value>]) -> ExecResult<Value> {
+        if matrix.len() == 1 {
+            return Ok(matrix[0][0].clone());
+        }
+        let mut total = Self::integer_value(0);
+        for column in 0..matrix.len() {
+            let minor = matrix[1..]
+                .iter()
+                .map(|row| {
+                    row.iter()
+                        .enumerate()
+                        .filter(|(index, _)| *index != column)
+                        .map(|(_, value)| value.clone())
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+            let mut term = self.apply_binary(
+                BinaryOp::Mul,
+                matrix[0][column].clone(),
+                self.determinant_cofactor(&minor)?,
+            )?;
+            if column % 2 == 1 {
+                term = self.apply_unary(UnaryOp::Neg, term)?;
+            }
+            total = self.apply_binary(BinaryOp::Add, total, term)?;
+        }
+        Ok(total)
+    }
+
     fn matmul_values(
         &self,
         left: &[Vec<Value>],
@@ -1821,8 +2342,387 @@ impl<W: Write> Interpreter<W> {
                     self.definite_integral_symbolic(&expression, *variable, &lower, &upper)?;
                 Ok(Self::symbolic_value(result))
             }
+            Builtin::Limit => {
+                let expression = self.value_to_symbolic(args[0].clone())?;
+                let variable = self.calculus_variable(&args[1], "limit")?;
+                if args.len() == 4 {
+                    let Value::Str(side) = &args[3] else {
+                        return Err(self.error("limit side must be \"left\" or \"right\""));
+                    };
+                    if side != "left" && side != "right" {
+                        return Err(self.error("limit side must be \"left\" or \"right\""));
+                    }
+                }
+                let point = self.value_to_symbolic(args[2].clone())?;
+                let result = self.limit_symbolic(expression, variable, &point)?;
+                Ok(Self::symbolic_value(result))
+            }
+            Builtin::Series => {
+                let expression = self.value_to_symbolic(args[0].clone())?;
+                let variable = self.calculus_variable(&args[1], "series")?;
+                let point = self.value_to_symbolic(args[2].clone())?;
+                let order = self.nonnegative_integer(&args[3], "series order")?;
+                if order > 64 {
+                    return Err(self.limit_error("series order exceeds the limit of 64"));
+                }
+                let variable_expression = Rc::new(SymbolicExpr::Variable(variable));
+                let offset = Self::symbolic_binary_raw(
+                    variable_expression,
+                    BinaryOp::Sub,
+                    Rc::clone(&point),
+                );
+                let mut derivative = expression;
+                let mut result = Self::symbolic_integer(0);
+                let mut factorial = BigInt::one();
+                for degree in 0..=order {
+                    let coefficient = Self::substitute_symbolic(&derivative, variable, &point);
+                    let coefficient = self.simplify_symbolic_tree(&coefficient)?;
+                    let term = Self::symbolic_binary_raw(
+                        coefficient,
+                        BinaryOp::Mul,
+                        Self::symbolic_binary_raw(
+                            Rc::clone(&offset),
+                            BinaryOp::Pow,
+                            Self::symbolic_integer(degree as i64),
+                        ),
+                    );
+                    let term = Self::symbolic_binary_raw(
+                        term,
+                        BinaryOp::Div,
+                        Rc::new(SymbolicExpr::Number(Number::Integer(factorial.clone()))),
+                    );
+                    result = self.simplify_symbolic_tree(&Self::symbolic_binary_raw(
+                        result,
+                        BinaryOp::Add,
+                        term,
+                    ))?;
+                    derivative = self.derivative_symbolic(&derivative, variable);
+                    factorial *= BigInt::from(degree + 1);
+                }
+                Ok(Self::symbolic_value(result))
+            }
+            Builtin::Sum | Builtin::Product => {
+                let expression = self.value_to_symbolic(args[0].clone())?;
+                let variable = self.calculus_variable(&args[1], builtin.name())?;
+                if let (Ok(lower), Ok(upper)) = (
+                    self.integer_argument(&args[2], builtin.name()),
+                    self.integer_argument(&args[3], builtin.name()),
+                ) {
+                    if upper < lower {
+                        return Ok(Self::integer_value(i64::from(builtin == Builtin::Product)));
+                    }
+                    if upper - lower > 10_000 {
+                        return Err(self.limit_error(format!(
+                            "{} range exceeds the limit of 10001 terms",
+                            builtin.name()
+                        )));
+                    }
+                    let mut result = Self::integer_value(i64::from(builtin == Builtin::Product));
+                    for index in lower..=upper {
+                        let replacement =
+                            Rc::new(SymbolicExpr::Number(Number::Integer(BigInt::from(index))));
+                        let term = Self::substitute_symbolic(&expression, variable, &replacement);
+                        let term = Self::symbolic_value(self.simplify_symbolic_tree(&term)?);
+                        result = self.apply_binary(
+                            if builtin == Builtin::Sum {
+                                BinaryOp::Add
+                            } else {
+                                BinaryOp::Mul
+                            },
+                            result,
+                            term,
+                        )?;
+                    }
+                    return Ok(result);
+                }
+                let lower = self.value_to_symbolic(args[2].clone())?;
+                let upper = self.value_to_symbolic(args[3].clone())?;
+                if builtin == Builtin::Sum {
+                    if let Some(result) =
+                        self.faulhaber_sum(&expression, variable, &lower, &upper)?
+                    {
+                        return Ok(Self::symbolic_value(result));
+                    }
+                }
+                Ok(Self::symbolic_value(Rc::new(SymbolicExpr::Call {
+                    function: builtin,
+                    args: vec![
+                        expression,
+                        Rc::new(SymbolicExpr::Variable(variable)),
+                        lower,
+                        upper,
+                    ],
+                })))
+            }
+            Builtin::MultipleIntegral => {
+                let mut expression = self.value_to_symbolic(args[0].clone())?;
+                let variables = self.calculus_variables(&args[1], "multiple_integral")?;
+                for variable in variables {
+                    expression = self.integral_symbolic(&expression, variable);
+                    expression = self.simplify_symbolic_tree(&expression)?;
+                }
+                Ok(Self::symbolic_value(expression))
+            }
+            Builtin::Dsolve => {
+                if args.len() == 4 {
+                    let coefficient = self.value_to_symbolic(args[0].clone())?;
+                    let forcing = self.value_to_symbolic(args[1].clone())?;
+                    let variable = self.calculus_variable(&args[2], "dsolve")?;
+                    let constant = self.value_to_symbolic(args[3].clone())?;
+                    let integral_coefficient = self.integral_symbolic(&coefficient, variable);
+                    let integrating_factor =
+                        Self::symbolic_call(Builtin::Exp, Rc::clone(&integral_coefficient));
+                    let weighted_forcing = Self::symbolic_binary_raw(
+                        forcing,
+                        BinaryOp::Mul,
+                        Rc::clone(&integrating_factor),
+                    );
+                    let particular = self.integral_symbolic(&weighted_forcing, variable);
+                    let numerator = Self::symbolic_binary_raw(constant, BinaryOp::Add, particular);
+                    let result =
+                        Self::symbolic_binary_raw(numerator, BinaryOp::Div, integrating_factor);
+                    return Ok(Self::symbolic_value(self.simplify_symbolic_tree(&result)?));
+                }
+                if args.len() != 2 {
+                    return Err(self.error(
+                        "dsolve expects (coefficients, variable) or (p, q, variable, constant)",
+                    ));
+                }
+                let coefficients = self.vector(&args[0], "dsolve")?;
+                let variable = self.calculus_variable(&args[1], "dsolve")?;
+                self.constant_coefficient_ode_basis(&coefficients, variable)
+            }
             _ => unreachable!("calculus tool dispatched separately"),
         }
+    }
+
+    fn calculus_variable(&self, value: &Value, function: &str) -> ExecResult<Symbol> {
+        let Value::Symbolic(expression) = value else {
+            return Err(self.error(format!("{function} expects a symbolic variable")));
+        };
+        let SymbolicExpr::Variable(variable) = expression.as_ref() else {
+            return Err(self.error(format!("{function} expects a symbolic variable")));
+        };
+        Ok(*variable)
+    }
+
+    fn integer_argument(&self, value: &Value, function: &str) -> ExecResult<i64> {
+        let Value::Number(Number::Integer(integer)) = value else {
+            return Err(self.error(format!("{function} expects integer bounds")));
+        };
+        integer
+            .to_i64()
+            .ok_or_else(|| self.limit_error(format!("{function} bound is too large")))
+    }
+
+    fn nonnegative_integer(&self, value: &Value, name: &str) -> ExecResult<u32> {
+        let Value::Number(Number::Integer(integer)) = value else {
+            return Err(self.error(format!("{name} must be a nonnegative integer")));
+        };
+        integer
+            .to_u32()
+            .ok_or_else(|| self.error(format!("{name} must be a nonnegative integer")))
+    }
+
+    fn limit_symbolic(
+        &self,
+        mut expression: Rc<SymbolicExpr>,
+        variable: Symbol,
+        point: &Rc<SymbolicExpr>,
+    ) -> ExecResult<Rc<SymbolicExpr>> {
+        for _ in 0..=8 {
+            let substituted = Self::substitute_symbolic(&expression, variable, point);
+            if let SymbolicExpr::Binary {
+                left,
+                op: BinaryOp::Div,
+                right,
+            } = substituted.as_ref()
+            {
+                let numerator = self.simplify_symbolic_tree(left)?;
+                let denominator = self.simplify_symbolic_tree(right)?;
+                let numerator_zero =
+                    matches!(numerator.as_ref(), SymbolicExpr::Number(number) if number.is_zero());
+                let denominator_zero = matches!(denominator.as_ref(), SymbolicExpr::Number(number) if number.is_zero());
+                if numerator_zero && denominator_zero {
+                    let SymbolicExpr::Binary { left, right, .. } = expression.as_ref() else {
+                        unreachable!()
+                    };
+                    expression = Self::symbolic_binary_raw(
+                        self.derivative_symbolic(left, variable),
+                        BinaryOp::Div,
+                        self.derivative_symbolic(right, variable),
+                    );
+                    continue;
+                }
+            }
+            return self.simplify_symbolic_tree(&substituted);
+        }
+        Ok(Rc::new(SymbolicExpr::Call {
+            function: Builtin::Limit,
+            args: vec![
+                expression,
+                Rc::new(SymbolicExpr::Variable(variable)),
+                Rc::clone(point),
+            ],
+        }))
+    }
+
+    fn faulhaber_sum(
+        &self,
+        expression: &Rc<SymbolicExpr>,
+        variable: Symbol,
+        lower: &Rc<SymbolicExpr>,
+        upper: &Rc<SymbolicExpr>,
+    ) -> ExecResult<Option<Rc<SymbolicExpr>>> {
+        fn power_of(expression: &SymbolicExpr, variable: Symbol) -> Option<u32> {
+            match expression {
+                SymbolicExpr::Variable(found) if *found == variable => Some(1),
+                SymbolicExpr::Binary {
+                    left,
+                    op: BinaryOp::Pow,
+                    right,
+                } if matches!(left.as_ref(), SymbolicExpr::Variable(found) if *found == variable) =>
+                {
+                    let SymbolicExpr::Number(Number::Integer(power)) = right.as_ref() else {
+                        return None;
+                    };
+                    power.to_u32()
+                }
+                SymbolicExpr::Number(number) if number.is_one() => Some(0),
+                _ => None,
+            }
+        }
+        let Some(power) = power_of(expression, variable) else {
+            return Ok(None);
+        };
+        if power > 3 {
+            return Ok(None);
+        }
+        let prefix = |end: Rc<SymbolicExpr>| {
+            let one = Self::symbolic_integer(1);
+            let next = Self::symbolic_binary_raw(Rc::clone(&end), BinaryOp::Add, one);
+            match power {
+                0 => end,
+                1 => Self::symbolic_binary_raw(
+                    Self::symbolic_binary_raw(end, BinaryOp::Mul, next),
+                    BinaryOp::Div,
+                    Self::symbolic_integer(2),
+                ),
+                2 => {
+                    let twice = Self::symbolic_binary_raw(
+                        Self::symbolic_integer(2),
+                        BinaryOp::Mul,
+                        Rc::clone(&end),
+                    );
+                    let final_factor =
+                        Self::symbolic_binary_raw(twice, BinaryOp::Add, Self::symbolic_integer(1));
+                    Self::symbolic_binary_raw(
+                        Self::symbolic_binary_raw(
+                            Self::symbolic_binary_raw(end, BinaryOp::Mul, next),
+                            BinaryOp::Mul,
+                            final_factor,
+                        ),
+                        BinaryOp::Div,
+                        Self::symbolic_integer(6),
+                    )
+                }
+                3 => Self::symbolic_binary_raw(
+                    Self::symbolic_binary_raw(
+                        Self::symbolic_binary_raw(end, BinaryOp::Mul, next),
+                        BinaryOp::Div,
+                        Self::symbolic_integer(2),
+                    ),
+                    BinaryOp::Pow,
+                    Self::symbolic_integer(2),
+                ),
+                _ => unreachable!(),
+            }
+        };
+        let before_lower =
+            Self::symbolic_binary_raw(Rc::clone(lower), BinaryOp::Sub, Self::symbolic_integer(1));
+        let result = Self::symbolic_binary_raw(
+            prefix(Rc::clone(upper)),
+            BinaryOp::Sub,
+            prefix(before_lower),
+        );
+        Ok(Some(self.simplify_symbolic_tree(&result)?))
+    }
+
+    fn constant_coefficient_ode_basis(
+        &self,
+        coefficients: &[Value],
+        variable: Symbol,
+    ) -> ExecResult<Value> {
+        if !(2..=3).contains(&coefficients.len()) {
+            return Err(self.error(
+                "dsolve constant-coefficient form currently supports first- and second-order equations",
+            ));
+        }
+        if Self::definitely_zero(&coefficients[0]) {
+            return Err(self.error("dsolve leading coefficient must be nonzero"));
+        }
+        let roots = if coefficients.len() == 2 {
+            vec![self.apply_binary(
+                BinaryOp::Div,
+                self.apply_unary(UnaryOp::Neg, coefficients[1].clone())?,
+                coefficients[0].clone(),
+            )?]
+        } else {
+            let four_ac = self.apply_binary(
+                BinaryOp::Mul,
+                Self::integer_value(4),
+                self.apply_binary(
+                    BinaryOp::Mul,
+                    coefficients[0].clone(),
+                    coefficients[2].clone(),
+                )?,
+            )?;
+            let b_squared = self.apply_binary(
+                BinaryOp::Mul,
+                coefficients[1].clone(),
+                coefficients[1].clone(),
+            )?;
+            let discriminant = self.apply_binary(BinaryOp::Sub, b_squared, four_ac)?;
+            let root = self.call_builtin(Builtin::Sqrt, vec![discriminant])?;
+            let negative_b = self.apply_unary(UnaryOp::Neg, coefficients[1].clone())?;
+            let denominator = self.apply_binary(
+                BinaryOp::Mul,
+                Self::integer_value(2),
+                coefficients[0].clone(),
+            )?;
+            vec![
+                self.apply_binary(
+                    BinaryOp::Div,
+                    self.apply_binary(BinaryOp::Add, negative_b.clone(), root.clone())?,
+                    denominator.clone(),
+                )?,
+                self.apply_binary(
+                    BinaryOp::Div,
+                    self.apply_binary(BinaryOp::Sub, negative_b, root)?,
+                    denominator,
+                )?,
+            ]
+        };
+        let variable_expression = Rc::new(SymbolicExpr::Variable(variable));
+        let mut basis = roots
+            .iter()
+            .cloned()
+            .map(|root| {
+                let root = self.value_to_symbolic(root)?;
+                let exponent =
+                    Self::symbolic_binary_raw(root, BinaryOp::Mul, Rc::clone(&variable_expression));
+                self.simplify_symbolic_tree(&Self::symbolic_call(Builtin::Exp, exponent))
+                    .map(Self::symbolic_value)
+            })
+            .collect::<ExecResult<Vec<_>>>()?;
+        if roots.len() == 2 && roots[0].equals(&roots[1]) {
+            basis[1] = self.apply_binary(
+                BinaryOp::Mul,
+                Self::symbolic_value(variable_expression),
+                basis[1].clone(),
+            )?;
+        }
+        Ok(Value::Array(Rc::new(basis)))
     }
 
     fn calculus_variables(&self, value: &Value, function: &str) -> ExecResult<Vec<Symbol>> {

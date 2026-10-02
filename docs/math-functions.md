@@ -278,6 +278,19 @@ unevaluated integral.
 build on the same derivative engine. Dynamic integral rendering in documents
 includes the constant of integration and a derivative check.
 
+`multiple_integral(f, [x, y, ...])` performs repeated symbolic integration in
+the listed order. `limit(f, x, a)` uses direct substitution followed by up to
+eight L'Hôpital steps for removable `0/0` forms; an optional fourth argument
+is `"left"` or `"right"`. `series(f, x, a, n)` returns the degree-`n` Taylor
+polynomial. `sum(f, k, a, b)` and `product(f, k, a, b)` evaluate finite integer
+ranges exactly. Symbolic sums of `1`, `k`, `k^2`, and `k^3` use Faulhaber
+forms; unsupported symbolic bounds remain unevaluated.
+
+`dsolve([a, b], x)` and `dsolve([a, b, c], x)` return a fundamental solution
+basis for homogeneous constant-coefficient first- and second-order ODEs.
+`dsolve(p, q, x, C)` solves the first-order linear equation
+`y' + p(x)y = q(x)` with the supplied integration-constant symbol `C`.
+
 ## Standard library reference
 
 Every builtin registered by SCAS 0.1.0, grouped by family. Signatures use
@@ -352,7 +365,11 @@ inventory.
 ### Calculus (see “Calculus” above)
 
 `derivative(expr, x)`, `integral(expr, x)`, `definite_integral(expr, x, a, b)`,
-`gradient(expr, [vars])`, `jacobian([exprs], [vars])`, `hessian(expr, [vars])`.
+`limit(expr, x, a[, side])`, `series(expr, x, a, n)`,
+`sum(expr, k, a, b)`, `product(expr, k, a, b)`,
+`gradient(expr, [vars])`, `jacobian([exprs], [vars])`, `hessian(expr, [vars])`,
+`multiple_integral(expr, [vars])`, `dsolve(coefficients, x)`, and
+`dsolve(p, q, x, C)`.
 
 ### Polynomials
 
@@ -368,12 +385,25 @@ rationals (see “Polynomial invariants and Euclidean operations”).
 `solve_linear(A, b)` — exact or symbolic vectors and matrices (see
 “Linear algebra”).
 
+Spectral and vector-space tools are `characteristic_polynomial(A, x)`,
+`eigenvalues(A)`, `eigenvectors(A)`, `null_space(A)`, `column_space(A)`,
+`gram_schmidt([vectors])`, `projection(v, onto)`, and
+`change_basis(v, [basis_vectors])`. Exact eigenvalues/eigenvectors currently
+cover 1×1 and 2×2 matrices; eigenvalues of larger triangular matrices are read
+from the diagonal.
+
+Decompositions are `lu(A)`, `qr(A)`, and `cholesky(A)`. They return `[L, U]`,
+`[Q, R]`, and `L` respectively. `matrix_exp(A)` currently evaluates diagonal
+matrices exactly, and `jordan_form(A)` covers matrices through 2×2.
+
 ### Documenting variants
 
 Every linear-algebra operation has a `_steps` form: `transpose_steps`,
 `trace_steps`, `det_steps`, `rank_steps`, `rref_steps`, `inverse_steps`,
 `matmul_steps`, `dot_steps`, `cross_steps`, `norm_steps`,
 `solve_linear_steps`. The unsuffixed forms return only the result.
+The decomposition variants `lu_steps`, `qr_steps`, and `cholesky_steps` also
+produce renderer-visible derivations.
 
 ## Resource and error model
 

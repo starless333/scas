@@ -101,6 +101,62 @@ fn substitution_solving_and_calculus_have_safe_fallbacks() {
 }
 
 #[test]
+fn limits_series_sums_products_and_multiple_integrals_are_exact() {
+    assert_eq!(
+        output(
+            r#"
+            print(limit(sin(x) / x, x, 0));
+            print(limit((x^2 - 1) / (x - 1), x, 1, "left"));
+            print(series(exp(x), x, 0, 3));
+            print(sum(k^2, k, 1, 5));
+            print(product(k, k, 1, 5));
+            print(sum(k^2, k, 1, n));
+            print(multiple_integral(x*y, [x, y]));
+            print(dsolve([1, -3, 2], x));
+            "#,
+        ),
+        concat!(
+            "1\n2\n",
+            "(2 * x ^ 3 + 6 * x ^ 2 + 12 * x + 12) / 12\n",
+            "55\n120\n(2 * n + 1) * n * (n + 1) / 6\n",
+            "1/4 * x ^ 2 * y ^ 2\n",
+            "[exp(2 * x), exp(x)]\n",
+        ),
+    );
+}
+
+#[test]
+fn spectral_decompositions_and_vector_spaces_are_available() {
+    assert_eq!(
+        output(
+            r#"
+            print(characteristic_polynomial([1,2;3,4], x));
+            print(eigenvalues([2,0;0,3]));
+            print(eigenvectors([2,0;0,3]));
+            print(lu([4,3;6,3]));
+            print(qr([1,0;0,1]));
+            print(cholesky([4,2;2,3]));
+            print(null_space([1,2,3;2,4,6]));
+            print(column_space([1,2,3;2,4,7]));
+            print(gram_schmidt([[1,0],[1,1]]));
+            print(projection([1,2], [1,0]));
+            print(change_basis([2,3], [[1,0],[0,1]]));
+            print(matrix_exp([1,0;0,2]));
+            print(jordan_form([2,1;0,2]));
+            "#,
+        ),
+        concat!(
+            "x ^ 2 - 5 * x - 2\n[3, 2]\n[[0, 1], [1, 0]]\n",
+            "[[[1, 0], [3/2, 1]], [[4, 3], [0, -3/2]]]\n",
+            "[[[1, 0], [0, 1]], [[1, 0], [0, 1]]]\n",
+            "[[2, 0], [1, sqrt(2)]]\n[[-2, 1, 0], [-3, 0, 1]]\n",
+            "[[1, 2], [3, 7]]\n[[1, 0], [0, 1]]\n[1, 0]\n[2, 3]\n",
+            "[[e, 0], [0, exp(2)]]\n[[2, 1], [0, 2]]\n",
+        ),
+    );
+}
+
+#[test]
 fn solver_handles_complex_polynomials_and_inverse_transcendentals() {
     assert_eq!(
         output(

@@ -1,0 +1,39 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="Complete SCAS language guide: values, operators, control flow, functions, arrays, matrices, and errors."><title>Language Guide · SCAS</title><link rel="stylesheet" href="assets/site.css"><script defer src="assets/site.js"></script></head><body><a class="skip-link" href="#main-content">Skip to content</a><div class="mobile-bar"><a href="index.html">SCAS docs</a><button type="button" data-nav-toggle aria-expanded="false" aria-controls="documentation-nav" aria-label="Open documentation navigation">Menu</button></div><div class="layout"><aside class="rail" id="documentation-nav"><div class="brand"><a href="index.html">SCAS</a><span>0.1.0</span></div><nav aria-label="Documentation"><div class="nav-group"><span>Start</span><a href="index.html">Overview</a><a href="getting-started.html">Getting started</a><a aria-current="page" href="language.html">Language</a></div><div class="nav-group"><span>Mathematics</span><a href="builtins.html">Builtin reference</a><a href="calculus.html">Calculus</a><a href="linear-algebra.html">Linear algebra</a></div><div class="nav-group"><span>Workflow</span><a href="documenter.html">Executable documents</a><a href="ide.html">Desktop IDE &amp; CLI</a><a href="internals.html">Architecture &amp; limits</a></div></nav></aside><main class="document" id="main-content" tabindex="-1"><header class="masthead"><h1>The SCAS language.</h1><p>A compact dynamically typed language built around exact values, symbolic expressions, lexical scope, and mathematical notation.</p></header><div class="content">
+<section><h2>Values and declarations</h2><p>SCAS values include arbitrary-size integers, reduced rationals, arbitrary-precision decimals, complex numbers, booleans, strings, <code>nil</code>, symbolic expressions, arrays, matrices, functions, and builtins.</p><pre><code>let exact = 1 / 7;
+let decimal = 1.0 / 7;
+let vector = [1, 2, 3];
+let matrix = [1, 2; 3, 4];
+let message = "exact by default";</code></pre><p>Names are Unicode-aware. Constants include <code>pi</code>/<code>π</code>, <code>tau</code>/<code>τ</code>, <code>phi</code>/<code>φ</code>, <code>e</code>, and complex unit <code>i</code>.</p></section>
+<section><h2 class="rule-heading">Operators</h2><p>From tightest to loosest: calls/indexing/postfix transpose, exponentiation, unary operators, multiplicative operators, additive operators, shifts, bitwise operations, comparisons, equality, <code>and</code>, then <code>or</code>.</p><div class="table-wrap"><table><thead><tr><th>Family</th><th>Operators</th><th>Notes</th></tr></thead><tbody><tr><td>Arithmetic</td><td><code>+ - * / % ^</code></td><td><code>^</code> is right-associative; division of integers is exact.</td></tr><tr><td>Implicit product</td><td><code>2x</code>, <code>3(x+1)</code></td><td>Equivalent to explicit multiplication in documented adjacency positions.</td></tr><tr><td>Comparison</td><td><code>&lt; &lt;= &gt; &gt;= == !=</code></td><td>Complex numbers are not ordered.</td></tr><tr><td>Logic</td><td><code>and or !</code></td><td><code>and</code>/<code>or</code> short-circuit.</td></tr><tr><td>Bits</td><td><code>&amp; | xor ~ &lt;&lt; &gt;&gt;</code></td><td>Integer operands.</td></tr><tr><td>Assignment</td><td><code>= += -= *= /= %=</code></td><td>Updates an existing binding.</td></tr><tr><td>Matrix</td><td><code>A'</code>, <code>A * B</code>, <code>A^n</code></td><td>Transpose, matrix product, and bounded integer powers.</td></tr></tbody></table></div></section>
+<section><h2 class="rule-heading">Control flow</h2><pre><code>let total = 0;
+for let k = 1; k &lt;= 10; k += 1 {
+    if k % 2 == 0 { total += k; }
+}
+
+while total &gt; 0 {
+    total -= 1;
+    if total == 3 { break; }
+}</code></pre><p>Only <code>false</code> and <code>nil</code> are falsey. <code>break</code> and <code>continue</code> are valid inside loops; <code>return</code> is valid inside functions.</p></section>
+<section><h2 class="rule-heading">Functions and closures</h2><pre><code>fn square(x) = x^2;
+
+fn counter(start) {
+    let value = start;
+    fn next() { value += 1; return value; }
+    return next;
+}
+
+let next = counter(10);
+print(next()); // 11</code></pre><p>Functions capture lexical environments. Expression-bodied functions are concise mathematical definitions; block-bodied functions support statements and explicit return.</p></section>
+<section><h2 class="rule-heading">Arrays and matrices</h2><pre><code>let v = [10, 20, 30];
+print(v[0]);
+
+let A = [1, 2; 3, 4];
+print(A[1, 0]);
+print(A' * [5, 6]);</code></pre><p>Indexes are zero-based. Matrix rows must be rectangular. Array concatenation uses <code>+</code>; matrix-specific operations validate their dimensions and report runtime errors.</p></section>
+<section><h2 class="rule-heading">Symbolic evaluation</h2><p>An unbound name in a mathematical expression becomes symbolic. Builtins operate on that expression and preserve unsupported forms.</p><pre><code>let f = x^3 + 2x + sin(x);
+print(derivative(f, x));
+assume_positive(x);
+print(sqrt(x^2)); // x
+forget_assumptions();</code></pre></section>
+<section><h2 class="rule-heading">Comments and statement endings</h2><p><code>//</code> begins an ordinary comment. <code>///</code> begins document prose. Ordinary statements end with semicolons; brace-delimited control flow and function blocks do not need a trailing semicolon.</p></section>
+<section><h2 class="rule-heading">Errors</h2><p>Scanner, parser, runtime, and resource-limit errors carry source spans and produce nonzero process statuses in batch mode. Execution stops at the first program error. Documented-result errors appear as visible diagnostics so the rest of a document can remain inspectable.</p></section></div><footer class="footer">Function details: <a href="builtins.html">complete builtin reference</a>.</footer></main></div></body></html>

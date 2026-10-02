@@ -949,6 +949,7 @@ pub fn evaluate_scalar<W: Write>(
 /// Samples an already-parsed expression over a domain. This is used by the
 /// document renderer to plot exactly the expression in the user's AST without
 /// formatting and reparsing source text.
+#[allow(clippy::too_many_arguments)]
 pub fn sample_expression<W: Write>(
     interpreter: &mut Interpreter<W>,
     symbols: &mut SymbolTable,

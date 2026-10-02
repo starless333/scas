@@ -379,7 +379,8 @@ and `erfc` are arbitrary-precision real functions; complex arguments to those
 four functions are explicitly unsupported. See
 [`docs/math-functions.md`](docs/math-functions.md) for branch conventions,
 exactness and precision. The self-contained
-[`official function reference`](docs/math-functions.html) documents every
+[`documentation suite`](docs/index.html) and its
+[`official function reference`](docs/builtins.html) document every
 currently registered mathematical builtin.
 
 Symbolic inputs remain symbolic and safe elementary identities are applied:
