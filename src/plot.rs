@@ -1391,6 +1391,8 @@ pub fn auto_y_bounds(series: &[SampledSeries], x_min: f64, x_max: f64) -> PlotBo
 pub enum CriticalKind {
     /// Sign change between consecutive finite samples.
     Zero,
+    /// A single undefined sample whose finite neighbours approach the same value.
+    Hole,
     /// Highest finite sample among its neighbours.
     Maximum,
     /// Lowest finite sample among its neighbours.
@@ -1419,6 +1421,39 @@ pub fn detect_critical_points(samples: &[(f64, Option<f64>)]) -> Vec<CriticalPoi
         .filter_map(|(index, (x, y))| y.filter(|y| y.is_finite()).map(|y| (index, *x, y)))
         .collect();
     let mut points = Vec::new();
+    // A removable discontinuity appears as one undefined sample whose
+    // one-sided linear estimates agree. Requiring two finite samples on each
+    // side avoids misclassifying domain boundaries and vertical asymptotes.
+    for index in 2..samples.len().saturating_sub(2) {
+        let (hole_x, hole_y) = samples[index];
+        if hole_y.is_some() {
+            continue;
+        }
+        let [(x0, Some(y0)), (x1, Some(y1)), (x2, None), (x3, Some(y3)), (x4, Some(y4))] =
+            [
+                samples[index - 2],
+                samples[index - 1],
+                samples[index],
+                samples[index + 1],
+                samples[index + 2],
+            ]
+        else {
+            continue;
+        };
+        if x2 != hole_x || x1 == x0 || x4 == x3 {
+            continue;
+        }
+        let left = y1 + (hole_x - x1) * (y1 - y0) / (x1 - x0);
+        let right = y3 + (hole_x - x3) * (y4 - y3) / (x4 - x3);
+        let scale = left.abs().max(right.abs()).max(1.0);
+        if left.is_finite() && right.is_finite() && (left - right).abs() <= scale * 0.08 {
+            points.push(CriticalPoint {
+                x: hole_x,
+                y: (left + right) * 0.5,
+                kind: CriticalKind::Hole,
+            });
+        }
+    }
     for window in finite.windows(2) {
         let (index0, x0, y0) = window[0];
         let (index1, x1, y1) = window[1];
@@ -1888,8 +1923,13 @@ pub fn render_latex_picture(
         // Critical points are part of the document plot as well as the GUI.
         for point in detect_critical_points(&entry.samples) {
             if bounds.contains_x(point.x) && bounds.contains_y(point.y) {
+                let marker = if point.kind == CriticalKind::Hole {
+                    r"\circle{3}"
+                } else {
+                    r"\circle*{3}"
+                };
                 latex.push_str(&format!(
-                    r"\put({:.2},{:.2}){{\circle*{{3}}}}",
+                    r"\put({:.2},{:.2}){{{marker}}}",
                     sx(point.x),
                     sy(point.y)
                 ));
@@ -2142,6 +2182,31 @@ mod tests {
             .all(|point| point.kind == CriticalKind::Zero));
         let gappy = vec![(-1.0, Some(-1.0)), (0.0, None), (1.0, Some(1.0))];
         assert!(detect_critical_points(&gappy).is_empty());
+
+        let removable_hole = vec![
+            (-2.0, Some(0.0)),
+            (-1.0, Some(1.0)),
+            (0.0, None),
+            (1.0, Some(3.0)),
+            (2.0, Some(4.0)),
+        ];
+        let hole = detect_critical_points(&removable_hole)
+            .into_iter()
+            .find(|point| point.kind == CriticalKind::Hole)
+            .expect("matching one-sided limits should produce a hole");
+        assert!((hole.x - 0.0).abs() < 1.0e-9);
+        assert!((hole.y - 2.0).abs() < 1.0e-9);
+
+        let vertical_asymptote = vec![
+            (-2.0, Some(-0.5)),
+            (-1.0, Some(-1.0)),
+            (0.0, None),
+            (1.0, Some(1.0)),
+            (2.0, Some(0.5)),
+        ];
+        assert!(detect_critical_points(&vertical_asymptote)
+            .iter()
+            .all(|point| point.kind != CriticalKind::Hole));
     }
 
     #[test]

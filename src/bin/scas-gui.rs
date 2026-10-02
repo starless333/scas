@@ -53,6 +53,9 @@ const MAX_VIEW_SPAN: f64 = 1.0e12;
 const MIN_EDITOR_WORKSPACE_WIDTH: f32 = 420.0;
 const MIN_PREVIEW_WIDTH: f32 = 220.0;
 const MAX_PREVIEW_WIDTH: f32 = 900.0;
+/// Keeps a long document name from crowding the workspace tabs and tools.
+/// The complete name remains available from the tab tooltip.
+const MAX_DOCUMENT_TAB_CHARS: usize = 18;
 
 /// Curve colors for the graphing canvas, in draw order.
 const GRAPH_COLORS: &[u32] = &[
@@ -386,15 +389,16 @@ struct ScasApp {
     graph_auto_bounds: Option<PlotBounds>,
     graph_view: ViewState,
     graph_new_input: String,
-    /// Pinned tap point on the graphing canvas, snapped to the nearest
-    /// curve; `None` when the view is un-probed.
+    /// Pinned tap point on the graphing canvas. Critical points take
+    /// precedence over ordinary curve samples so roots, holes, and extrema
+    /// remain inspectable after the pointer moves away.
     graph_probe: Option<GraphProbe>,
 }
 
 /// A tapped point on the graphing canvas snapped to the nearest curve.
 /// Stored in data coordinates so the crosshair is redrawn from the current
 /// view without re-scanning every sample on each frame.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct GraphProbe {
     /// Index into `graph_functions` of the snapped curve.
     series_index: usize,
@@ -402,6 +406,9 @@ struct GraphProbe {
     x: f64,
     /// Curve y at the snapped x, when the curve covers it.
     y: Option<f64>,
+    /// Notable-point classification when this probe targets a highlighted
+    /// root, hole, or local extremum rather than an ordinary curve sample.
+    critical_kind: Option<plot::CriticalKind>,
 }
 
 fn install_default_font(context: &egui::Context) {
@@ -698,7 +705,32 @@ impl ScasApp {
             function.sampled = sampled;
             function.stale = false;
         }
-        self.graph_probe = None;
+        // Preserve an inspected point across background re-sampling. Critical
+        // points are reconciled to the closest newly sampled point of the
+        // same kind so zooming or refinement cannot make a pinned label blip.
+        if let Some(probe) = self.graph_probe {
+            self.graph_probe = self.graph_functions.get(probe.series_index).and_then(|function| {
+                let Some(kind) = probe.critical_kind else {
+                    return Some(probe);
+                };
+                function
+                    .critical_points
+                    .iter()
+                    .filter(|point| point.kind == kind)
+                    .min_by(|left, right| {
+                        (left.x - probe.x)
+                            .abs()
+                            .total_cmp(&(right.x - probe.x).abs())
+                    })
+                    .map(|point| GraphProbe {
+                        series_index: probe.series_index,
+                        x: point.x,
+                        y: Some(point.y),
+                        critical_kind: Some(point.kind),
+                    })
+                    .or(Some(probe))
+            });
+        }
     }
 
     fn mark_graph_functions_stale(&mut self) {
@@ -1524,7 +1556,11 @@ impl ScasApp {
         });
         let history_up = context.input(|input| input.key_pressed(egui::Key::ArrowUp));
         let history_down = context.input(|input| input.key_pressed(egui::Key::ArrowDown));
-        let history_height = (ui.available_height() - 154.0).max(120.0);
+        // Keep the complete composer above the application status bar.  The
+        // live Computer Modern preview can make the composer taller than its
+        // structured fallback, so give that region priority and let history
+        // shrink on short windows instead of clipping the command row.
+        let history_height = (ui.available_height() - 224.0).max(32.0);
         egui::ScrollArea::vertical()
             .id_source("gui-repl-history")
             .max_height(history_height)
@@ -1655,7 +1691,7 @@ impl ScasApp {
         let mut submit = false;
         egui::Frame::none()
             .fill(theme.ui.panel.0)
-            .inner_margin(egui::Margin::symmetric(12.0, 10.0))
+            .inner_margin(egui::Margin::symmetric(12.0, 12.0))
             .stroke(egui::Stroke::new(
                 1.0,
                 theme.ui.accent.0.gamma_multiply(0.65),
@@ -1683,29 +1719,26 @@ impl ScasApp {
                     .inner_margin(egui::Margin::symmetric(10.0, 9.0))
                     .show(ui, |ui| {
                         ui.set_min_height(56.0);
-                        if !self.system_latex_preview {
-                            if let Some(latex) = &self.repl_input_latex {
-                                math_preview::show_expression(ui, latex, theme.ui.text.0, 26.0);
-                            } else if self.repl_input.trim().is_empty() {
-                                ui.label(
-                                    RichText::new("Your expression will typeset here as you work")
-                                        .italics()
-                                        .color(theme.ui.muted.0),
-                                );
-                            } else {
-                                ui.label(
-                                    RichText::new("Keep typing to complete the expression…")
-                                        .italics()
-                                        .color(theme.ui.muted.0),
-                                );
+                        if let Some(latex) = &self.repl_input_latex {
+                            let mut rendered_texture = false;
+                            if self.system_latex_preview {
+                                if let Some(key) = self.repl_input_math_key {
+                                    if let Some(texture) = self.repl_math_cache.get(&key) {
+                                        show_cm_texture(ui, texture, ui.available_width());
+                                        rendered_texture = true;
+                                    }
+                                }
                             }
-                        } else if let Some(key) = self.repl_input_math_key {
-                            if let Some(texture) = self.repl_math_cache.get(&key) {
-                                show_cm_texture(ui, texture, ui.available_width());
-                            } else if let Some(error) = &self.repl_math_error {
-                                ui.colored_label(theme.syntax.operator.0, error);
-                            } else {
-                                ui.label(RichText::new("Typesetting in Computer Modern…").italics().color(theme.ui.muted.0));
+                            // Never replace valid math with a loading message:
+                            // show the structured LaTeX immediately, then swap
+                            // in Computer Modern when its texture is ready.
+                            if !rendered_texture {
+                                math_preview::show_expression(
+                                    ui,
+                                    latex,
+                                    theme.ui.text.0,
+                                    26.0,
+                                );
                             }
                         } else if self.repl_input.trim().is_empty() {
                             ui.label(
@@ -1774,7 +1807,7 @@ impl ScasApp {
                     self.repl_history_step(1);
                     context.request_repaint();
                 }
-                submit = input_focused && enter_pressed;
+                submit = enter_pressed && (input_focused || response.lost_focus());
                 if let Some(error) = &self.repl_math_error {
                     ui.colored_label(theme.syntax.operator.0, format!("Computer Modern unavailable: {error}"));
                 }
@@ -1789,9 +1822,14 @@ impl ScasApp {
                     );
                 });
             });
+        ui.add_space(18.0);
         if submit {
             self.submit_repl();
             context.memory_mut(|memory| memory.request_focus(input_id));
+            // The text edit was painted before submit_repl cleared its model.
+            // Request another frame so the cleared composer and new history
+            // entry replace that stale pre-submit frame immediately.
+            context.request_repaint();
         }
     }
 
@@ -1974,6 +2012,16 @@ impl ScasApp {
                 }
                 if let Some(index) = removal {
                     self.graph_functions.remove(index);
+                    self.graph_probe = self.graph_probe.and_then(|mut probe| {
+                        if probe.series_index == index {
+                            None
+                        } else {
+                            if probe.series_index > index {
+                                probe.series_index -= 1;
+                            }
+                            Some(probe)
+                        }
+                    });
                     self.graph_content_generation = self.graph_content_generation.wrapping_add(1);
                     self.graph_sample_due = None;
                     self.graph_refine_due = None;
@@ -2002,7 +2050,6 @@ impl ScasApp {
         let canvas = ui.allocate_rect(plot_rect, egui::Sense::click_and_drag());
 
         // Interaction first: drag pans, scroll wheel zooms, click inspects.
-        let mut panned = false;
         // Pointer delta is frame-local; `Response::drag_delta` accumulates
         // from the start of the gesture and would apply earlier motion again.
         let drag = if canvas.dragged() {
@@ -2019,7 +2066,6 @@ impl ScasApp {
             self.graph_view.y_min += f64::from(drag.y) * scale_y;
             self.graph_view.y_max += f64::from(drag.y) * scale_y;
             self.graph_auto_bounds = None;
-            panned = true;
             self.ensure_graph_coverage();
         }
         let (scroll, pointer) = ui.input(|input| {
@@ -2049,33 +2095,78 @@ impl ScasApp {
                 self.graph_view.y_min = anchor_y - (anchor_y - self.graph_view.y_min) * factor;
                 self.graph_view.y_max = anchor_y + (self.graph_view.y_max - anchor_y) * factor;
                 self.graph_auto_bounds = None;
-                panned = true;
                 self.ensure_graph_coverage();
             }
         }
-        if panned {
-            self.graph_probe = None;
-        }
-
         let bounds = self.current_graph_bounds();
         let painter = ui.painter_at(plot_rect);
+        let hovered_critical = canvas
+            .hover_pos()
+            .filter(|pointer| plot_rect.contains(*pointer))
+            .and_then(|pointer| {
+                snap_graph_critical_point(
+                    pointer,
+                    &bounds,
+                    plot_rect,
+                    &self.graph_functions,
+                    12.0,
+                )
+            });
+        let hovered_series = canvas
+            .hover_pos()
+            .filter(|pointer| plot_rect.contains(*pointer))
+            .and_then(|pointer| {
+                hovered_critical.map(|probe| probe.series_index).or_else(|| {
+                    hovered_graph_series(
+                        pointer,
+                        &bounds,
+                        plot_rect,
+                        &self.graph_functions,
+                        12.0,
+                    )
+                })
+            });
 
-        // A tap (click without a preceding drag) pins the nearest curve
-        // value or critical point and shows a crosshair with its x/y. The
-        // snap happens once; the crosshair itself is redrawn from data
-        // coordinates every frame.
+        // A tap (click without a preceding drag) pins a highlighted critical
+        // point before falling back to the nearest ordinary curve sample.
         if canvas.clicked() {
             self.graph_probe = canvas
                 .interact_pointer_pos()
                 .filter(|pointer| plot_rect.contains(*pointer))
                 .and_then(|pointer| {
-                    snap_graph_probe(pointer, &bounds, plot_rect, &self.graph_functions)
+                    snap_graph_critical_point(
+                        pointer,
+                        &bounds,
+                        plot_rect,
+                        &self.graph_functions,
+                        12.0,
+                    )
+                    .or_else(|| {
+                        snap_graph_probe(pointer, &bounds, plot_rect, &self.graph_functions)
+                    })
                 });
         }
 
-        draw_graph_canvas(painter, &bounds, &self.graph_functions, theme, plot_rect);
+        draw_graph_canvas(
+            painter,
+            &bounds,
+            &self.graph_functions,
+            theme,
+            plot_rect,
+            hovered_series,
+        );
 
         if let Some(probe) = self.graph_probe {
+            draw_graph_probe(
+                ui.painter_at(plot_rect),
+                &probe,
+                &bounds,
+                plot_rect,
+                theme,
+                &self.graph_functions,
+            );
+        }
+        if let Some(probe) = hovered_critical.filter(|probe| Some(*probe) != self.graph_probe) {
             draw_graph_probe(
                 ui.painter_at(plot_rect),
                 &probe,
@@ -2100,7 +2191,7 @@ impl ScasApp {
                     .show(ui, |ui| {
                         ui.label(
                             RichText::new(format!(
-                                "x: {} … {}   y: {} … {}   drag to pan · scroll to zoom · click a curve",
+                                "x: {} … {}   y: {} … {}   drag to pan · scroll to zoom · hover a point · click to pin",
                                 plot::format_number(bounds.x_min),
                                 plot::format_number(bounds.x_max),
                                 plot::format_number(bounds.y_min),
@@ -2371,6 +2462,7 @@ fn draw_graph_canvas(
     functions: &[GraphFunction],
     theme: &Theme,
     rect: egui::Rect,
+    hovered_series: Option<usize>,
 ) {
     let background = theme.ui.editor.0;
     painter.rect_filled(rect, 0.0, background);
@@ -2484,14 +2576,33 @@ fn draw_graph_canvas(
         if path.len() > 1 {
             painter.add(egui::Shape::line(path, stroke));
         }
-        // Desmos-style dots on zeros and local extrema.
+        // Reveal notable points only while the curve is being inspected.
+        // Filled grey means a true zero; an empty ring is reserved for a
+        // removable discontinuity so the two cases cannot be confused.
+        if hovered_series != Some(index) {
+            continue;
+        }
         for point in &function.critical_points {
             if !bounds.contains_x(point.x) || !bounds.contains_y(point.y) {
                 continue;
             }
             let screen = egui::pos2(to_screen_x(point.x), to_screen_y(point.y));
-            painter.circle_filled(screen, 4.0, color);
-            painter.circle_filled(screen, 2.0, background);
+            match point.kind {
+                plot::CriticalKind::Zero => {
+                    painter.circle_filled(screen, 4.5, theme.ui.muted.0);
+                }
+                plot::CriticalKind::Hole => {
+                    painter.circle_filled(screen, 5.0, background);
+                    painter.circle_stroke(
+                        screen,
+                        5.0,
+                        egui::Stroke::new(1.8, theme.ui.muted.0),
+                    );
+                }
+                plot::CriticalKind::Maximum | plot::CriticalKind::Minimum => {
+                    painter.circle_filled(screen, 4.0, color);
+                }
+            }
         }
     }
 }
@@ -2610,12 +2721,79 @@ fn snap_graph_probe(
                         series_index: index,
                         x: *x,
                         y: Some(*y),
+                        critical_kind: None,
                     },
                 ));
             }
         }
     }
     best.map(|(_, probe)| probe)
+}
+
+/// Returns the highlighted root, hole, or local extremum under the pointer.
+/// Critical-point hit testing is independent of curve samples so a removable
+/// discontinuity remains clickable even though the function is undefined at
+/// the hole itself.
+fn snap_graph_critical_point(
+    pointer: egui::Pos2,
+    bounds: &PlotBounds,
+    rect: egui::Rect,
+    functions: &[GraphFunction],
+    max_distance: f32,
+) -> Option<GraphProbe> {
+    let x_span = bounds.x_span();
+    let y_span = bounds.y_span();
+    if x_span <= 0.0 || y_span <= 0.0 || rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return None;
+    }
+    let to_screen = |x: f64, y: f64| {
+        egui::pos2(
+            rect.left() + ((x - bounds.x_min) / x_span) as f32 * rect.width(),
+            rect.top() + ((bounds.y_max - y) / y_span) as f32 * rect.height(),
+        )
+    };
+    let mut best: Option<(f32, GraphProbe)> = None;
+    for (series_index, function) in functions.iter().enumerate() {
+        for point in &function.critical_points {
+            if !bounds.contains_x(point.x) || !bounds.contains_y(point.y) {
+                continue;
+            }
+            let distance = pointer.distance(to_screen(point.x, point.y));
+            if distance <= max_distance
+                && best.map_or(true, |(best_distance, _)| distance < best_distance)
+            {
+                best = Some((
+                    distance,
+                    GraphProbe {
+                        series_index,
+                        x: point.x,
+                        y: Some(point.y),
+                        critical_kind: Some(point.kind),
+                    },
+                ));
+            }
+        }
+    }
+    best.map(|(_, probe)| probe)
+}
+
+/// Returns the curve under the pointer when its nearest sampled point is
+/// within a small screen-space radius. This drives hover-only point markers
+/// without making a distant curve appear selected.
+fn hovered_graph_series(
+    pointer: egui::Pos2,
+    bounds: &PlotBounds,
+    rect: egui::Rect,
+    functions: &[GraphFunction],
+    max_distance: f32,
+) -> Option<usize> {
+    let probe = snap_graph_probe(pointer, bounds, rect, functions)?;
+    let y = probe.y?;
+    let screen = egui::pos2(
+        rect.left() + ((probe.x - bounds.x_min) / bounds.x_span()) as f32 * rect.width(),
+        rect.top() + ((bounds.y_max - y) / bounds.y_span()) as f32 * rect.height(),
+    );
+    (pointer.distance(screen) <= max_distance).then_some(probe.series_index)
 }
 
 /// Draws the crosshair and coordinate label for a snapped probe point.
@@ -2671,15 +2849,40 @@ fn draw_graph_probe(
         ],
         guide,
     );
-    painter.circle_filled(screen, 5.0, color);
-    painter.circle_filled(screen, 2.5, theme.ui.editor.0);
+    match probe.critical_kind {
+        Some(plot::CriticalKind::Zero) => {
+            painter.circle_filled(screen, 5.0, theme.ui.muted.0);
+        }
+        Some(plot::CriticalKind::Hole) => {
+            painter.circle_filled(screen, 5.5, theme.ui.editor.0);
+            painter.circle_stroke(
+                screen,
+                5.5,
+                egui::Stroke::new(2.0, theme.ui.muted.0),
+            );
+        }
+        Some(plot::CriticalKind::Maximum) | Some(plot::CriticalKind::Minimum) | None => {
+            painter.circle_filled(screen, 5.0, color);
+        }
+    }
 
+    let point_name = match probe.critical_kind {
+        Some(plot::CriticalKind::Zero) => "root · ",
+        Some(plot::CriticalKind::Hole) => "hole · ",
+        Some(plot::CriticalKind::Maximum) => "local maximum · ",
+        Some(plot::CriticalKind::Minimum) => "local minimum · ",
+        None => "",
+    };
     let label = format!(
-        "{} = {}   y = {}",
+        "{point_name}{} = {}   y = {}",
         series.variable,
         plot::format_number(x),
         plot::format_number(y)
     );
+    let label_color = match probe.critical_kind {
+        Some(plot::CriticalKind::Zero) | Some(plot::CriticalKind::Hole) => theme.ui.muted.0,
+        _ => color,
+    };
     let galley = painter.layout_no_wrap(label, FontId::monospace(11.0), theme.ui.text.0);
     let padding = 6.0;
     let size = galley.size() + egui::vec2(padding * 2.0, padding * 2.0);
@@ -2694,7 +2897,7 @@ fn draw_graph_probe(
         .clamp(rect.left() + size.x / 2.0, rect.right() - size.x / 2.0);
     let label_rect = egui::Rect::from_center_size(anchor, size);
     painter.rect_filled(label_rect, 4.0, theme.ui.panel.0);
-    painter.rect_stroke(label_rect, 4.0, egui::Stroke::new(1.0, color));
+    painter.rect_stroke(label_rect, 4.0, egui::Stroke::new(1.0, label_color));
     painter.galley(
         label_rect.left_top() + egui::vec2(padding, padding),
         galley,
@@ -3474,6 +3677,8 @@ impl eframe::App for ScasApp {
                 let editor_id = egui::Id::new(("source-editor", self.buffer_generation));
                 let mut chosen_snippet = None;
                 let document_title = self.title();
+                let compact_document_title =
+                    compact_tab_title(&document_title, MAX_DOCUMENT_TAB_CHARS);
                 egui::Frame::none()
                     .fill(self.themes[self.selected_theme].ui.panel.0)
                     .inner_margin(egui::Margin::symmetric(10.0, 5.0))
@@ -3488,14 +3693,19 @@ impl eframe::App for ScasApp {
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             for (tab, label) in [
-                                (WorkspaceTab::Document, document_title.as_str()),
+                                (WorkspaceTab::Document, compact_document_title.as_str()),
                                 (WorkspaceTab::Repl, "REPL"),
                                 (WorkspaceTab::Graphing, "Graphing"),
                             ] {
-                                let response = ui.selectable_label(
+                                let mut response = ui.selectable_label(
                                     self.workspace_tab == tab,
                                     RichText::new(label).strong().size(12.0),
                                 );
+                                if tab == WorkspaceTab::Document
+                                    && compact_document_title != document_title
+                                {
+                                    response = response.on_hover_text(&document_title);
+                                }
                                 if self.workspace_tab == tab {
                                     ui.painter().line_segment(
                                         [response.rect.left_bottom(), response.rect.right_bottom()],
@@ -4427,6 +4637,40 @@ fn char_to_byte(source: &str, char_index: usize) -> usize {
         .map_or(source.len(), |(index, _)| index)
 }
 
+fn compact_tab_title(title: &str, max_chars: usize) -> String {
+    if title.chars().count() <= max_chars {
+        return title.to_owned();
+    }
+    if max_chars == 0 {
+        return String::new();
+    }
+
+    let (name, dirty_suffix) = title
+        .strip_suffix(" •")
+        .map_or((title, ""), |name| (name, " •"));
+    let dirty_chars = dirty_suffix.chars().count();
+    let name_limit = max_chars.saturating_sub(dirty_chars);
+    if name_limit <= 1 {
+        return format!("{}{}", "…".chars().take(name_limit).collect::<String>(), dirty_suffix);
+    }
+
+    let extension = name
+        .rsplit_once('.')
+        .filter(|(stem, extension)| !stem.is_empty() && !extension.is_empty())
+        .map(|(_, extension)| format!(".{extension}"));
+    if let Some(extension) = extension {
+        let extension_chars = extension.chars().count();
+        if extension_chars + 1 < name_limit {
+            let prefix_chars = name_limit - extension_chars - 1;
+            let prefix = name.chars().take(prefix_chars).collect::<String>();
+            return format!("{prefix}…{extension}{dirty_suffix}");
+        }
+    }
+
+    let prefix = name.chars().take(name_limit - 1).collect::<String>();
+    format!("{prefix}…{dirty_suffix}")
+}
+
 fn append_highlight(
     job: &mut LayoutJob,
     text: &str,
@@ -4869,11 +5113,54 @@ mod tests {
         .remove(0)
         .unwrap();
         app.graph_functions[0].sampled = Ok(series);
+        app.graph_functions[0].critical_points =
+            plot::detect_critical_points(&app.graph_functions[0].sampled.as_ref().unwrap().samples);
         let probe = snap_graph_probe(origin, &bounds, rect, &app.graph_functions)
             .expect("the sine curve crosses the screen centre");
         assert_eq!(probe.series_index, 0);
+        assert_eq!(probe.critical_kind, None);
         let y = probe.y.expect("sine is defined at the snapped x");
         assert!(y.abs() < 0.01, "snapped y should be near zero, got {y}");
+        let root = snap_graph_critical_point(origin, &bounds, rect, &app.graph_functions, 12.0)
+            .expect("the highlighted root should have its own hit target");
+        assert_eq!(root.critical_kind, Some(plot::CriticalKind::Zero));
+        assert!(root.x.abs() < 0.01);
+
+        // A hole must remain clickable even though there is no finite curve
+        // sample at the discontinuity itself.
+        app.graph_functions[0].critical_points.push(CriticalPoint {
+            x: 1.0,
+            y: 2.0,
+            kind: plot::CriticalKind::Hole,
+        });
+        let hole_screen = egui::pos2(
+            rect.left() + ((1.0 - bounds.x_min) / bounds.x_span()) as f32 * rect.width(),
+            rect.top() + ((bounds.y_max - 2.0) / bounds.y_span()) as f32 * rect.height(),
+        );
+        let hole = snap_graph_critical_point(
+            hole_screen,
+            &bounds,
+            rect,
+            &app.graph_functions,
+            12.0,
+        )
+        .expect("a highlighted hole should be clickable without a curve sample");
+        assert_eq!(hole.critical_kind, Some(plot::CriticalKind::Hole));
+        assert_eq!((hole.x, hole.y), (1.0, Some(2.0)));
+        assert_eq!(
+            hovered_graph_series(origin, &bounds, rect, &app.graph_functions, 12.0),
+            Some(0)
+        );
+        assert_eq!(
+            hovered_graph_series(
+                egui::pos2(rect.left() + 10.0, rect.top() + 10.0),
+                &bounds,
+                rect,
+                &app.graph_functions,
+                12.0,
+            ),
+            None
+        );
     }
 
     #[test]
@@ -4926,10 +5213,12 @@ mod tests {
         assert_eq!(app.repl_entries.len(), 1);
         assert!(app.repl_entries[0].plot.is_some());
         assert!(app.repl_entries[0].error.is_none());
+        assert!(app.repl_input.is_empty());
 
         app.repl_input = ":plot".to_string();
         app.submit_repl();
         assert!(app.repl_entries[1].printed.contains("usage:"));
+        assert!(app.repl_input.is_empty());
 
         app.repl_history_step(-1);
         assert_eq!(app.repl_input, ":plot");
@@ -4951,6 +5240,20 @@ mod tests {
         assert!(matrix.contains(r"\begin{pmatrix}"));
 
         assert!(repl_expression_latex("(x +", &symbols).is_none());
+    }
+
+    #[test]
+    fn long_document_tabs_keep_the_extension_and_fit_the_limit() {
+        assert_eq!(
+            compact_tab_title("calculus_and_domains.scas", 18),
+            "calculus_and….scas"
+        );
+        assert_eq!(
+            compact_tab_title("calculus_and_domains.scas •", 18),
+            "calculus_a….scas •"
+        );
+        assert_eq!(compact_tab_title("short.scas", 18), "short.scas");
+        assert_eq!(compact_tab_title("数学文件名称很长.scas", 10), "数学文件….scas");
     }
 
     #[test]
