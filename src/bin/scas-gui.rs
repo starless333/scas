@@ -35,6 +35,9 @@ let angle = π / 6;\n\
 \\[ sin(angle) => \\]\n\
 print(sin(angle));\n";
 const DEFAULT_AUTO_GREEK: bool = true;
+const DEFAULT_FONT_NAME: &str = "Roboto Mono";
+const DEFAULT_FONT_BYTES: &[u8] =
+    include_bytes!("../../assets/fonts/RobotoMono-Regular.otf");
 
 /// REPL inline plot drawing size, in character cells.
 const PLOT_ASCII_WIDTH: usize = 64;
@@ -44,6 +47,12 @@ const PLOT_ASCII_HEIGHT: usize = 17;
 /// zoom gesture runs.
 const MIN_VIEW_SPAN: f64 = 1.0e-9;
 const MAX_VIEW_SPAN: f64 = 1.0e12;
+/// Horizontal space kept for source editing while the document preview is open.
+/// The preview may use the released space when the Explorer is collapsed, but
+/// dragging its splitter must never crush the primary work surface.
+const MIN_EDITOR_WORKSPACE_WIDTH: f32 = 420.0;
+const MIN_PREVIEW_WIDTH: f32 = 220.0;
+const MAX_PREVIEW_WIDTH: f32 = 900.0;
 
 /// Curve colors for the graphing canvas, in draw order.
 const GRAPH_COLORS: &[u32] = &[
@@ -395,8 +404,33 @@ struct GraphProbe {
     y: Option<f64>,
 }
 
+fn install_default_font(context: &egui::Context) {
+    let mut fonts = FontDefinitions::default();
+    fonts.font_data.insert(
+        DEFAULT_FONT_NAME.to_owned(),
+        FontData::from_owned(DEFAULT_FONT_BYTES.to_vec()),
+    );
+    for family in [FontFamily::Monospace, FontFamily::Proportional] {
+        fonts
+            .families
+            .entry(family)
+            .or_default()
+            .insert(0, DEFAULT_FONT_NAME.to_owned());
+    }
+    context.set_fonts(fonts);
+}
+
+fn preview_widths(screen_width: f32, explorer_width: f32) -> (f32, f32) {
+    let usable_width = (screen_width - 48.0 - explorer_width).max(0.0);
+    let max_width = (usable_width - MIN_EDITOR_WORKSPACE_WIDTH)
+        .clamp(MIN_PREVIEW_WIDTH, MAX_PREVIEW_WIDTH);
+    let default_width = (usable_width * 0.46).clamp(MIN_PREVIEW_WIDTH, max_width);
+    (default_width, max_width)
+}
+
 impl ScasApp {
     fn new(context: &egui::Context) -> Self {
+        install_default_font(context);
         let themes = Theme::bundled_themes();
         themes[0].apply(context);
         let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -423,7 +457,7 @@ impl ScasApp {
             editor_monospace: true,
             settings_open: false,
             theme_path: "themes/dark-modern.toml".to_owned(),
-            font_path: String::new(),
+            font_path: "assets/fonts/RobotoMono-Regular.otf".to_owned(),
             preview: String::new(),
             preview_document: None,
             preview_error: None,
@@ -2819,6 +2853,19 @@ impl eframe::App for ScasApp {
                             .size(13.0)
                             .color(theme.ui.text.0),
                     );
+                    let button_frame = ui.visuals().button_frame;
+                    let menu_widgets = ui.visuals().widgets.clone();
+                    let menu_hover = theme.ui.accent.0.gamma_multiply(0.20);
+                    let menu_active = theme.ui.accent.0.gamma_multiply(0.32);
+                    ui.visuals_mut().button_frame = true;
+                    ui.visuals_mut().widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
+                    ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::NONE;
+                    ui.visuals_mut().widgets.hovered.weak_bg_fill = menu_hover;
+                    ui.visuals_mut().widgets.hovered.bg_stroke = egui::Stroke::NONE;
+                    ui.visuals_mut().widgets.active.weak_bg_fill = menu_active;
+                    ui.visuals_mut().widgets.active.bg_stroke = egui::Stroke::NONE;
+                    ui.visuals_mut().widgets.open.weak_bg_fill = menu_hover;
+                    ui.visuals_mut().widgets.open.bg_stroke = egui::Stroke::NONE;
                     ui.menu_button("File", |ui| {
                         if ui.button("New File").clicked() {
                             self.new_file();
@@ -2889,6 +2936,8 @@ impl eframe::App for ScasApp {
                             ui.close_menu();
                         }
                     });
+                    ui.visuals_mut().widgets = menu_widgets;
+                    ui.visuals_mut().button_frame = button_frame;
                     ui.add_space(12.0);
                     ui.label(
                         RichText::new(format!("{surface_title} — SCAS"))
@@ -2926,7 +2975,7 @@ impl eframe::App for ScasApp {
                             }
                         }
                         if ui
-                            .small_button("Settings")
+                            .add(egui::Button::new(RichText::new("⚙").size(16.0)).frame(false))
                             .on_hover_text("Workspace settings")
                             .clicked()
                         {
@@ -2983,7 +3032,7 @@ impl eframe::App for ScasApp {
         if self.files_open {
             egui::SidePanel::left("files")
                 .default_width(240.0)
-                .width_range(180.0..=480.0)
+                .width_range(180.0..=320.0)
                 .resizable(true)
                 .frame(
                     egui::Frame::none()
@@ -2999,14 +3048,14 @@ impl eframe::App for ScasApp {
                         ui.label(RichText::new("EXPLORER").strong().size(11.0));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui
-                                .small_button("Close")
+                                .small_button("×")
                                 .on_hover_text("Hide Explorer")
                                 .clicked()
                             {
                                 self.files_open = false;
                             }
                             if ui
-                                .small_button("Refresh")
+                                .small_button("↻")
                                 .on_hover_text("Refresh files")
                                 .clicked()
                             {
@@ -3035,44 +3084,65 @@ impl eframe::App for ScasApp {
                             }
                             let collapsed =
                                 entry.is_dir && self.collapsed_dirs.contains(&entry.path);
-                            ui.horizontal(|ui| {
-                                ui.add_space(entry.depth as f32 * 12.0);
-                                let name = entry
-                                    .path
-                                    .file_name()
-                                    .and_then(|name| name.to_str())
-                                    .unwrap_or("?");
-                                if entry.is_dir {
-                                    let disclosure = tree_disclosure(ui, collapsed, &theme);
-                                    paint_tree_icon(ui, true, &theme);
-                                    let name_response = ui.add(
-                                        egui::Label::new(
-                                            RichText::new(name).strong().color(theme.ui.text.0),
-                                        )
-                                        .sense(egui::Sense::click()),
-                                    );
-                                    if disclosure.clicked() || name_response.clicked() {
-                                        if collapsed {
-                                            self.collapsed_dirs.remove(&entry.path);
-                                        } else {
-                                            self.collapsed_dirs.insert(entry.path.clone());
-                                        }
-                                    }
-                                } else if ui
-                                    .horizontal(|ui| {
-                                        ui.add_space(14.0);
-                                        paint_tree_icon(ui, false, &theme);
-                                        ui.selectable_label(
-                                            self.current_file.as_ref() == Some(&entry.path),
-                                            name,
-                                        )
-                                    })
-                                    .inner
-                                    .clicked()
+                            let is_selected =
+                                !entry.is_dir && self.current_file.as_ref() == Some(&entry.path);
+                            let row_size =
+                                egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
+                            let (row_rect, row_response) =
+                                ui.allocate_exact_size(row_size, egui::Sense::click());
+                            if is_selected {
+                                ui.painter().rect_filled(
+                                    row_rect,
+                                    3.0,
+                                    theme.ui.accent.0.gamma_multiply(0.26),
+                                );
+                            } else if row_response.hovered() {
+                                ui.painter().rect_filled(
+                                    row_rect,
+                                    3.0,
+                                    theme.ui.accent.0.gamma_multiply(0.16),
+                                );
+                            }
+                            let mut row_ui = ui.child_ui(
+                                row_rect,
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                None,
+                            );
+                            row_ui.add_space(3.0 + entry.depth as f32 * 12.0);
+                            let name = entry
+                                .path
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .unwrap_or("?");
+                            if entry.is_dir {
+                                let disclosure = tree_disclosure(&mut row_ui, collapsed, &theme);
+                                paint_tree_icon(&mut row_ui, true, &theme);
+                                let name_response = row_ui.add(
+                                    egui::Label::new(
+                                        RichText::new(name).strong().color(theme.ui.text.0),
+                                    )
+                                    .sense(egui::Sense::click()),
+                                );
+                                if row_response.clicked()
+                                    || disclosure.clicked()
+                                    || name_response.clicked()
                                 {
+                                    if collapsed {
+                                        self.collapsed_dirs.remove(&entry.path);
+                                    } else {
+                                        self.collapsed_dirs.insert(entry.path.clone());
+                                    }
+                                }
+                            } else {
+                                row_ui.add_space(14.0);
+                                paint_tree_icon(&mut row_ui, false, &theme);
+                                let name_response = row_ui.add(
+                                    egui::Label::new(name).sense(egui::Sense::click()),
+                                );
+                                if row_response.clicked() || name_response.clicked() {
                                     selected = Some(entry.path.clone());
                                 }
-                            });
+                            }
                             if collapsed {
                                 hidden_below = Some(entry.depth);
                             }
@@ -3226,10 +3296,17 @@ impl eframe::App for ScasApp {
         }
 
         if self.workspace_tab == WorkspaceTab::Document && self.preview_open {
-            let preview_width = (context.screen_rect().width() - 48.0) * 0.46;
+            let explorer_width = if self.files_open {
+                egui::containers::panel::PanelState::load(context, egui::Id::new("files"))
+                    .map_or(240.0, |state| state.size().x)
+            } else {
+                0.0
+            };
+            let (preview_width, preview_max_width) =
+                preview_widths(context.screen_rect().width(), explorer_width);
             egui::SidePanel::right("latex-preview")
                 .default_width(preview_width)
-                .width_range(280.0..=900.0)
+                .width_range(MIN_PREVIEW_WIDTH..=preview_max_width)
                 .resizable(true)
                 .frame(
                     egui::Frame::none()
@@ -3260,17 +3337,15 @@ impl eframe::App for ScasApp {
                                 .size(10.5)
                                 .color(self.themes[self.selected_theme].ui.accent.0),
                         );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.small_button("Copy TeX").clicked() {
-                                ui.output_mut(|output| {
-                                    output.copied_text.clone_from(&self.preview)
-                                });
-                            }
-                            let response = ui
-                                .toggle_value(&mut self.system_latex_preview, "Computer Modern")
-                                .on_hover_text("Use cached, serialized system LaTeX rendering");
-                            enable_system_preview = response.changed() && self.system_latex_preview;
-                        });
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        let response = ui
+                            .toggle_value(&mut self.system_latex_preview, "Computer Modern")
+                            .on_hover_text("Use cached, serialized system LaTeX rendering");
+                        enable_system_preview = response.changed() && self.system_latex_preview;
+                        if ui.small_button("Copy TeX").clicked() {
+                            ui.output_mut(|output| output.copied_text.clone_from(&self.preview));
+                        }
                     });
                     if enable_system_preview {
                         if let Some(document) = &self.preview_document {
@@ -3295,7 +3370,7 @@ impl eframe::App for ScasApp {
                         ui.monospace(r"\[ (x + 1) / (2x^2) \]");
                     } else {
                         let preview_width = ui.available_width();
-                        let preview_scale = (preview_width / 210.0).clamp(1.7, 3.2);
+                        let preview_scale = (preview_width / 280.0).clamp(1.0, 2.8);
                         egui::ScrollArea::both()
                             .auto_shrink([false, false])
                             .show(ui, |ui| {
@@ -3441,13 +3516,6 @@ impl eframe::App for ScasApp {
                                     RichText::new("Modified").size(11.0).color(theme.ui.muted.0),
                                 );
                             }
-                            if self.workspace_tab == WorkspaceTab::Document {
-                                ui.label(
-                                    RichText::new("SCAS")
-                                        .size(11.0)
-                                        .color(self.themes[self.selected_theme].ui.muted.0),
-                                );
-                            }
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
@@ -3465,7 +3533,7 @@ impl eframe::App for ScasApp {
                                         return;
                                     }
                                     if ui
-                                        .small_button("Close")
+                                        .small_button("×")
                                         .on_hover_text("Close editor")
                                         .clicked()
                                     {
@@ -3477,53 +3545,55 @@ impl eframe::App for ScasApp {
                                             self.new_file();
                                         }
                                     }
-                                    ui.menu_button("Snippets", |ui| {
-                                        ui.set_min_width(250.0);
-                                        for snippet in editor_assist::SNIPPETS {
-                                            if ui
-                                                .button(snippet.label)
-                                                .on_hover_text(snippet.detail)
-                                                .clicked()
-                                            {
-                                                chosen_snippet = Some(*snippet);
-                                                ui.close_menu();
-                                            }
-                                        }
-                                    });
-                                    ui.menu_button("Ω  Symbols", |ui| {
-                                        ui.horizontal_wrapped(|ui| {
-                                            for (symbol, insertion, hint) in [
-                                                ("π", "π", "\\pi"),
-                                                ("φ", "φ", "\\phi"),
-                                                ("θ", "θ", "\\theta"),
-                                                ("λ", "λ", "\\lambda"),
-                                                ("Σ", "Σ", "\\Sigma"),
-                                                ("Γ", "Γ", "\\Gamma"),
-                                                ("∫", "integral(", "Integral function"),
-                                                ("∇", "gradient(", "Gradient function"),
-                                            ] {
+                                    ui.menu_button("{}", |ui| {
+                                            ui.set_min_width(250.0);
+                                            for snippet in editor_assist::SNIPPETS {
                                                 if ui
-                                                    .button(RichText::new(symbol).size(17.0))
-                                                    .on_hover_text(hint)
+                                                    .button(snippet.label)
+                                                    .on_hover_text(snippet.detail)
                                                     .clicked()
                                                 {
-                                                    self.source.push_str(insertion);
-                                                    self.dirty = true;
-                                                    self.schedule_analysis(context);
+                                                    chosen_snippet = Some(*snippet);
                                                     ui.close_menu();
                                                 }
                                             }
-                                        });
-                                    });
-                                    let greek_label = if self.auto_greek {
-                                        "Greek shortcuts: On"
+                                        })
+                                        .response
+                                        .on_hover_text("Insert a code snippet");
+                                    ui.menu_button("Ω", |ui| {
+                                        ui.horizontal_wrapped(|ui| {
+                                                for (symbol, insertion, hint) in [
+                                                    ("π", "π", "\\pi"),
+                                                    ("φ", "φ", "\\phi"),
+                                                    ("θ", "θ", "\\theta"),
+                                                    ("λ", "λ", "\\lambda"),
+                                                    ("Σ", "Σ", "\\Sigma"),
+                                                    ("Γ", "Γ", "\\Gamma"),
+                                                    ("∫", "integral(", "Integral function"),
+                                                    ("∇", "gradient(", "Gradient function"),
+                                                ] {
+                                                    if ui
+                                                        .button(RichText::new(symbol).size(17.0))
+                                                        .on_hover_text(hint)
+                                                        .clicked()
+                                                    {
+                                                        self.source.push_str(insertion);
+                                                        self.dirty = true;
+                                                        self.schedule_analysis(context);
+                                                        ui.close_menu();
+                                                    }
+                                                }
+                                            });
+                                        })
+                                        .response
+                                        .on_hover_text("Insert a mathematical symbol");
+                                    let greek_hint = if self.auto_greek {
+                                        "Greek shortcut expansion is on"
                                     } else {
-                                        "Greek shortcuts: Off"
+                                        "Greek shortcut expansion is off"
                                     };
-                                    ui.toggle_value(&mut self.auto_greek, greek_label)
-                                        .on_hover_text(
-                                            "Enabled by default: expand TeX-style Greek shortcuts",
-                                        );
+                                    ui.toggle_value(&mut self.auto_greek, "α")
+                                        .on_hover_text(greek_hint);
                                 },
                             );
                         });
@@ -3728,6 +3798,7 @@ impl eframe::App for ScasApp {
                         self.line_numbers,
                         &self.themes[self.selected_theme],
                         self.editor_font_size,
+                        gutter_width,
                     );
                 }
                 if let Some(pointer) = output.response.hover_pos() {
@@ -4083,15 +4154,20 @@ fn paint_line_numbers(
     mode: LineNumberMode,
     theme: &Theme,
     font_size: f32,
+    gutter_width: f32,
 ) {
-    // `text_clip_rect` excludes TextEdit's margin, which is exactly where the
-    // gutter lives. Clip to the whole widget so the numbers are not discarded.
-    let painter = ui
-        .painter()
-        .with_clip_rect(output.response.rect.intersect(ui.clip_rect()));
+    // TextEdit clips its galley to the editable text area. The gutter occupies
+    // the left margin, so explicitly extend the paint clip across that margin.
+    let gutter_left = output.galley_pos.x - gutter_width;
+    let editor_clip = egui::Rect::from_min_max(
+        egui::pos2(gutter_left, output.response.rect.top()),
+        output.response.rect.right_bottom(),
+    )
+    .intersect(ui.clip_rect());
+    let painter = ui.painter().with_clip_rect(editor_clip);
     let separator_x = output.galley_pos.x - 10.0;
     let gutter_rect = egui::Rect::from_min_max(
-        output.response.rect.left_top(),
+        egui::pos2(gutter_left, output.response.rect.top()),
         egui::pos2(separator_x, output.response.rect.bottom()),
     );
     painter.rect_filled(gutter_rect, 0.0, theme.ui.editor.0);
@@ -4631,6 +4707,22 @@ mod tests {
         undoer.add_undo(&edited);
         let restored = undoer.undo(&edited).expect("one edit should be undoable");
         assert_eq!(restored.1, initial);
+    }
+
+    #[test]
+    fn preview_resize_preserves_the_editor_workspace() {
+        let (default_width, max_width) = preview_widths(2048.0, 480.0);
+        assert_eq!(max_width, MAX_PREVIEW_WIDTH);
+        assert!(default_width <= max_width);
+        assert!(2048.0 - 48.0 - 480.0 - max_width >= MIN_EDITOR_WORKSPACE_WIDTH);
+
+        let (_, max_without_explorer) = preview_widths(2048.0, 0.0);
+        assert_eq!(max_without_explorer, MAX_PREVIEW_WIDTH);
+
+        let (narrow_default, narrow_max) = preview_widths(1024.0, 240.0);
+        assert_eq!(narrow_default, narrow_max);
+        assert_eq!(narrow_max, 316.0);
+        assert!(1024.0 - 48.0 - 240.0 - narrow_max >= MIN_EDITOR_WORKSPACE_WIDTH);
     }
 
     #[test]
