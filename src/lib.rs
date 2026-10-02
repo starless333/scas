@@ -7,6 +7,7 @@ pub mod latex;
 pub mod lexer;
 pub mod number;
 pub mod parser;
+pub mod plot;
 
 use ast::SourceSpan;
 use interpreter::Interpreter;

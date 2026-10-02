@@ -201,7 +201,14 @@ fn evaluate_complex(function: UnaryMathFunction, value: DecimalComplex) -> Decim
         UnaryMathFunction::Cosh => value.cosh(),
         UnaryMathFunction::Tanh => value.tanh(),
         UnaryMathFunction::Asinh => value.asinh(),
-        UnaryMathFunction::Acosh => value.acosh(),
+        UnaryMathFunction::Acosh => {
+            // dashu-cmplx's `acosh` hangs outside the real domain, so the
+            // principal branch is assembled by hand:
+            // acosh(z) = ln(z + sqrt(z - 1) * sqrt(z + 1)).
+            let one = DecimalComplex::from(DBig::ONE.with_precision(value.precision()).value());
+            let root = (value.clone() - one.clone()).sqrt() * (value.clone() + one).sqrt();
+            (value + root).ln()
+        }
         UnaryMathFunction::Atanh => value.atanh(),
         UnaryMathFunction::Degrees => {
             let precision = value.precision();

@@ -77,6 +77,22 @@ impl Environment {
             None => false,
         }
     }
+
+    /// Removes the nearest binding of `name`, returning the value it held.
+    /// Plotting uses this to temporarily bind the independent variable and
+    /// then restore the session exactly as it was.
+    pub fn remove(env: &Env, name: Symbol) -> Option<Value> {
+        let mut scope = env.borrow_mut();
+        if let std::collections::hash_map::Entry::Occupied(entry) = scope.values.entry(name) {
+            return Some(entry.remove());
+        }
+        let parent = scope.parent.clone();
+        drop(scope); // release this scope's borrow before recursing
+        match parent {
+            Some(parent) => Environment::remove(&parent, name),
+            None => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -109,5 +125,19 @@ mod tests {
             symbols.intern("missing"),
             Value::Nil
         ));
+    }
+
+    #[test]
+    fn remove_returns_and_deletes_the_nearest_binding() {
+        let mut symbols = SymbolTable::new();
+        let name = symbols.intern("x");
+        let root = Environment::new();
+        root.borrow_mut().define(
+            name,
+            Value::Number(crate::number::Number::Integer(1.into())),
+        );
+        assert!(Environment::remove(&root, name).is_some());
+        assert!(Environment::get(&root, name).is_none());
+        assert!(Environment::remove(&root, name).is_none());
     }
 }

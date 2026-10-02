@@ -33,7 +33,7 @@ scas 0.1.0 — type :help for help, :quit to exit
 ```
 
 Use `:help`, `:load`, `:definitions`, `:history`, `:reset`, `:clear`,
-`:precision N`, or `:quit` to control the REPL.
+`:precision N`, `:plot`, or `:quit` to control the REPL.
 
 When standard input is redirected, SCAS reads and executes a complete program.
 From the repository root, run a `.scas` file with:
@@ -72,8 +72,18 @@ cargo run --features gui --bin scas-gui
 The preview uses a compact VS Code/Zed-style workspace with an activity rail,
 Explorer, syntax-highlighted editor, split document preview, OUTPUT/PROBLEMS
 dock, background execution, save support, and Greek input. Workspace tabs also
-provide a persistent interactive REPL with live typeset input/results and a
-reserved graphing-calculator canvas.
+provide a persistent interactive REPL whose input is LaTeX-first: typed math
+is live-typeset at display size while the raw source stays as a compact echo,
+with command history (`↑`/`↓`), Tab completion, and inline plotting — `:plot
+sin(x), cos(x)` draws the graph directly in the transcript. A dedicated
+graphing-calculator tab plots any number of functions against the live REPL
+session — define or redefine a function in the REPL and the graphs re-sample.
+The canvas works like a dynamic graphing calculator: the window is not fixed,
+so panning and zooming re-sample the curves to cover whatever region is
+visible, dots mark the zeros and local extrema of every curve, and clicking a
+curve pins a crosshair that snaps to the nearest point and reports its exact
+`x` and `y`. Auto-fit or manual y windows are supported, and
+**File → Export Graph as SVG** writes the current view as a vector image.
 When `latex` and `dvipng` are installed, the live preview is typeset by LaTeX
 itself in Computer Modern; the native structured renderer remains a fallback
 when those commands are unavailable.
@@ -96,6 +106,49 @@ under the text cursor.
 
 `scas --help` lists decimal-precision and execution-limit flags; `--version`
 prints the release version. Redirection and pipelines remain supported.
+
+### Graphing
+
+The REPL draws functions of one variable with `:plot`. The independent
+variable is `x` (or the parameter of a plotted definition), expressions use
+every session definition, and multiple curves are drawn together in distinct
+characters. Without a redirect the graph is drawn in the terminal in a
+TI-calculator style character grid; a `> FILE` redirect writes a standalone
+SVG for `.svg` targets and the same text drawing otherwise:
+
+```text
+> :plot sin(x), cos(x) from -2*pi to 2*pi > graph.svg
+wrote graph.svg
+> :plot x^2 - 2x from -5 to 5
+  9 |                 *                  *
+    |                  *                *
+...
+
+         -5            0            5
+```
+
+Plotting temporarily lowers the sampling precision and restores any existing
+value of the plotted variable, so a session's `x` survives a plot untouched.
+
+#### The GUI graphing calculator
+
+The graphing tab shares the REPL session and adds a dynamic, Desmos-style
+canvas:
+
+- **Dynamic window.** Samples follow the view instead of a fixed frame.
+  Panning and zooming re-sample every curve over a padded window, so graphs
+  extend as far as you explore in either direction.
+- **Critical points.** Zeros and local maxima/minima of each curve are
+  detected from the samples and drawn as dots on the curve.
+- **Tap to inspect.** Clicking the canvas pins a crosshair to the nearest
+  curve point and shows its exact `x` and `y`; panning or zooming dismisses
+  it.
+- **Export.** The current view exports as a standalone SVG via
+  **File → Export Graph as SVG**.
+
+The same `:plot` evaluation rules apply: the independent variable is `x` (or
+a plotted definition's parameter), session definitions are usable, and the
+session's variable bindings survive plotting.
 
 ### Current examples
 
@@ -339,6 +392,25 @@ assume_nonnegative(x);
 print(sqrt(x^2)); // x
 print(sin(t)^2 + cos(t)^2); // 1
 ```
+
+Beyond the named helpers, the general `assume(...)` call attaches arbitrary
+constraints built from comparisons over one variable, combined with `and`:
+
+```scas
+assume(x == 3);
+print(x + 1);        // 4: equality facts substitute like a definition
+assume(x < 10);      // consistency checks against earlier facts fold away
+assume(y > 0 and y != 1);
+print(sqrt(y^2));    // abs(y)
+forget_assumptions();
+print(x + 1);        // x + 1: constraints released
+```
+
+Each comparison must put a plain variable on one side (`x == 3`, `y < x + 1`).
+Contradictions — including a later fact that conflicts with an earlier one —
+are runtime errors, and `forget_assumptions()` clears every fact in the
+session. The named helpers above remain the concise form for sign and domain
+facts.
 
 Polynomial and rational-expression tools are explicit so ordinary
 simplification does not unexpectedly expand an expression:

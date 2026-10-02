@@ -65,6 +65,8 @@ pub enum Builtin {
     AssumeNegative,
     AssumeInteger,
     AssumeReal,
+    Assume,
+    ForgetAssumptions,
     Transpose,
     Trace,
     Determinant,
@@ -158,6 +160,8 @@ impl Builtin {
         ("assume_negative", Builtin::AssumeNegative),
         ("assume_integer", Builtin::AssumeInteger),
         ("assume_real", Builtin::AssumeReal),
+        ("assume", Builtin::Assume),
+        ("forget_assumptions", Builtin::ForgetAssumptions),
         ("transpose", Builtin::Transpose),
         ("trace", Builtin::Trace),
         ("det", Builtin::Determinant),
@@ -356,6 +360,29 @@ impl Value {
             Value::Derivation { result, .. } => result.type_name(),
         }
     }
+}
+
+/// One collected `assume(constraint)` fact. `Equal` facts substitute the
+/// variable outright; inequality facts sharpen the range predicates the
+/// simplifier already consults.
+#[derive(Debug, Clone)]
+pub enum ConstraintFact {
+    Equal {
+        symbol: Symbol,
+        value: Rc<SymbolicExpr>,
+    },
+    RealCompare {
+        symbol: Symbol,
+        /// The value compared against, with any equality-fact substitutions
+        /// already folded in so compound facts stay mutually consistent.
+        bound: Rc<SymbolicExpr>,
+        /// `bound op symbol`. A conjunction uses the tightest bound per kind.
+        op: BinaryOp,
+    },
+    NotEqual {
+        symbol: Symbol,
+        value: Rc<SymbolicExpr>,
+    },
 }
 
 #[cfg(test)]

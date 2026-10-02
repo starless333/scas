@@ -32,7 +32,7 @@ pub struct Matches {
 }
 
 impl Matches {
-    fn empty(cursor_char: usize) -> Self {
+    pub fn empty(cursor_char: usize) -> Self {
         Self {
             start_char: cursor_char,
             items: [None; MAX_MATCHES],

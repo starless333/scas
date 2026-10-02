@@ -162,6 +162,88 @@ fn calculus_handles_general_derivatives_and_linear_substitution() {
 }
 
 #[test]
+fn integration_by_parts_and_definite_symmetry() {
+    assert_eq!(
+        output(
+            r#"
+            print(integral(x*exp(x), x));
+            print(integral(x*sin(x), x));
+            print(integral(x^2*cos(x), x));
+            print(integral(x*sinh(x), x));
+            print(integral((x + 1)*exp(x), x));
+            print(definite_integral(sin(x), x, -1, 1));
+            print(definite_integral(x*exp(x), x, -1, 1));
+            print(definite_integral(x + x^2, x, -1, 1));
+            print(definite_integral(cos(x), x, -pi, pi));
+            print(definite_integral(x^3*exp(x^2), x, -2, 2));
+            print(definite_integral(x^2, x, -2, 2));
+            print(definite_integral(x^x, x, 0, 1));
+            print(sin(0));
+            print(exp(0));
+            print(ln(1));
+            "#,
+        ),
+        concat!(
+            "-1 * exp(x) + exp(x) * x\n",
+            "-cos(x) * x + sin(x)\n",
+            "-2 * -cos(x) * x + -2 * sin(x) + sin(x) * x ^ 2\n",
+            "-1 * sinh(x) + cosh(x) * x\n",
+            "-1 * exp(x) + exp(x) + exp(x) * x\n",
+            "0\n",
+            "2 * exp(-1)\n",
+            "2 * 3 ^ -1\n",
+            "0\n",
+            "0\n",
+            "16/3\n",
+            "definite_integral(x ^ x, x, 0, 1)\n",
+            "0\n",
+            "1\n",
+            "0\n",
+        ),
+    );
+}
+
+#[test]
+fn rational_integration_through_partial_fractions() {
+    assert_eq!(
+        output(
+            r#"
+            print(integral((3x + 1)/((x - 1)*(x + 2)), x));
+            print(integral(2/(x - 1), x));
+            print(integral(1/x, x));
+            print(integral(1/(2x + 1), x));
+            print(integral((x + 1)/(x^2 - 1), x));
+            print(integral((x^2 + 1)/(x^3 - x), x));
+            print(integral(1/(x^2 + 1), x));
+            print(integral(1/(x^2 + 4), x));
+            print(integral(3/(x^2 + 9), x));
+            print(integral(sin(x)^2, x));
+            print(integral(cos(3x)^2, x));
+            print(integral(x/(x + 1), x));
+            print(apart((x^2 + 1)/(x^3 - x)));
+            print(solve(x^3 - x, x));
+            "#,
+        ),
+        concat!(
+            "4/3 * ln(x - 1) + 5/3 * ln(x + 2)\n",
+            "2 * ln(x - 1)\n",
+            "ln(x)\n",
+            "ln(2 * x + 1) / 2\n",
+            "ln(x - 1)\n",
+            "ln(x + 1) - ln(x) + ln(x - 1)\n",
+            "atan(x)\n",
+            "atan(x / 2) / 2\n",
+            "atan(x / 3)\n",
+            "(4 * x - 2 * sin(2 * x)) / 8\n",
+            "(12 * x + 2 * sin(6 * x)) / 24\n",
+            "integral(x / (x + 1), x)\n",
+            "1 / (x + 1) - 1 / x + 1 / (x - 1)\n",
+            "[-1, 0, 1]\n",
+        ),
+    );
+}
+
+#[test]
 fn domain_documented_transcendental_and_absolute_identities_simplify() {
     assert_eq!(
         output(

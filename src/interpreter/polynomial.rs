@@ -1048,7 +1048,37 @@ impl Polynomial {
         };
         if let Some((constant, leading)) = bounded {
             if constant == 0 {
+                // Zero is a root; the rational-root enumeration must then run
+                // on the polynomial with the zero roots stripped off, since
+                // the theorem needs a nonzero constant term.
                 candidates.push(BigRational::zero());
+                let reduced = &integer_coefficients[integer_coefficients
+                    .iter()
+                    .position(|coefficient| !coefficient.is_zero())
+                    .unwrap_or(integer_coefficients.len())..];
+                let bounded = match (
+                    reduced.first().and_then(|value| value.abs().to_u64()),
+                    reduced.last().and_then(|value| value.abs().to_u64()),
+                ) {
+                    (Some(constant), Some(leading))
+                        if constant <= 1_000_000_000_000 && leading <= 1_000_000_000_000 =>
+                    {
+                        Some((constant, leading))
+                    }
+                    _ => None,
+                };
+                if let Some((constant, leading)) = bounded {
+                    for numerator in Self::positive_divisors(constant) {
+                        for denominator in &Self::positive_divisors(leading) {
+                            let candidate = BigRational::new(
+                                BigInt::from(numerator),
+                                BigInt::from(*denominator),
+                            );
+                            candidates.push(candidate.clone());
+                            candidates.push(-candidate);
+                        }
+                    }
+                }
             } else {
                 let numerators = Self::positive_divisors(constant);
                 let denominators = Self::positive_divisors(leading);

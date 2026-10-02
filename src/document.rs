@@ -1,11 +1,12 @@
 //! Front-end utilities shared by the self-documenter and future IDE clients.
 
 use crate::ast::statement::FunctionBody;
-use crate::ast::{AssignOp, Expr, SourceSpan, Statement, StatementKind};
+use crate::ast::{AssignOp, Expr, ExprKind, SourceSpan, Statement, StatementKind};
 use crate::interpreter::Interpreter;
 use crate::latex::LatexRenderer;
 use crate::lexer::Scanner;
 use crate::parser::Parser;
+use crate::plot::{self, PlotBounds};
 use crate::{ExecutionError, Limits, RuntimeError};
 use std::io;
 use std::ops::Range;
@@ -87,7 +88,7 @@ impl Document {
             }
         }
         format!(
-            "\\documentclass[11pt]{{article}}\n\\usepackage{{amsmath}}\n\\usepackage{{amssymb}}\n\\usepackage{{upgreek}}\n\\usepackage{{booktabs}}\n\\usepackage[margin=1in]{{geometry}}\n{user_packages}\\begin{{document}}\n{}\n\\end{{document}}\n",
+            "\\documentclass[11pt]{{article}}\n\\usepackage{{amsmath}}\n\\usepackage{{amssymb}}\n\\usepackage{{upgreek}}\n\\usepackage{{booktabs}}\n\\usepackage{{xcolor}}\n\\usepackage[margin=1in]{{geometry}}\n{user_packages}\\begin{{document}}\n{}\n\\end{{document}}\n",
             self.body()
         )
     }
@@ -138,6 +139,27 @@ fn process_top_level(
     document: &mut Document,
 ) -> Result<(), ExecutionError> {
     match &statement.kind {
+        StatementKind::Expr(expression) => {
+            if let Some(plot) = render_plot_call(expression, interpreter) {
+                let latex = plot.unwrap_or_else(|message| {
+                    document.diagnostics.push(DocumentDiagnostic {
+                        span: statement.span,
+                        severity: DiagnosticSeverity::Error,
+                        message,
+                    });
+                    r"\text{\textbf{plot unavailable}}".to_owned()
+                });
+                document.fragments.push(DocumentFragment {
+                    span: statement.span,
+                    kind: FragmentKind::DisplayMath,
+                    latex: format!(r"\[{}\]", latex),
+                });
+                return Ok(());
+            }
+            interpreter
+                .execute_statement(statement)
+                .map_err(ExecutionError::Runtime)?;
+        }
         StatementKind::DocComment(prose) => {
             let latex = interpolate(prose, statement.span, interpreter, document);
             document.fragments.push(DocumentFragment {
@@ -150,6 +172,22 @@ fn process_top_level(
             expression,
             show_result,
         } => {
+            if let Some(plot) = render_plot_call(expression, interpreter) {
+                let latex = plot.unwrap_or_else(|message| {
+                    document.diagnostics.push(DocumentDiagnostic {
+                        span: statement.span,
+                        severity: DiagnosticSeverity::Error,
+                        message,
+                    });
+                    r"\text{\textbf{plot unavailable}}".to_owned()
+                });
+                document.fragments.push(DocumentFragment {
+                    span: statement.span,
+                    kind: FragmentKind::DisplayMath,
+                    latex: format!(r"\[{}\]", latex),
+                });
+                return Ok(());
+            }
             let source = LatexRenderer::new(interpreter.symbols()).expression(expression);
             let latex = if *show_result {
                 match interpreter.evaluate_documented_expression(expression) {
@@ -192,33 +230,61 @@ fn render_block(
 ) -> Result<(), ExecutionError> {
     let mut rows = Vec::new();
     for statement in statements {
-        let renderer = LatexRenderer::new(interpreter.symbols());
         let row = match &statement.kind {
             StatementKind::DocComment(prose) => Some(format!(
                 r"\intertext{{{}}}",
                 interpolate(prose, statement.span, interpreter, document)
             )),
             StatementKind::Expr(expression) => {
-                let text = renderer.expression(expression);
-                interpreter
-                    .execute_statement(statement)
-                    .map_err(ExecutionError::Runtime)?;
-                Some(text)
+                if let Some(plot) = render_plot_call(expression, interpreter) {
+                    Some(format!(
+                        "& {}",
+                        plot.unwrap_or_else(|message| {
+                            document.diagnostics.push(DocumentDiagnostic {
+                                span: statement.span,
+                                severity: DiagnosticSeverity::Error,
+                                message,
+                            });
+                            r"\text{\textbf{plot unavailable}}".to_owned()
+                        })
+                    ))
+                } else {
+                    let text = LatexRenderer::new(interpreter.symbols()).expression(expression);
+                    interpreter
+                        .execute_statement(statement)
+                        .map_err(ExecutionError::Runtime)?;
+                    Some(text)
+                }
             }
             StatementKind::Show(expression) => {
-                let text = renderer.expression(expression);
-                Some(
-                    match interpreter.evaluate_documented_expression(expression) {
-                        Ok(value) => render_evaluation(expression, &text, &value, interpreter),
-                        Err(error) => {
-                            push_runtime_diagnostic(error, statement.span, document);
-                            format!(r"{text} &= \text{{\textbf{{?}}}}")
-                        }
-                    },
-                )
+                if let Some(plot) = render_plot_call(expression, interpreter) {
+                    Some(format!(
+                        "& {}",
+                        plot.unwrap_or_else(|message| {
+                            document.diagnostics.push(DocumentDiagnostic {
+                                span: statement.span,
+                                severity: DiagnosticSeverity::Error,
+                                message,
+                            });
+                            r"\text{\textbf{plot unavailable}}".to_owned()
+                        })
+                    ))
+                } else {
+                    let text = LatexRenderer::new(interpreter.symbols()).expression(expression);
+                    Some(
+                        match interpreter.evaluate_documented_expression(expression) {
+                            Ok(value) => render_evaluation(expression, &text, &value, interpreter),
+                            Err(error) => {
+                                push_runtime_diagnostic(error, statement.span, document);
+                                format!(r"{text} &= \text{{\textbf{{?}}}}")
+                            }
+                        },
+                    )
+                }
             }
             StatementKind::Let { name, value } => {
                 let row = value.as_ref().map(|value| {
+                    let renderer = LatexRenderer::new(interpreter.symbols());
                     let name = renderer.identifier(interpreter.symbols().resolve(*name));
                     format!("{} &= {}", name, renderer.expression(value))
                 });
@@ -228,6 +294,7 @@ fn render_block(
                 row
             }
             StatementKind::Assign { name, op, value } => {
+                let renderer = LatexRenderer::new(interpreter.symbols());
                 let name = renderer.identifier(interpreter.symbols().resolve(*name));
                 let rhs = renderer.expression(value);
                 let shown = match op {
@@ -244,6 +311,7 @@ fn render_block(
                 params,
                 body: FunctionBody::Expression(body),
             } => {
+                let renderer = LatexRenderer::new(interpreter.symbols());
                 let name = interpreter.symbols().resolve(*name).to_owned();
                 let params = params
                     .iter()
@@ -322,6 +390,69 @@ fn render_block(
         });
     }
     Ok(())
+}
+
+/// Evaluate `plot(expression[, variable], lower, upper)` in document scope
+/// and return a vector-LaTeX picture suitable for the normal LaTeX renderer.
+fn render_plot_call(
+    expression: &Expr,
+    interpreter: &mut Interpreter<io::Sink>,
+) -> Option<Result<String, String>> {
+    let ExprKind::Call { callee, args } = &expression.kind else {
+        return None;
+    };
+    let ExprKind::Variable(function) = callee.kind else {
+        return None;
+    };
+    if interpreter.symbols().resolve(function) != "plot" {
+        return None;
+    }
+
+    Some((|| {
+        if args.len() != 3 && args.len() != 4 {
+            return Err(
+                "plot expects plot(expression, lower, upper) or plot(expression, variable, lower, upper)"
+                    .to_owned(),
+            );
+        }
+        let variable = if args.len() == 4 {
+            let ExprKind::Variable(variable) = &args[1].kind else {
+                return Err("plot's independent variable must be a name".to_owned());
+            };
+            interpreter.symbols().resolve(*variable).to_owned()
+        } else {
+            "x".to_owned()
+        };
+        let lower_index = if args.len() == 4 { 2 } else { 1 };
+        let upper_index = lower_index + 1;
+        let mut symbols = interpreter.symbols().clone();
+        let lower =
+            plot::evaluate_expression_scalar(interpreter, &mut symbols, &args[lower_index])?;
+        let upper =
+            plot::evaluate_expression_scalar(interpreter, &mut symbols, &args[upper_index])?;
+        if lower >= upper {
+            return Err("plot bounds must satisfy lower < upper".to_owned());
+        }
+
+        let expression_latex = LatexRenderer::new(interpreter.symbols()).expression(&args[0]);
+        let series = plot::sample_expression(
+            interpreter,
+            &mut symbols,
+            &args[0],
+            expression_latex,
+            &variable,
+            lower,
+            upper,
+            320,
+        )?;
+        let bounds = plot::auto_y_bounds(std::slice::from_ref(&series), lower, upper);
+        Ok(plot::render_latex_picture(
+            &[series],
+            &PlotBounds::new(lower, upper, bounds.y_min, bounds.y_max),
+            400.0,
+            220.0,
+        ))
+    })())
 }
 
 /// Give result markers mathematical meaning instead of blindly appending an
@@ -670,6 +801,56 @@ mod tests {
             .fragments
             .iter()
             .all(|fragment| fragment.span.line > 0));
+    }
+
+    #[test]
+    fn plot_calls_render_vector_latex_in_display_math_and_blocks() {
+        let source = r#"
+            let x = 99;
+            plot(sin(x), x, -pi, pi);
+            \[
+                plot(x^2, x, -2, 2)
+            \]
+            \{
+                plot(cos(t), t, -pi, pi) =>;
+            \}
+            \[ x => \]
+            print(x);
+        "#;
+        let document = build(source).unwrap();
+        assert_eq!(document.fragments.len(), 4);
+        assert_eq!(document.fragments[0].kind, FragmentKind::DisplayMath);
+        assert!(document.fragments[0].latex.contains(r"\begin{picture}"));
+        assert!(document.fragments[0].latex.contains(r"\qbezier"));
+        assert!(document.fragments[0].latex.contains(r"\color{blue}"));
+        assert!(document.fragments[0].latex.contains(r"\circle*"));
+        assert!(document.fragments[1].latex.contains(r"\begin{picture}"));
+        assert!(document.fragments[2].latex.contains(r"\begin{picture}"));
+        assert!(document.fragments[2].latex.contains("& "));
+        assert!(document.fragments[3].latex.contains("x = 99"));
+        assert!(document.latex().contains(r"\usepackage{xcolor}"));
+        assert!(document.diagnostics.is_empty());
+        assert!(!document.body().contains("plot unavailable"));
+    }
+
+    #[test]
+    fn plot_supports_named_user_functions_and_rejects_bad_bounds() {
+        let document = build(
+            r#"
+                f(t) = 2t + 1;
+                \[ plot(f(t), t, -1, 1) \]
+            "#,
+        )
+        .unwrap();
+        assert!(document.body().contains(r"\begin{picture}"));
+        assert!(document.body().contains(r"\qbezier"));
+
+        let document = build(r#"\[ plot(x, x, 2, 1) \]"#).unwrap();
+        assert_eq!(document.diagnostics.len(), 1);
+        assert!(document.diagnostics[0]
+            .message
+            .contains("plot bounds must satisfy lower < upper"));
+        assert!(document.body().contains("plot unavailable"));
     }
 
     #[test]

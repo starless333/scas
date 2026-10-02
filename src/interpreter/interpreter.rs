@@ -1,6 +1,7 @@
 use crate::ast::assign_op::AssignOp;
 use crate::ast::binary_op::BinaryOp;
 use crate::ast::expr::{Expr, ExprKind};
+use crate::ast::span::SourceSpan;
 use crate::ast::statement::FunctionBody;
 use crate::ast::statement::{Statement, StatementKind};
 use crate::ast::unary_op::UnaryOp;
@@ -8,7 +9,7 @@ use crate::interpreter::environment::{Env, Environment};
 use crate::interpreter::flow::{ExecResult, Flow};
 use crate::interpreter::polynomial::Polynomial;
 use crate::interpreter::value::{
-    Builtin, DerivationStep, StepOperation, SymbolicExpr, UserFunction, Value,
+    Builtin, ConstraintFact, DerivationStep, StepOperation, SymbolicExpr, UserFunction, Value,
 };
 use crate::lexer::symbol::{Symbol, SymbolTable};
 use crate::number::{BinaryMathFunction, ComplexNumber, MathConstant, Number, UnaryMathFunction};
@@ -26,6 +27,65 @@ use std::rc::Rc;
 
 type Matrix = Vec<Vec<Value>>;
 type Reduction = (Matrix, Vec<DerivationStep>, usize);
+
+/// Replaces every free occurrence of `symbol` in `expression` with
+/// `replacement`, returning `None` when nothing matched.
+fn rewrite_variable(
+    expression: &Rc<SymbolicExpr>,
+    symbol: Symbol,
+    replacement: &Rc<SymbolicExpr>,
+) -> Option<Rc<SymbolicExpr>> {
+    match expression.as_ref() {
+        SymbolicExpr::Variable(found) if *found == symbol => Some(Rc::clone(replacement)),
+        SymbolicExpr::Number(_) | SymbolicExpr::Constant(_) => None,
+        SymbolicExpr::Unary { op, expr } => {
+            let inner = rewrite_variable(expr, symbol, replacement)?;
+            Some(Rc::new(SymbolicExpr::Unary {
+                op: *op,
+                expr: inner,
+            }))
+        }
+        SymbolicExpr::Binary { left, op, right } => {
+            let new_left = rewrite_variable(left, symbol, replacement);
+            let new_right = rewrite_variable(right, symbol, replacement);
+            if new_left.is_none() && new_right.is_none() {
+                return None;
+            }
+            Some(Rc::new(SymbolicExpr::Binary {
+                left: new_left.unwrap_or_else(|| Rc::clone(left)),
+                op: *op,
+                right: new_right.unwrap_or_else(|| Rc::clone(right)),
+            }))
+        }
+        SymbolicExpr::Call { function, args } => {
+            let rewritten = args
+                .iter()
+                .map(|argument| rewrite_variable(argument, symbol, replacement))
+                .collect::<Option<Vec<_>>>()?;
+            Some(Rc::new(SymbolicExpr::Call {
+                function: *function,
+                args: rewritten,
+            }))
+        }
+        SymbolicExpr::Variable(_) => None,
+    }
+}
+
+/// Whether a symbolic expression is even or odd in a variable, used for the
+/// definite-integral symmetry shortcuts (`∫_{-a}^{a}`).
+enum Parity {
+    Even,
+    Odd,
+}
+
+/// Greatest polynomial degree `integrate_by_parts` will expand. The tabular
+/// rule runs one integration step per degree, so this bounds the rewrite:
+/// larger products stay unevaluated instead of exploding.
+const MAX_BY_PARTS_DEGREE: u32 = 8;
+
+/// Cap on the number of monomial terms `polynomial_terms` will expand a
+/// product to before giving up on the by-parts rule.
+const MAX_POLYNOMIAL_TERMS: usize = 16;
 
 pub struct Interpreter<W: Write> {
     globals: Env,
@@ -46,6 +106,11 @@ pub struct Interpreter<W: Write> {
     negative_symbols: RefCell<HashSet<Symbol>>,
     integer_symbols: RefCell<HashSet<Symbol>>,
     real_symbols: RefCell<HashSet<Symbol>>,
+    /// Facts collected from `assume(constraint)` calls, such as `x == 3`,
+    /// `x > 0 and x < 10`, or `x != 0`. They generalize the per-variable
+    /// assumption sets: equality facts substitute directly, inequality
+    /// facts sharpen the range predicates the simplifier already consults.
+    constraints: RefCell<Vec<ConstraintFact>>,
 }
 
 impl<W: Write> Interpreter<W> {
@@ -69,6 +134,7 @@ impl<W: Write> Interpreter<W> {
             negative_symbols: RefCell::new(HashSet::new()),
             integer_symbols: RefCell::new(HashSet::new()),
             real_symbols: RefCell::new(HashSet::new()),
+            constraints: RefCell::new(Vec::new()),
         };
         interpreter.install_standard_library();
         interpreter
@@ -186,6 +252,28 @@ impl<W: Write> Interpreter<W> {
         self.install_standard_library();
     }
 
+    /// Binds `name` in the global scope, returning the previously held value
+    /// so it can be restored. Plotting uses this to drive the independent
+    /// variable without disturbing session definitions.
+    pub fn bind_global(&mut self, name: &str, value: Value) -> Option<Value> {
+        let symbol = self.symbols.intern(name);
+        let previous = Environment::remove(&self.globals, symbol);
+        self.globals.borrow_mut().define(symbol, value);
+        previous
+    }
+
+    /// Restores a binding displaced by `bind_global`. `previous` of `None`
+    /// removes the name entirely; `Some(value)` reinstates it.
+    pub fn restore_global(&mut self, name: &str, previous: Option<Value>) {
+        let symbol = self.symbols.intern(name);
+        match previous {
+            Some(value) => self.globals.borrow_mut().define(symbol, value),
+            None => {
+                Environment::remove(&self.globals, symbol);
+            }
+        }
+    }
+
     /// Sets the significant-digit precision used by operations whose
     /// decimal expansion is infinite (division and negative powers).
     pub fn set_decimal_precision(&mut self, precision: NonZeroU64) -> Result<(), RuntimeError> {
@@ -217,6 +305,13 @@ impl<W: Write> Interpreter<W> {
         Ok(precision)
     }
 
+    /// Looks up the current global binding for `name`. Plotting uses this to
+    /// inline user functions and session constants into compiled samplers.
+    pub fn global_value(&self, name: &str) -> Option<Value> {
+        let symbol = self.symbols.get(name)?;
+        Environment::get(&self.globals, symbol)
+    }
+
     pub fn definition_names(&self) -> Vec<&str> {
         let mut names = Environment::local_names(&self.globals)
             .into_iter()
@@ -237,10 +332,16 @@ impl<W: Write> Interpreter<W> {
     }
 
     /// Evaluate one expression in the persistent top-level environment.
+    /// Equality facts from `assume(x == v)` are substituted first, so
+    /// constrained variables behave as if defined to their bound value.
     pub fn evaluate_expression(&mut self, expression: &Expr) -> Result<Value, RuntimeError> {
         let env = Rc::clone(&self.globals);
         self.current_span = Some(expression.span);
-        self.evaluate(&env, expression)
+        let effective = match self.substitute_expression_constraints(expression) {
+            Some(substituted) => substituted,
+            None => expression.clone(),
+        };
+        self.evaluate(&env, &effective)
             .map_err(|flow| self.describe_top_level(flow))
     }
 
@@ -510,8 +611,17 @@ impl<W: Write> Interpreter<W> {
             ExprKind::Nil => Ok(Value::Nil),
             ExprKind::Number(text) => self.parse_number(text),
             ExprKind::String(s) => Ok(Value::Str(s.clone())),
-            ExprKind::Variable(sym) => Ok(Environment::get(env, *sym)
-                .unwrap_or_else(|| Value::Symbolic(Rc::new(SymbolicExpr::Variable(*sym))))),
+            ExprKind::Variable(sym) => {
+                if let Some(value) = Environment::get(env, *sym) {
+                    return Ok(value);
+                }
+                // An equality fact from `assume(x == v)` acts as a
+                // definition for symbolic reads.
+                if let Some(definition) = self.equality_fact_for(*sym) {
+                    return Ok(Self::symbolic_value(definition));
+                }
+                Ok(Value::Symbolic(Rc::new(SymbolicExpr::Variable(*sym))))
+            }
             ExprKind::Group(inner) => self.evaluate(env, inner),
 
             ExprKind::Array(elements) => {
@@ -555,10 +665,27 @@ impl<W: Write> Interpreter<W> {
                 // the left side didn't already decide the result.
                 BinaryOp::And => {
                     let l = self.evaluate(env, left)?;
-                    if !l.is_truthy() {
-                        return Ok(l);
+                    // A symbolic operand keeps the conjunction intact so
+                    // `assume(x > 0 and x < 10)` reaches the collector.
+                    // Symbolic values are truthy, so this must be checked
+                    // before the short-circuit below.
+                    if matches!(l, Value::Symbolic(_)) {
+                        let r = self.evaluate(env, right)?;
+                        if matches!(r, Value::Symbolic(_)) {
+                            let left_tree = self.value_to_symbolic(l)?;
+                            let right_tree = self.value_to_symbolic(r)?;
+                            return Ok(Value::Symbolic(
+                                self.symbolic_conjunction(&left_tree, &right_tree),
+                            ));
+                        }
+                        // `true` is the identity of `and`; `false`
+                        // annihilates the undecided left side.
+                        return Ok(if r.is_truthy() { l } else { r });
                     }
-                    self.evaluate(env, right)
+                    if l.is_truthy() {
+                        return self.evaluate(env, right);
+                    }
+                    Ok(l)
                 }
                 BinaryOp::Or => {
                     let l = self.evaluate(env, left)?;
@@ -661,6 +788,8 @@ impl<W: Write> Interpreter<W> {
             | Builtin::PolynomialDivRem => (3, 3),
             Builtin::Gradient | Builtin::Jacobian | Builtin::Hessian => (2, 2),
             Builtin::DefiniteIntegral => (4, 4),
+            Builtin::Assume => (1, 1),
+            Builtin::ForgetAssumptions => (0, 0),
             _ => (1, 1),
         };
         if args.len() < minimum || args.len() > maximum {
@@ -759,6 +888,10 @@ impl<W: Write> Interpreter<W> {
             return Ok(result
                 .map(Self::symbolic_value)
                 .unwrap_or(Value::Symbolic(expression)));
+        }
+
+        if matches!(builtin, Builtin::Assume | Builtin::ForgetAssumptions) {
+            return self.call_constraint_tool(builtin, args);
         }
 
         if matches!(
@@ -1599,16 +1732,9 @@ impl<W: Write> Interpreter<W> {
                 };
                 let lower = self.value_to_symbolic(args[2].clone())?;
                 let upper = self.value_to_symbolic(args[3].clone())?;
-                let primitive = self.integral_symbolic(&expression, *variable);
-                let at_upper = Self::substitute_symbolic(&primitive, *variable, &upper);
-                let at_lower = Self::substitute_symbolic(&primitive, *variable, &lower);
-                let difference = Self::symbolic_binary_raw(at_upper, BinaryOp::Sub, at_lower);
-                let simplified = self.simplify_symbolic_tree(&difference)?;
-                let simplified = self.simplify_symbolic_tree(&simplified)?;
-                let simplified = Polynomial::from_expression(&simplified, &self.symbols)
-                    .map(|polynomial| polynomial.expanded_expression())
-                    .unwrap_or(simplified);
-                Ok(Self::symbolic_value(simplified))
+                let result =
+                    self.definite_integral_symbolic(&expression, *variable, &lower, &upper)?;
+                Ok(Self::symbolic_value(result))
             }
             _ => unreachable!("calculus tool dispatched separately"),
         }
@@ -2772,6 +2898,31 @@ impl<W: Write> Interpreter<W> {
         }
         if let Some((function, argument)) = Self::squared_unary_call(expression) {
             if let Some(coefficient) = Self::linear_coefficient(&argument, variable) {
+                // Double-angle halves: ∫ sin(a*x + b)^2 dx =
+                // x/2 - sin(2*(a*x + b))/(4*a), and cos squares are the
+                // same with a plus.
+                if matches!(function, Builtin::Sin | Builtin::Cos) {
+                    let doubled = Self::symbolic_binary_raw(
+                        Self::symbolic_integer(2),
+                        Mul,
+                        Rc::clone(&argument),
+                    );
+                    let correction = Self::symbolic_binary_raw(
+                        Self::symbolic_call(Builtin::Sin, doubled),
+                        Div,
+                        Self::symbolic_binary_raw(Self::symbolic_integer(4), Mul, coefficient),
+                    );
+                    let half_variable = Self::symbolic_binary_raw(
+                        Rc::new(SymbolicExpr::Variable(variable)),
+                        Div,
+                        Self::symbolic_integer(2),
+                    );
+                    return Self::symbolic_binary_raw(
+                        half_variable,
+                        if function == Builtin::Sin { Sub } else { Add },
+                        correction,
+                    );
+                }
                 let primitive = match function {
                     Builtin::Sec => Some(Self::symbolic_call(Builtin::Tan, argument)),
                     Builtin::Csc => Some(Rc::new(SymbolicExpr::Unary {
@@ -2894,14 +3045,36 @@ impl<W: Write> Interpreter<W> {
                 left,
                 op: Div,
                 right,
-            } if matches!(left.as_ref(), SymbolicExpr::Number(number) if number.is_one())
+            } if !Self::contains_variable(left, variable)
                 && Self::linear_coefficient(right, variable).is_some() =>
             {
-                Self::symbolic_binary_raw(
+                // ∫ c / (a*x + b) dx = c * ln(a*x + b) / a
+                let logarithm = Self::symbolic_binary_raw(
+                    Rc::clone(left),
+                    Mul,
                     Self::symbolic_call(Builtin::Ln, Rc::clone(right)),
+                );
+                Self::symbolic_binary_raw(
+                    logarithm,
                     Div,
                     Self::linear_coefficient(right, variable).expect("guarded above"),
                 )
+            }
+            // Remaining rational forms: the tangent substitution for
+            // `c / (a*x^2 + b)` first, then proper rational functions with
+            // distinct rational linear factors integrate through partial
+            // fractions (`apart` output feeds the arms above term by term).
+            // Anything neither strategy handles stays unevaluated.
+            SymbolicExpr::Binary { op: Div, .. } => {
+                if let Some(primitive) = self.integrate_quadratic_reciprocal(expression, variable) {
+                    primitive
+                } else if let Some(decomposed) =
+                    Polynomial::partial_fraction_expression(expression, &self.symbols)
+                {
+                    self.integral_symbolic(&decomposed, variable)
+                } else {
+                    self.unevaluated_calculus(Builtin::Integral, expression, variable)
+                }
             }
             SymbolicExpr::Call { function, args }
                 if args.len() == 1
@@ -3122,8 +3295,577 @@ impl<W: Write> Interpreter<W> {
                     Self::linear_coefficient(&inner, variable).expect("guarded above"),
                 )
             }
+            // Products of a polynomial and a kernel call (`x*exp(x)`,
+            // `x^2*sin(x)`, ...) integrate by parts; anything else that
+            // reached this arm has no rule and stays unevaluated.
+            SymbolicExpr::Binary { op: Mul, .. } => self
+                .integrate_by_parts(expression, variable)
+                .unwrap_or_else(|| {
+                    self.unevaluated_calculus(Builtin::Integral, expression, variable)
+                }),
             _ => self.unevaluated_calculus(Builtin::Integral, expression, variable),
         }
+    }
+
+    /// Integrates `polynomial * kernel(linear)` products with the tabular
+    /// by-parts rule: `∫ p·g = Σ_j (−1)^j · p^(j) · V_j` where `V_j` is the
+    /// `j`-th antiderivative of `g`. Kernels are restricted to `exp`, `sin`,
+    /// `cos`, `sinh`, and `cosh` of a linear argument — the families closed
+    /// under repeated integration — so every `V_j` stays inside the rule set
+    /// and the expansion terminates after one step per polynomial degree.
+    /// Returns `None` (leaving the integral unevaluated) for any other shape.
+    fn integrate_by_parts(
+        &self,
+        expression: &Rc<SymbolicExpr>,
+        variable: Symbol,
+    ) -> Option<Rc<SymbolicExpr>> {
+        use BinaryOp::{Add, Mul};
+        let mut factors = Vec::new();
+        Self::mul_factors(expression, &mut factors);
+        let mut constant = Self::symbolic_integer(1);
+        let mut polynomial = vec![(Self::symbolic_integer(1), 0_u32)];
+        let mut kernel = None;
+        for factor in factors {
+            if !Self::contains_variable(&factor, variable) {
+                constant = Self::symbolic_binary_raw(constant, Mul, factor);
+                continue;
+            }
+            match factor.as_ref() {
+                SymbolicExpr::Call { function, args }
+                    if args.len() == 1
+                        && matches!(
+                            function,
+                            Builtin::Exp
+                                | Builtin::Sin
+                                | Builtin::Cos
+                                | Builtin::Sinh
+                                | Builtin::Cosh
+                        )
+                        && Self::linear_coefficient(&args[0], variable).is_some() =>
+                {
+                    if kernel.is_some() {
+                        return None;
+                    }
+                    kernel = Some(Rc::clone(&factor));
+                }
+                _ => {
+                    let terms = Self::polynomial_terms(&factor, variable)?;
+                    polynomial = Self::polynomial_product(&polynomial, &terms)?;
+                }
+            }
+        }
+        let kernel = kernel?;
+        let degree = polynomial.iter().map(|(_, power)| *power).max()?;
+        if degree == 0 || degree > MAX_BY_PARTS_DEGREE {
+            return None;
+        }
+        // Successive antiderivatives of the kernel; each stays closed form
+        // for the five kernel families, so no check is strictly needed, but
+        // bail out rather than build on an unevaluated integral if that ever
+        // changes.
+        let mut antiderivatives = Vec::with_capacity(degree as usize + 1);
+        let mut current = Rc::clone(&kernel);
+        for _ in 0..=degree {
+            current = self.integral_symbolic(&current, variable);
+            if !Self::is_closed_antiderivative(&current) {
+                return None;
+            }
+            antiderivatives.push(Rc::clone(&current));
+        }
+        let mut total = None;
+        for (coefficient, power) in polynomial {
+            let mut sum = None;
+            for step in 0..=power {
+                // d^j/dx^j [c*x^power] up to sign: falling factorial in the
+                // exponent, and x^(power - j) after differentiation.
+                let scale = (0..step).fold(1_i64, |acc, k| acc * i64::from(power - k))
+                    * if step % 2 == 1 { -1 } else { 1 };
+                let mut term = Rc::clone(&coefficient);
+                let remaining = power - step;
+                if remaining > 0 {
+                    let variable_expression = Rc::new(SymbolicExpr::Variable(variable));
+                    let x_power = if remaining == 1 {
+                        variable_expression
+                    } else {
+                        Self::symbolic_binary_raw(
+                            variable_expression,
+                            BinaryOp::Pow,
+                            Self::symbolic_integer(i64::from(remaining)),
+                        )
+                    };
+                    term = Self::symbolic_binary_raw(term, Mul, x_power);
+                }
+                term = Self::symbolic_binary_raw(
+                    term,
+                    Mul,
+                    Rc::clone(&antiderivatives[step as usize]),
+                );
+                if scale != 1 {
+                    term = Self::symbolic_binary_raw(Self::symbolic_integer(scale), Mul, term);
+                }
+                sum = Some(match sum {
+                    Some(sum) => Self::symbolic_binary_raw(sum, Add, term),
+                    None => term,
+                });
+            }
+            let Some(sum) = sum else {
+                continue;
+            };
+            let sum = Self::symbolic_binary_raw(Rc::clone(&constant), Mul, sum);
+            total = Some(match total {
+                Some(total) => Self::symbolic_binary_raw(total, Add, sum),
+                None => sum,
+            });
+        }
+        total
+    }
+
+    /// Integrates `c / (a*x^2 + b)` for positive rational `a` and `b` via
+    /// the tangent substitution `x = sqrt(b/a) * tan(t)`:
+    /// `∫ c/(a*x^2 + b) dx = c * atan(x / sqrt(b/a)) / (a * sqrt(b/a))`.
+    fn integrate_quadratic_reciprocal(
+        &self,
+        expression: &Rc<SymbolicExpr>,
+        variable: Symbol,
+    ) -> Option<Rc<SymbolicExpr>> {
+        use BinaryOp::{Div, Mul};
+        let SymbolicExpr::Binary {
+            left,
+            op: BinaryOp::Div,
+            right,
+        } = expression.as_ref()
+        else {
+            return None;
+        };
+        if Self::contains_variable(left, variable) {
+            return None;
+        }
+        let mut quadratic = None;
+        let mut constant = None;
+        for (coefficient, power) in Self::polynomial_terms(right, variable)? {
+            let value = Self::positive_rational_number(&coefficient)?;
+            match power {
+                2 if quadratic.is_none() => quadratic = Some(value),
+                0 if constant.is_none() => constant = Some(value),
+                _ => return None,
+            }
+        }
+        let (quadratic, constant) = (quadratic?, constant?);
+        let ratio = constant.to_rational() / quadratic.to_rational();
+        let root = Self::symbolic_call(
+            Builtin::Sqrt,
+            Rc::new(SymbolicExpr::Number(Number::from_rational(ratio))),
+        );
+        let angle = Self::symbolic_binary_raw(
+            Rc::new(SymbolicExpr::Variable(variable)),
+            Div,
+            Rc::clone(&root),
+        );
+        let numerator = Self::symbolic_binary_raw(
+            Rc::clone(left),
+            Mul,
+            Self::symbolic_call(Builtin::Atan, angle),
+        );
+        let denominator =
+            Self::symbolic_binary_raw(Rc::new(SymbolicExpr::Number(quadratic)), Mul, root);
+        Some(Self::symbolic_binary_raw(numerator, Div, denominator))
+    }
+
+    /// The exact positive rational value of a numeric coefficient, if any.
+    fn positive_rational_number(expression: &Rc<SymbolicExpr>) -> Option<Number> {
+        let value = Self::exact_rational_value(expression)?;
+        (value.to_rational().numer() > &BigInt::from(0)).then_some(value)
+    }
+
+    /// The exact rational value of a numeric-only expression — products,
+    /// quotients, and negations of rational literals as produced by the
+    /// polynomial decompositions — if it has one.
+    fn exact_rational_value(expression: &Rc<SymbolicExpr>) -> Option<Number> {
+        use BinaryOp::{Div, Mul};
+        match expression.as_ref() {
+            SymbolicExpr::Number(number) if !matches!(number, Number::Complex(_)) => {
+                Some(number.clone())
+            }
+            SymbolicExpr::Unary {
+                op: UnaryOp::Neg,
+                expr,
+            } => Some(Number::from_rational(
+                -Self::exact_rational_value(expr)?.to_rational(),
+            )),
+            SymbolicExpr::Binary {
+                left,
+                op: Mul,
+                right,
+            } => Some(Number::from_rational(
+                Self::exact_rational_value(left)?.to_rational()
+                    * Self::exact_rational_value(right)?.to_rational(),
+            )),
+            SymbolicExpr::Binary {
+                left,
+                op: Div,
+                right,
+            } => {
+                let numerator = Self::exact_rational_value(left)?.to_rational();
+                let denominator = Self::exact_rational_value(right)?.to_rational();
+                if denominator.numer() == &BigInt::from(0) {
+                    return None;
+                }
+                Some(Number::from_rational(numerator / denominator))
+            }
+            _ => None,
+        }
+    }
+
+    /// Flattens a raw product tree into its factors.
+    fn mul_factors(expression: &Rc<SymbolicExpr>, factors: &mut Vec<Rc<SymbolicExpr>>) {
+        match expression.as_ref() {
+            SymbolicExpr::Binary {
+                left,
+                op: BinaryOp::Mul,
+                right,
+            } => {
+                Self::mul_factors(left, factors);
+                Self::mul_factors(right, factors);
+            }
+            _ => factors.push(Rc::clone(expression)),
+        }
+    }
+
+    /// Decomposes `expression` into monomial terms `(coefficient, power)` in
+    /// `variable` with coefficients free of `variable`, expanding products
+    /// and small positive powers. `None` when the expression is not a
+    /// polynomial in `variable` or the expansion exceeds the term cap.
+    fn polynomial_terms(
+        expression: &Rc<SymbolicExpr>,
+        variable: Symbol,
+    ) -> Option<Vec<(Rc<SymbolicExpr>, u32)>> {
+        use BinaryOp::{Add, Div, Mul, Pow, Sub};
+        if !Self::contains_variable(expression, variable) {
+            return Some(vec![(Rc::clone(expression), 0)]);
+        }
+        match expression.as_ref() {
+            SymbolicExpr::Variable(symbol) if *symbol == variable => {
+                Some(vec![(Self::symbolic_integer(1), 1)])
+            }
+            SymbolicExpr::Unary {
+                op: UnaryOp::Neg,
+                expr,
+            } => {
+                let terms = Self::polynomial_terms(expr, variable)?;
+                Some(
+                    terms
+                        .into_iter()
+                        .map(|(coefficient, power)| {
+                            (
+                                Rc::new(SymbolicExpr::Unary {
+                                    op: UnaryOp::Neg,
+                                    expr: coefficient,
+                                }),
+                                power,
+                            )
+                        })
+                        .collect(),
+                )
+            }
+            SymbolicExpr::Binary {
+                left,
+                op: op @ (Add | Sub),
+                right,
+            } => {
+                let mut terms = Self::polynomial_terms(left, variable)?;
+                let mut right_terms = Self::polynomial_terms(right, variable)?;
+                if *op == Sub {
+                    right_terms = right_terms
+                        .into_iter()
+                        .map(|(coefficient, power)| {
+                            (
+                                Rc::new(SymbolicExpr::Unary {
+                                    op: UnaryOp::Neg,
+                                    expr: coefficient,
+                                }),
+                                power,
+                            )
+                        })
+                        .collect();
+                }
+                terms.append(&mut right_terms);
+                Some(terms)
+            }
+            SymbolicExpr::Binary {
+                left,
+                op: Mul,
+                right,
+            } => Self::polynomial_product(
+                &Self::polynomial_terms(left, variable)?,
+                &Self::polynomial_terms(right, variable)?,
+            ),
+            SymbolicExpr::Binary {
+                left,
+                op: Div,
+                right,
+            } if !Self::contains_variable(right, variable) => {
+                let terms = Self::polynomial_terms(left, variable)?;
+                Some(
+                    terms
+                        .into_iter()
+                        .map(|(coefficient, power)| {
+                            (
+                                Self::symbolic_binary_raw(coefficient, Div, Rc::clone(right)),
+                                power,
+                            )
+                        })
+                        .collect(),
+                )
+            }
+            SymbolicExpr::Binary {
+                left,
+                op: Pow,
+                right,
+            } => {
+                let exponent = match right.as_ref() {
+                    SymbolicExpr::Number(Number::Integer(value)) => value.to_u32()?,
+                    _ => return None,
+                };
+                if exponent > MAX_BY_PARTS_DEGREE {
+                    return None;
+                }
+                let base_terms = Self::polynomial_terms(left, variable)?;
+                let mut result = vec![(Self::symbolic_integer(1), 0_u32)];
+                for _ in 0..exponent {
+                    result = Self::polynomial_product(&result, &base_terms)?;
+                }
+                Some(result)
+            }
+            _ => None,
+        }
+    }
+
+    /// Multiplies two monomial-term lists, keeping the expansion bounded.
+    fn polynomial_product(
+        left: &[(Rc<SymbolicExpr>, u32)],
+        right: &[(Rc<SymbolicExpr>, u32)],
+    ) -> Option<Vec<(Rc<SymbolicExpr>, u32)>> {
+        let mut product = Vec::new();
+        for (left_coefficient, left_power) in left {
+            for (right_coefficient, right_power) in right {
+                let power = left_power + right_power;
+                if power > MAX_BY_PARTS_DEGREE {
+                    return None;
+                }
+                product.push((
+                    Self::symbolic_binary_raw(
+                        Rc::clone(left_coefficient),
+                        BinaryOp::Mul,
+                        Rc::clone(right_coefficient),
+                    ),
+                    power,
+                ));
+                if product.len() > MAX_POLYNOMIAL_TERMS {
+                    return None;
+                }
+            }
+        }
+        Some(product)
+    }
+
+    /// Whether `expression` is a closed-form antiderivative — that is, it
+    /// contains no unevaluated integral left to substitute into.
+    fn is_closed_antiderivative(expression: &Rc<SymbolicExpr>) -> bool {
+        match expression.as_ref() {
+            SymbolicExpr::Call {
+                function: Builtin::Integral | Builtin::DefiniteIntegral,
+                ..
+            } => false,
+            SymbolicExpr::Unary { expr, .. } => Self::is_closed_antiderivative(expr),
+            SymbolicExpr::Binary { left, right, .. } => {
+                Self::is_closed_antiderivative(left) && Self::is_closed_antiderivative(right)
+            }
+            SymbolicExpr::Call { args, .. } => args
+                .iter()
+                .all(|argument| Self::is_closed_antiderivative(argument)),
+            _ => true,
+        }
+    }
+
+    /// Classifies `expression` as even or odd in `variable` for the
+    /// definite-integral symmetry shortcuts. `None` when parity is unknown.
+    fn expression_parity(expression: &Rc<SymbolicExpr>, variable: Symbol) -> Option<Parity> {
+        use BinaryOp::{Add, Div, Mul, Sub};
+        if !Self::contains_variable(expression, variable) {
+            return Some(Parity::Even);
+        }
+        match expression.as_ref() {
+            SymbolicExpr::Variable(symbol) if *symbol == variable => Some(Parity::Odd),
+            SymbolicExpr::Unary {
+                op: UnaryOp::Neg,
+                expr,
+            } => Self::expression_parity(expr, variable),
+            SymbolicExpr::Binary {
+                left,
+                op: Add | Sub,
+                right,
+            } => {
+                let left = Self::expression_parity(left, variable)?;
+                let right = Self::expression_parity(right, variable)?;
+                // Only same-parity sums stay classified; odd + even is
+                // neither even nor odd.
+                match (left, right) {
+                    (Parity::Even, Parity::Even) => Some(Parity::Even),
+                    (Parity::Odd, Parity::Odd) => Some(Parity::Odd),
+                    _ => None,
+                }
+            }
+            SymbolicExpr::Binary {
+                left,
+                op: Mul | Div,
+                right,
+            } => {
+                let left = Self::expression_parity(left, variable)?;
+                let right = Self::expression_parity(right, variable)?;
+                // Parity multiplies: even*even and odd*odd are even, one
+                // factor of each is odd. Division behaves the same because
+                // 1/f has the parity of f.
+                match (left, right) {
+                    (Parity::Even, Parity::Even) => Some(Parity::Even),
+                    (Parity::Odd, Parity::Odd) => Some(Parity::Even),
+                    _ => Some(Parity::Odd),
+                }
+            }
+            SymbolicExpr::Binary {
+                left,
+                op: BinaryOp::Pow,
+                right,
+            } => match Self::expression_parity(left, variable)? {
+                // An even base stays even under any power.
+                Parity::Even => Some(Parity::Even),
+                Parity::Odd => match right.as_ref() {
+                    SymbolicExpr::Number(Number::Integer(exponent)) => {
+                        // Odd base: even powers are even, odd powers odd.
+                        Some(if exponent.bit(0) {
+                            Parity::Odd
+                        } else {
+                            Parity::Even
+                        })
+                    }
+                    _ => None,
+                },
+            },
+            SymbolicExpr::Call { function, args } if args.len() == 1 => {
+                match Self::expression_parity(&args[0], variable)? {
+                    // Any function composed with an even inner expression is
+                    // even; with an odd inner one it inherits the function's
+                    // own parity.
+                    Parity::Even => Some(Parity::Even),
+                    Parity::Odd => match function {
+                        Builtin::Sin
+                        | Builtin::Tan
+                        | Builtin::Cot
+                        | Builtin::Csc
+                        | Builtin::Asin
+                        | Builtin::Atan
+                        | Builtin::Sinh
+                        | Builtin::Tanh
+                        | Builtin::Asinh
+                        | Builtin::Atanh
+                        | Builtin::Erf
+                        | Builtin::Cbrt
+                        | Builtin::Sign => Some(Parity::Odd),
+                        Builtin::Cos | Builtin::Sec | Builtin::Cosh | Builtin::Abs => {
+                            Some(Parity::Even)
+                        }
+                        _ => None,
+                    },
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Applies linearity, odd/even symmetry, and the fundamental theorem of
+    /// calculus to `∫_{lower}^{upper} expression dx`. Stays unevaluated when
+    /// the rule set has no closed primitive — substituting limits into an
+    /// unevaluated integral would corrupt it.
+    fn definite_integral_symbolic(
+        &self,
+        expression: &Rc<SymbolicExpr>,
+        variable: Symbol,
+        lower: &Rc<SymbolicExpr>,
+        upper: &Rc<SymbolicExpr>,
+    ) -> ExecResult<Rc<SymbolicExpr>> {
+        use BinaryOp::{Add, Mul, Sub};
+        match expression.as_ref() {
+            SymbolicExpr::Unary {
+                op: UnaryOp::Neg,
+                expr,
+            } => {
+                let inner = self.definite_integral_symbolic(expr, variable, lower, upper)?;
+                self.apply_unary(UnaryOp::Neg, Self::symbolic_value(inner))
+                    .and_then(|value| self.value_to_symbolic(value))
+            }
+            SymbolicExpr::Binary {
+                left,
+                op: op @ (Add | Sub),
+                right,
+            } => {
+                let left = self.definite_integral_symbolic(left, variable, lower, upper)?;
+                let right = self.definite_integral_symbolic(right, variable, lower, upper)?;
+                self.symbolic_binary(*op, Self::symbolic_value(left), Self::symbolic_value(right))
+                    .and_then(|value| self.value_to_symbolic(value))
+            }
+            _ => {
+                if self.limits_are_negations(lower, upper) {
+                    match Self::expression_parity(expression, variable) {
+                        // ∫_{-a}^{a} of an odd integrand vanishes, even
+                        // without a closed antiderivative.
+                        Some(Parity::Odd) => return Ok(Self::symbolic_integer(0)),
+                        Some(Parity::Even) => {
+                            let zero = Self::symbolic_integer(0);
+                            let half = self
+                                .definite_integral_symbolic(expression, variable, &zero, upper)?;
+                            return self
+                                .symbolic_binary(
+                                    Mul,
+                                    Self::symbolic_value(Self::symbolic_integer(2)),
+                                    Self::symbolic_value(half),
+                                )
+                                .and_then(|value| self.value_to_symbolic(value));
+                        }
+                        None => {}
+                    }
+                }
+                let primitive = self.integral_symbolic(expression, variable);
+                if !Self::is_closed_antiderivative(&primitive) {
+                    return Ok(Rc::new(SymbolicExpr::Call {
+                        function: Builtin::DefiniteIntegral,
+                        args: vec![
+                            Rc::clone(expression),
+                            Rc::new(SymbolicExpr::Variable(variable)),
+                            Rc::clone(lower),
+                            Rc::clone(upper),
+                        ],
+                    }));
+                }
+                let at_upper = Self::substitute_symbolic(&primitive, variable, upper);
+                let at_lower = Self::substitute_symbolic(&primitive, variable, lower);
+                let difference = Self::symbolic_binary_raw(at_upper, Sub, at_lower);
+                let simplified = self.simplify_symbolic_tree(&difference)?;
+                let simplified = self.simplify_symbolic_tree(&simplified)?;
+                let simplified = Polynomial::from_expression(&simplified, &self.symbols)
+                    .map(|polynomial| polynomial.expanded_expression())
+                    .unwrap_or(simplified);
+                Ok(simplified)
+            }
+        }
+    }
+
+    /// Whether `lower == -upper` after simplification: the symmetric interval
+    /// case that lets parity shortcuts fire.
+    fn limits_are_negations(&self, lower: &Rc<SymbolicExpr>, upper: &Rc<SymbolicExpr>) -> bool {
+        let sum = Self::symbolic_binary_raw(Rc::clone(lower), BinaryOp::Add, Rc::clone(upper));
+        matches!(
+            self.simplify_symbolic_tree(&sum),
+            Ok(sum) if matches!(sum.as_ref(), SymbolicExpr::Number(number) if number.is_zero())
+        )
     }
 
     /// Return the constant derivative of an affine expression, or `None` when
@@ -3383,6 +4125,82 @@ impl<W: Write> Interpreter<W> {
         let [argument] = args else {
             return Ok(None);
         };
+        // Exact numeric arguments fold to closed forms so simplification can
+        // finish arithmetic like `sin(0) -> 0` or `ln(1) -> 0` inside larger
+        // expressions. Only provably exact results fold; everything else
+        // (like `sin(1)`) stays symbolic.
+        if let SymbolicExpr::Number(number) = argument.as_ref() {
+            let folded = if number.is_zero() {
+                match builtin {
+                    Builtin::Sin
+                    | Builtin::Tan
+                    | Builtin::Sinh
+                    | Builtin::Tanh
+                    | Builtin::Asin
+                    | Builtin::Atan
+                    | Builtin::Asinh
+                    | Builtin::Atanh
+                    | Builtin::Erf
+                    | Builtin::Floor
+                    | Builtin::Ceil
+                    | Builtin::Trunc
+                    | Builtin::Abs
+                    | Builtin::Sign
+                    | Builtin::Sqrt
+                    | Builtin::Cbrt => Some(Self::symbolic_value(Self::symbolic_integer(0))),
+                    Builtin::Cos | Builtin::Cosh | Builtin::Exp | Builtin::Sec => {
+                        Some(Self::symbolic_value(Self::symbolic_integer(1)))
+                    }
+                    _ => None,
+                }
+            } else if number.is_one() {
+                match builtin {
+                    Builtin::Ln | Builtin::Log10 | Builtin::Log2 => {
+                        Some(Self::symbolic_value(Self::symbolic_integer(0)))
+                    }
+                    Builtin::Floor
+                    | Builtin::Ceil
+                    | Builtin::Trunc
+                    | Builtin::Abs
+                    | Builtin::Sign
+                    | Builtin::Sqrt
+                    | Builtin::Cbrt => Some(Self::symbolic_value(Self::symbolic_integer(1))),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            if let Some(folded) = folded {
+                return Ok(Some(folded));
+            }
+            // Perfect rational powers fold as well: `sqrt(4) -> 2`,
+            // `cbrt(-8) -> -2`.
+            if matches!(builtin, Builtin::Sqrt | Builtin::Cbrt)
+                && !matches!(number, Number::Complex(_))
+            {
+                let rational = number.to_rational();
+                let (numerator, denominator) = (rational.numer(), rational.denom());
+                let odd = builtin == Builtin::Cbrt;
+                let negative = numerator < &BigInt::from(0);
+                if odd || !negative {
+                    let magnitude = numerator.abs();
+                    let (degree, numerator_root, denominator_root) = if odd {
+                        (3_u32, magnitude.cbrt(), denominator.cbrt())
+                    } else {
+                        (2_u32, magnitude.sqrt(), denominator.sqrt())
+                    };
+                    if numerator_root.clone().pow(degree) == magnitude
+                        && denominator_root.clone().pow(degree) == *denominator
+                    {
+                        let root = BigRational::new(numerator_root, denominator_root);
+                        let root = if negative { -root } else { root };
+                        return Ok(Some(Self::symbolic_value(Rc::new(SymbolicExpr::Number(
+                            Number::from_rational(root),
+                        )))));
+                    }
+                }
+            }
+        }
         if matches!(
             builtin,
             Builtin::Sin | Builtin::Cos | Builtin::Tan | Builtin::Sec | Builtin::Csc | Builtin::Cot
@@ -3661,6 +4479,460 @@ impl<W: Write> Interpreter<W> {
         }
     }
 
+    // ---- general constraints (`assume`) ---------------------------------
+
+    /// Handles `assume(constraint)` and `forget_assumptions()`.
+    /// The constraint argument arrives already evaluated, so comparisons
+    /// over purely numeric operands return `true`/`false` before this
+    /// method ever runs; everything that reaches here still contains a
+    /// symbolic operand and is collected as a fact instead of answering.
+    fn call_constraint_tool(&self, builtin: Builtin, args: Vec<Value>) -> ExecResult<Value> {
+        if builtin == Builtin::ForgetAssumptions {
+            self.constraints.borrow_mut().clear();
+            self.nonzero_symbols.borrow_mut().clear();
+            self.nonnegative_symbols.borrow_mut().clear();
+            self.positive_symbols.borrow_mut().clear();
+            self.negative_symbols.borrow_mut().clear();
+            self.integer_symbols.borrow_mut().clear();
+            self.real_symbols.borrow_mut().clear();
+            return Ok(Value::Nil);
+        }
+        let constraint = args.into_iter().next().expect("arity checked");
+        // A constraint whose operands were both resolved through equality
+        // facts folds into a concrete boolean, as in `assume(x == 2)`
+        // followed by `assume(x < 10)`, which evaluates `2 < 10`. That is
+        // a consistency check rather than a new fact: `true` is already
+        // implied by the recorded assumptions while `false` contradicts
+        // them. Without recorded facts a boolean cannot be a folded
+        // constraint, so literal booleans keep failing type checks.
+        if let Value::Bool(decided) = constraint {
+            if self.constraints.borrow().is_empty() {
+                return Err(self.error(format!(
+                    "assume expects a constraint such as x == 3 or x > 0 and x < 10, got {}",
+                    constraint.type_name()
+                )));
+            }
+            if decided {
+                return Ok(Value::Bool(true));
+            }
+            return Err(self.error("assume contradicts the current assumptions"));
+        }
+        let Value::Symbolic(expression) = constraint else {
+            return Err(self.error(format!(
+                "assume expects a constraint such as x == 3 or x > 0 and x < 10, got {}",
+                constraint.type_name()
+            )));
+        };
+        let mut collected = Vec::new();
+        if let Err(message) = self.collect_constraints(&expression, &mut collected) {
+            return Err(self.error(message));
+        }
+        // Detect contradictions before committing any of the new facts.
+        let previous = self.constraints.borrow().clone();
+        let mut facts = previous.clone();
+        facts.extend(collected.iter().cloned());
+        let contradictions = facts.iter().enumerate().any(|(index, fact)| {
+            facts[..index]
+                .iter()
+                .any(|earlier| Self::facts_conflict(fact, earlier))
+        });
+        if contradictions {
+            return Err(self.error("assume contradicts an existing constraint"));
+        }
+        *self.constraints.borrow_mut() = facts;
+        // Mirror inequality facts into the per-variable sets so the existing
+        // range predicates see them.
+        for fact in &collected {
+            self.apply_fact_side_effects(fact);
+        }
+        Ok(Value::Symbolic(expression))
+    }
+
+    /// Flattens `and` combinations into unit facts. `or` and top-level
+    /// boolean variables are not expressible as facts and are rejected.
+    fn collect_constraints(
+        &self,
+        expression: &SymbolicExpr,
+        facts: &mut Vec<ConstraintFact>,
+    ) -> Result<(), String> {
+        match expression {
+            SymbolicExpr::Binary {
+                op: BinaryOp::And,
+                left,
+                right,
+            } => {
+                self.collect_constraints(left, facts)?;
+                self.collect_constraints(right, facts)?;
+                Ok(())
+            }
+            SymbolicExpr::Binary {
+                op:
+                    op @ (BinaryOp::Eq
+                    | BinaryOp::Ne
+                    | BinaryOp::Lt
+                    | BinaryOp::Le
+                    | BinaryOp::Gt
+                    | BinaryOp::Ge),
+                left,
+                right,
+            } => {
+                let (variable, bound, flipped) = match (&**left, &**right) {
+                    (SymbolicExpr::Variable(symbol), _) => (*symbol, right, false),
+                    (_, SymbolicExpr::Variable(symbol)) => (*symbol, left, true),
+                    _ => {
+                        return Err(
+                            "assume comparisons need a plain variable on one side, for example x == 3 or y < x + 1"
+                                .to_owned(),
+                        );
+                    }
+                };
+                let bound = self.substitute_constraints(bound);
+                let op = match (op, flipped) {
+                    (BinaryOp::Lt, true) => BinaryOp::Gt,
+                    (BinaryOp::Le, true) => BinaryOp::Ge,
+                    (BinaryOp::Gt, true) => BinaryOp::Lt,
+                    (BinaryOp::Ge, true) => BinaryOp::Ge,
+                    (op, _) => *op,
+                };
+                // The stored fact always reads `bound op variable`.
+                let op = match op {
+                    BinaryOp::Lt | BinaryOp::Gt => BinaryOp::Lt,
+                    BinaryOp::Le | BinaryOp::Ge => BinaryOp::Le,
+                    other => other,
+                };
+                match op {
+                    BinaryOp::Eq => facts.push(ConstraintFact::Equal {
+                        symbol: variable,
+                        value: bound,
+                    }),
+                    BinaryOp::Ne => facts.push(ConstraintFact::NotEqual {
+                        symbol: variable,
+                        value: bound,
+                    }),
+                    _ => facts.push(ConstraintFact::RealCompare {
+                        symbol: variable,
+                        bound,
+                        op,
+                    }),
+                }
+                Ok(())
+            }
+            SymbolicExpr::Binary {
+                op: BinaryOp::Or,
+                ..
+            } => Err(
+                "assume does not support `or`; list each case as a separate call".to_owned(),
+            ),
+            _ => Err(
+                "assume expects a comparison such as x == 3, x > 0, or an `and` combination of them"
+                    .to_owned(),
+            ),
+        }
+    }
+
+    /// Rewrites an expression with every equality fact applied, so compound
+    /// bounds stay consistent with previously accepted constraints.
+    fn substitute_constraints(&self, expression: &SymbolicExpr) -> Rc<SymbolicExpr> {
+        if self.constraints.borrow().is_empty() {
+            return Rc::new(expression.clone());
+        }
+        let mut current = Rc::new(expression.clone());
+        let mut remaining = self.constraints.borrow().clone();
+        loop {
+            let mut changed = false;
+            remaining.retain(|fact| {
+                if let ConstraintFact::Equal { symbol, value } = fact {
+                    if let Some(rewritten) = rewrite_variable(&current, *symbol, value) {
+                        current = rewritten;
+                        changed = true;
+                        return false;
+                    }
+                }
+                true
+            });
+            if !changed || remaining.is_empty() {
+                break;
+            }
+        }
+        current
+    }
+
+    fn apply_fact_side_effects(&self, fact: &ConstraintFact) {
+        match fact {
+            ConstraintFact::Equal { symbol, value } => {
+                if self.symbolic_real(value) {
+                    self.real_symbols.borrow_mut().insert(*symbol);
+                }
+                if self.symbolic_is_integer(value) {
+                    self.integer_symbols.borrow_mut().insert(*symbol);
+                }
+            }
+            ConstraintFact::RealCompare { symbol, bound, op } => {
+                let strictly = *op == BinaryOp::Lt;
+                match self.classify_bound(bound) {
+                    Some(true) if strictly => {
+                        self.positive_symbols.borrow_mut().insert(*symbol);
+                        self.nonnegative_symbols.borrow_mut().insert(*symbol);
+                        self.nonzero_symbols.borrow_mut().insert(*symbol);
+                        self.real_symbols.borrow_mut().insert(*symbol);
+                    }
+                    Some(true) => {
+                        self.nonnegative_symbols.borrow_mut().insert(*symbol);
+                        self.real_symbols.borrow_mut().insert(*symbol);
+                    }
+                    Some(false) if strictly => {
+                        self.negative_symbols.borrow_mut().insert(*symbol);
+                        self.nonzero_symbols.borrow_mut().insert(*symbol);
+                        self.real_symbols.borrow_mut().insert(*symbol);
+                    }
+                    Some(false) => {
+                        self.real_symbols.borrow_mut().insert(*symbol);
+                    }
+                    None => {
+                        self.real_symbols.borrow_mut().insert(*symbol);
+                    }
+                }
+            }
+            ConstraintFact::NotEqual { symbol, value } => {
+                if matches!(value.as_ref(), SymbolicExpr::Number(number) if number.is_zero()) {
+                    self.nonzero_symbols.borrow_mut().insert(*symbol);
+                }
+                self.real_symbols.borrow_mut().insert(*symbol);
+            }
+        }
+    }
+
+    /// Static sign of a (possibly symbolic) bound: `Some(true)` for
+    /// provably positive, `Some(false)` for provably negative.
+    fn classify_bound(&self, bound: &SymbolicExpr) -> Option<bool> {
+        if self.symbolic_positive(bound) {
+            Some(true)
+        } else if self.symbolic_negative(bound) {
+            Some(false)
+        } else {
+            None
+        }
+    }
+
+    /// Detects direct conflicts between two facts about the same variable.
+    /// Only numeric bounds are compared; symbolic bounds never conflict.
+    fn facts_conflict(left: &ConstraintFact, right: &ConstraintFact) -> bool {
+        use crate::interpreter::value::ConstraintFact::*;
+        match (left, right) {
+            (
+                Equal {
+                    symbol: a,
+                    value: a_value,
+                },
+                Equal {
+                    symbol: b,
+                    value: b_value,
+                },
+            ) => a == b && !a_value.equals(b_value.as_ref()),
+            (
+                Equal {
+                    symbol: a,
+                    value: a_value,
+                },
+                RealCompare {
+                    symbol: b,
+                    bound: b_bound,
+                    op,
+                },
+            ) => {
+                a == b
+                    && match (a_value.as_ref(), b_bound.as_ref()) {
+                        (SymbolicExpr::Number(a_number), SymbolicExpr::Number(b_number)) => {
+                            let ordering = a_number.compare(b_number);
+                            let satisfied = match op {
+                                BinaryOp::Lt => {
+                                    matches!(ordering, Some(std::cmp::Ordering::Less))
+                                }
+                                BinaryOp::Le => matches!(
+                                    ordering,
+                                    Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+                                ),
+                                _ => false,
+                            };
+                            !satisfied
+                        }
+                        _ => false,
+                    }
+            }
+            (
+                RealCompare {
+                    symbol: a,
+                    bound: a_bound,
+                    op: a_op,
+                },
+                Equal {
+                    symbol: b,
+                    value: b_value,
+                },
+            ) => Self::facts_conflict(
+                &Equal {
+                    symbol: *b,
+                    value: Rc::clone(b_value),
+                },
+                &RealCompare {
+                    symbol: *a,
+                    bound: Rc::clone(a_bound),
+                    op: *a_op,
+                },
+            ),
+            (
+                Equal {
+                    symbol: a,
+                    value: a_value,
+                },
+                NotEqual {
+                    symbol: b,
+                    value: b_value,
+                },
+            ) => a == b && a_value.equals(b_value.as_ref()),
+            (
+                NotEqual {
+                    symbol: a,
+                    value: a_value,
+                },
+                Equal {
+                    symbol: b,
+                    value: b_value,
+                },
+            ) => a == b && a_value.equals(b_value.as_ref()),
+            _ => false,
+        }
+    }
+
+    /// Rewrites a source expression with equality facts, keeping the
+    /// original when nothing applies (or the rewrite cannot succeed).
+    fn substitute_expression_constraints(&self, expression: &Expr) -> Option<Expr> {
+        let equalities = self
+            .constraints
+            .borrow()
+            .iter()
+            .filter_map(|fact| match fact {
+                ConstraintFact::Equal { symbol, value } => Some((*symbol, Rc::clone(value))),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if equalities.is_empty() {
+            return None;
+        }
+        let symbolic = self.expression_to_symbolic(expression)?;
+        let mut current = Rc::new(symbolic);
+        let mut changed = false;
+        for (symbol, value) in equalities {
+            if let Some(rewritten) = rewrite_variable(&current, symbol, &value) {
+                current = rewritten;
+                changed = true;
+            }
+        }
+        changed.then(|| self.symbolic_to_expression(&current))
+    }
+
+    /// Converts a source expression tree into the symbolic tree, or `None`
+    /// for constructs without a symbolic form (assignments, blocks, ...).
+    fn expression_to_symbolic(&self, expression: &Expr) -> Option<SymbolicExpr> {
+        match &expression.kind {
+            ExprKind::Bool(value) => Some(SymbolicExpr::Number(Number::Integer(BigInt::from(
+                u8::from(*value),
+            )))),
+            ExprKind::Nil => Some(SymbolicExpr::Number(Number::Integer(BigInt::from(0)))),
+            ExprKind::Number(text) => {
+                let (integer, decimal) = if let Some(hex) = text.strip_prefix("0x") {
+                    (BigInt::parse_bytes(hex.as_bytes(), 16), None)
+                } else if let Some(binary) = text.strip_prefix("0b") {
+                    (BigInt::parse_bytes(binary.as_bytes(), 2), None)
+                } else if let Some(octal) = text.strip_prefix("0o") {
+                    (BigInt::parse_bytes(octal.as_bytes(), 8), None)
+                } else if !text.contains(['.', 'e', 'E']) {
+                    (BigInt::parse_bytes(text.as_bytes(), 10), None)
+                } else {
+                    (None, text.parse::<BigDecimal>().ok())
+                };
+                if let Some(integer) = integer {
+                    return Some(SymbolicExpr::Number(Number::Integer(integer)));
+                }
+                decimal.map(Number::Decimal).map(SymbolicExpr::Number)
+            }
+            ExprKind::String(_) => None,
+            ExprKind::Variable(symbol) => Some(SymbolicExpr::Variable(*symbol)),
+            ExprKind::Group(inner) => self.expression_to_symbolic(inner),
+            ExprKind::Array(_) | ExprKind::Index { .. } => None,
+            ExprKind::Unary { op, expr } => {
+                let inner = Rc::new(self.expression_to_symbolic(expr)?);
+                Some(SymbolicExpr::Unary {
+                    op: *op,
+                    expr: inner,
+                })
+            }
+            ExprKind::Binary {
+                left,
+                op,
+                right,
+                implicit: _,
+            } => {
+                let left = Rc::new(self.expression_to_symbolic(left)?);
+                let right = Rc::new(self.expression_to_symbolic(right)?);
+                Some(SymbolicExpr::Binary {
+                    left,
+                    op: *op,
+                    right,
+                })
+            }
+            ExprKind::Call { callee, args } => {
+                let ExprKind::Variable(symbol) = callee.kind else {
+                    return None;
+                };
+                let function = self.symbol_function(symbol)?;
+                let mut converted = Vec::with_capacity(args.len());
+                for argument in args {
+                    converted.push(Rc::new(self.expression_to_symbolic(argument)?));
+                }
+                Some(SymbolicExpr::Call {
+                    function,
+                    args: converted,
+                })
+            }
+        }
+    }
+
+    /// Resolves a called name to its builtin, consulting the environment
+    /// first so user shadowing wins over the standard library.
+    fn symbol_function(&self, symbol: Symbol) -> Option<Builtin> {
+        if let Some(value) = Environment::get(&self.globals, symbol) {
+            return match value {
+                Value::Builtin(builtin) => Some(builtin),
+                _ => None,
+            };
+        }
+        let name = self.symbols.resolve(symbol);
+        Builtin::ALL
+            .iter()
+            .find(|(builtin_name, _)| *builtin_name == name)
+            .map(|(_, builtin)| *builtin)
+    }
+
+    /// Public accessor for embedders (GUI status lines, REPL diagnostics).
+    pub fn constraint_count(&self) -> usize {
+        self.constraints.borrow().len()
+    }
+
+    /// The substituted value of an equality fact for `symbol`, if one exists.
+    fn equality_fact_for(&self, symbol: Symbol) -> Option<Rc<SymbolicExpr>> {
+        self.constraints
+            .borrow()
+            .iter()
+            .find_map(|fact| match fact {
+                ConstraintFact::Equal {
+                    symbol: found,
+                    value,
+                } if *found == symbol => Some(Rc::clone(value)),
+                _ => None,
+            })
+    }
+
     fn symbolic_nonzero(&self, expression: &SymbolicExpr) -> bool {
         match expression {
             SymbolicExpr::Number(number) => !number.is_zero(),
@@ -3760,6 +5032,22 @@ impl<W: Write> Interpreter<W> {
                     } => {
                         return Ok(Self::symbolic_value(Rc::clone(inner)));
                     }
+                    // Keep the sign in the leading numeric coefficient:
+                    // `-(c * r) -> (-c) * r`. Products without a numeric
+                    // leading factor keep the negation outside.
+                    SymbolicExpr::Binary {
+                        left,
+                        op: BinaryOp::Mul,
+                        right,
+                    } if matches!(left.as_ref(), SymbolicExpr::Number(_)) => {
+                        let negated =
+                            self.apply_unary(UnaryOp::Neg, Self::symbolic_value(Rc::clone(left)))?;
+                        return self.apply_binary(
+                            BinaryOp::Mul,
+                            negated,
+                            Self::symbolic_value(Rc::clone(right)),
+                        );
+                    }
                     _ => SymbolicExpr::Unary {
                         op: UnaryOp::Neg,
                         expr,
@@ -3823,9 +5111,41 @@ impl<W: Write> Interpreter<W> {
             Mod => self.remainder(l, r),
             Pow => self.power(l, r),
 
-            Eq => Ok(Value::Bool(l.equals(&r))),
-            Ne => Ok(Value::Bool(!l.equals(&r))),
+            Eq => {
+                if matches!(&l, Value::Symbolic(_)) || matches!(&r, Value::Symbolic(_)) {
+                    // Canonically identical sides are trivially equal even
+                    // when symbolic, so `print(a*x + 0 == a*x)` stays a
+                    // boolean; anything else becomes a constraint tree for
+                    // `assume` to consume.
+                    if l.equals(&r) {
+                        return Ok(Value::Bool(true));
+                    }
+                    return self.symbolic_constraint(BinaryOp::Eq, l, r);
+                }
+                Ok(Value::Bool(l.equals(&r)))
+            }
+            Ne => {
+                if matches!(&l, Value::Symbolic(_)) || matches!(&r, Value::Symbolic(_)) {
+                    if l.equals(&r) {
+                        return Ok(Value::Bool(false));
+                    }
+                    return self.symbolic_constraint(BinaryOp::Ne, l, r);
+                }
+                Ok(Value::Bool(!l.equals(&r)))
+            }
 
+            Lt if self.constraint_comparison(&l, &r) => {
+                self.symbolic_constraint(BinaryOp::Lt, l, r)
+            }
+            Le if self.constraint_comparison(&l, &r) => {
+                self.symbolic_constraint(BinaryOp::Le, l, r)
+            }
+            Gt if self.constraint_comparison(&l, &r) => {
+                self.symbolic_constraint(BinaryOp::Gt, l, r)
+            }
+            Ge if self.constraint_comparison(&l, &r) => {
+                self.symbolic_constraint(BinaryOp::Ge, l, r)
+            }
             Lt => self.compare(l, r, "<", |o| o.is_lt()),
             Le => self.compare(l, r, "<=", |o| !o.is_gt()),
             Gt => self.compare(l, r, ">", |o| o.is_gt()),
@@ -4584,6 +5904,35 @@ impl<W: Write> Interpreter<W> {
         })))
     }
 
+    /// Whether a comparison over these operands should stay symbolic as a
+    /// constraint: exactly when an operand is a symbolic expression.
+    fn constraint_comparison(&self, left: &Value, right: &Value) -> bool {
+        matches!(left, Value::Symbolic(_)) || matches!(right, Value::Symbolic(_))
+    }
+
+    /// Builds a symbolic constraint tree from a comparison whose operands
+    /// stay symbolic. Equality facts fold in so `assume(x == 3)` followed
+    /// by `assume(x > 2 and x < 5)` stores bounds against `3`.
+    fn symbolic_constraint(&self, op: BinaryOp, left: Value, right: Value) -> ExecResult<Value> {
+        let left = self.value_to_symbolic(left)?;
+        let right = self.value_to_symbolic(right)?;
+        Ok(Value::Symbolic(Rc::new(SymbolicExpr::Binary {
+            left,
+            op,
+            right,
+        })))
+    }
+
+    /// Builds a symbolic conjunction of constraint trees. Like `and` in
+    /// the evaluator, order matters: each operand is attempted in turn.
+    fn symbolic_conjunction(&self, left: &SymbolicExpr, right: &SymbolicExpr) -> Rc<SymbolicExpr> {
+        Rc::new(SymbolicExpr::Binary {
+            left: Rc::new(left.clone()),
+            op: BinaryOp::And,
+            right: Rc::new(right.clone()),
+        })
+    }
+
     fn is_symbolic_integer(expression: &SymbolicExpr, expected: i64) -> bool {
         matches!(expression, SymbolicExpr::Number(Number::Integer(value)) if value == &BigInt::from(expected))
     }
@@ -4876,6 +6225,92 @@ impl<W: Write> Interpreter<W> {
         match expression.as_ref() {
             SymbolicExpr::Number(number) => Value::Number(number.clone()),
             _ => Value::Symbolic(expression),
+        }
+    }
+
+    /// Rebuilds a source expression from a symbolic tree so constraint
+    /// substitutions can flow through the ordinary evaluator.
+    fn symbolic_to_expression(&self, expression: &Rc<SymbolicExpr>) -> Expr {
+        let span = SourceSpan::diagnostic(1, 1, 0);
+        let kind = match expression.as_ref() {
+            SymbolicExpr::Number(number) => match number {
+                Number::Integer(value) => ExprKind::Number(value.to_string()),
+                Number::Decimal(value) => ExprKind::Number(value.to_string()),
+                Number::Rational(value) => ExprKind::Binary {
+                    left: Box::new(Expr::new(span, ExprKind::Number(value.numer().to_string()))),
+                    op: BinaryOp::Div,
+                    right: Box::new(Expr::new(span, ExprKind::Number(value.denom().to_string()))),
+                    implicit: false,
+                },
+                Number::Complex(_) => ExprKind::Nil,
+            },
+            SymbolicExpr::Constant(constant) => {
+                let name = match constant {
+                    MathConstant::Pi => "pi",
+                    MathConstant::E => "e",
+                    MathConstant::Tau => "tau",
+                    MathConstant::Phi => "phi",
+                };
+                let Some(symbol) = self.symbols.get(name) else {
+                    // The constant is unknown to this table; leave it
+                    // symbolic rather than mutating shared state.
+                    return Expr::new(span, ExprKind::Nil);
+                };
+                ExprKind::Variable(symbol)
+            }
+            SymbolicExpr::Variable(symbol) => ExprKind::Variable(*symbol),
+            SymbolicExpr::Unary { op, expr } => ExprKind::Unary {
+                op: *op,
+                expr: Box::new(self.symbolic_to_expression(expr)),
+            },
+            SymbolicExpr::Binary { left, op, right } => ExprKind::Binary {
+                left: Box::new(self.symbolic_to_expression(left)),
+                op: *op,
+                right: Box::new(self.symbolic_to_expression(right)),
+                implicit: false,
+            },
+            SymbolicExpr::Call { function, args } => {
+                let name = function.name();
+                let symbol = self.symbols.get(name).unwrap_or(0);
+                ExprKind::Call {
+                    callee: Box::new(Expr::new(span, ExprKind::Variable(symbol))),
+                    args: args
+                        .iter()
+                        .map(|argument| self.symbolic_to_expression(argument))
+                        .collect::<Vec<_>>(),
+                }
+            }
+        };
+        Expr::new(span, kind)
+    }
+
+    /// Whether a symbolic tree is statically an integer under the active
+    /// assumptions: integer literals, integer-typed equality facts, and
+    /// even integer powers of known-integer bases compose.
+    fn symbolic_is_integer(&self, expression: &SymbolicExpr) -> bool {
+        match expression {
+            SymbolicExpr::Number(Number::Integer(_)) => true,
+            SymbolicExpr::Variable(symbol) => self.integer_symbols.borrow().contains(symbol),
+            SymbolicExpr::Unary { op, expr } => {
+                matches!(op, UnaryOp::Neg) && self.symbolic_is_integer(expr)
+            }
+            SymbolicExpr::Binary { left, op, right } => match op {
+                BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul => {
+                    self.symbolic_is_integer(left) && self.symbolic_is_integer(right)
+                }
+                BinaryOp::Pow => {
+                    matches!(right.as_ref(), SymbolicExpr::Number(Number::Integer(_)))
+                        && self.symbolic_is_integer(left)
+                }
+                _ => false,
+            },
+            SymbolicExpr::Call { function, args } => {
+                matches!(
+                    function,
+                    Builtin::Floor | Builtin::Ceil | Builtin::Round | Builtin::Trunc
+                ) && args.len() == 1
+            }
+            _ => false,
         }
     }
 

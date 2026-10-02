@@ -5,6 +5,24 @@ SCAS follows Semantic Versioning. User-visible changes accumulate under
 
 ## Unreleased
 
+- Made the GUI graphing canvas dynamic like Desmos: pan and zoom re-sample
+  curves over a padded window that always covers the visible region, dots
+  mark zeros and local extrema of every curve, and clicking the canvas pins
+  a snapping crosshair that reports the exact x/y of the nearest point.
+- Made the GUI REPL LaTeX-first: typed input is live-typeset at display size
+  with the raw source demoted to a faint echo underneath.
+- Added general constraints via `assume(constraint)`: comparisons such as
+  `x == 3`, `x > 0 and x < 10`, and `x != 0` are recorded as facts,
+  equalities substitute into later expressions, and contradictions are
+  rejected; `forget_assumptions()` clears them. The named
+  `assume_real`/`assume_integer`/sign helpers remain and are mirrored by the
+  recorded facts.
+- Added function plotting: the REPL `:plot` command draws one or more
+  expressions on a TI-style ASCII grid or redirects to an SVG/text file, and
+  the GUI gained a full graphing-calculator tab (pan, zoom, auto-fit, SVG
+  export) plus inline REPL plots, command history, and Tab completion. Plots
+  evaluate through the live session, support plotted definitions such as
+  `g(t) = 2t + 1`, and restore any displaced variable bindings.
 - Added `A'` postfix matrix-transpose notation and matrix multiplication for
   matrix × matrix and matrix × column-vector operands.
 - Added square-matrix integer powers using binary exponentiation, including

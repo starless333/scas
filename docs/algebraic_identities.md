@@ -100,6 +100,9 @@ The assumptions system tracks facts such as `real(x)`, `x > 0`, `x != 0`, and
 - [x] `sin(x)^2 + cos(x)^2 -> 1`
 - [x] `1 + tan(x)^2 -> sec(x)^2`
 - [x] Exact common values at rational multiples of `pi` without numerical evaluation
+- [x] Exact numeric arguments fold (`sin(0) -> 0`, `exp(0) -> 1`,
+      `ln(1) -> 0`, and the closed-form family around zero and one)
+- [x] Perfect rational powers fold (`sqrt(4) -> 2`, `cbrt(-8) -> -2`)
 - [x] Angle-sum and double-angle expansion through `expand`
 - [x] Keep exact trigonometric form symbolic; numerical complex arguments use
       principal complex evaluation
@@ -117,11 +120,25 @@ The assumptions system tracks facts such as `real(x)`, `x > 0`, `x != 0`, and
   hyperbolic sine/cosine, and standard secant/cosecant products
 - [x] Differentiate general powers plus inverse-trigonometric and hyperbolic functions
 - [x] Differentiate `erf`, `erfc`, logarithms with fixed bases, roots, and
-      assumption-qualified absolute values
-- [ ] Add bounded integration by parts for polynomial-times-exponential and
-  polynomial-times-trigonometric forms
-- [ ] Integrate rational functions through partial-fraction decomposition
-- [ ] Add common trigonometric identities and trigonometric substitution rules
+      assumption-qualified absolute values- [x] Bounded integration by parts for polynomial-times-exponential and
+      polynomial-times-trigonometric forms: the tabular rule integrates
+      `p(x) * g(linear)` for `g` in `exp`, `sin`, `cos`, `sinh`, `cosh`
+      (the families closed under repeated integration), expanding at most 8
+      polynomial degrees before giving up
+- [x] Integrate rational functions through partial-fraction decomposition:
+      proper fractions with distinct rational linear factors split through
+      `apart` and integrate term by term (`c / (a*x + b) ->
+      c * ln(a*x + b) / a` for constant numerators)
+- [x] Trigonometric substitution for `c / (a*x^2 + b)` with positive
+      rational `a`, `b` (the tangent substitution gives `atan` forms), and
+      double-angle halves for `sin(a*x + b)^2` / `cos(a*x + b)^2` integrals
+- [ ] General trigonometric substitution (Weierstrass-style) and product
+      powers inside integrals (`∫ sin(x)^2*cos(x) dx` and friends)
+- [x] Definite integrals: fundamental theorem on the current antiderivative
+      set, linearity over sums of the integrand, and odd/even symmetry over
+      symmetric intervals (`∫_{-a}^{a}` of an odd integrand vanishes; an even
+      one folds to `2 * ∫_{0}^{a}`) — results with no closed primitive stay
+      unevaluated instead of receiving corrupted substitutions
 - [x] Keep unevaluated derivative/integral nodes when no rule applies
 - [x] Definite constants/assumptions are not invented; indefinite results omit `+ C` by convention
 

@@ -2,7 +2,7 @@ use scas::ast::StatementKind;
 use scas::execute;
 use scas::interpreter::Interpreter;
 use scas::latex::LatexRenderer;
-use scas::lexer::Scanner;
+use scas::lexer::{Scanner, SymbolTable};
 use scas::parser::Parser;
 use std::hint::black_box;
 use std::time::{Duration, Instant};
@@ -88,6 +88,44 @@ fn main() {
         measure(10_000, || {
             latex_renderer.expression_into(black_box(latex_expression), &mut latex_output);
             black_box(&latex_output);
+        }),
+    );
+
+    // Plot sampling feeds the interactive graphers. The first case compiles
+    // to the f64 fast path; the second (a user function) must fall back to
+    // the exact evaluator, which is the slow lane of the same pipeline.
+    let mut plot_symbols = SymbolTable::new();
+    let mut plot_interpreter = Interpreter::new(plot_symbols.clone(), Vec::new());
+    report(
+        "plot sample 1k (fast)",
+        measure(50, || {
+            black_box(
+                scas::plot::sample_source(
+                    &mut plot_interpreter,
+                    &mut plot_symbols,
+                    black_box("sin(40*x) / (1 + x^2)"),
+                    -10.0,
+                    10.0,
+                    1_000,
+                )
+                .unwrap(),
+            );
+        }),
+    );
+    report(
+        "plot sample 1k (exact)",
+        measure(10, || {
+            black_box(
+                scas::plot::sample_source(
+                    &mut plot_interpreter,
+                    &mut plot_symbols,
+                    black_box("g(t) = t^2 + sin(t)"),
+                    -10.0,
+                    10.0,
+                    1_000,
+                )
+                .unwrap(),
+            );
         }),
     );
 

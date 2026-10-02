@@ -160,6 +160,81 @@ fn negative_assumptions_simplify_abs_and_reject_contradictions() {
 }
 
 #[test]
+fn general_assume_accepts_equality_and_comparison_facts() {
+    assert_eq!(
+        output(
+            r#"
+            assume(x == 3);
+            print(x + 1);
+            print(x * x);
+            forget_assumptions();
+            print(x + 1);
+            "#,
+        ),
+        "4\n9\nx + 1\n",
+    );
+}
+
+#[test]
+fn sequential_assume_calls_accumulate_and_consistency_checks_fold() {
+    // The second assume evaluates `2 < 10`, which folds to a boolean
+    // through the recorded equality; `assume` must accept it as a
+    // consistency check rather than reject it as a non-constraint.
+    assert_eq!(
+        output(
+            r#"
+            assume(x == 2);
+            assume(x < 10);
+            print(x);
+            "#,
+        ),
+        "2\n",
+    );
+    assert_eq!(
+        output(
+            r#"
+            assume(z == 2 and z < 10);
+            print(z * z);
+            "#,
+        ),
+        "4\n",
+    );
+    assert_eq!(
+        output(
+            r#"
+            assume(q == 2 and q != 5);
+            print(q * q);
+            "#,
+        ),
+        "4\n",
+    );
+    // A folded constraint that fails is a contradiction.
+    assert_eq!(
+        runtime_error("assume(x == 2); assume(x < 10); assume(x > 5);"),
+        "assume contradicts the current assumptions",
+    );
+    // Range facts drive simplifications exactly like the named tools.
+    assert_eq!(
+        output(
+            r#"
+            assume(y > 0);
+            print(sqrt(y^2));
+            forget_assumptions();
+            print(sqrt(y^2));
+            "#,
+        ),
+        "abs(y)\nsqrt(y ^ 2)\n",
+    );
+}
+
+#[test]
+fn assume_rejects_non_constraints_and_unsupported_forms() {
+    assert!(runtime_error("assume(true);").contains("expects a constraint"));
+    assert!(runtime_error("assume(x or y);").contains("expects a comparison"));
+    assert!(runtime_error("assume(x + 1);").contains("expects a comparison"));
+}
+
+#[test]
 fn calculus_covers_new_elementary_and_special_rules() {
     assert_eq!(
         output(
@@ -202,6 +277,20 @@ fn transcendental_work_has_an_independent_precision_budget() {
         error.message,
         "transcendental precision exceeds the 20 digit limit"
     );
+}
+
+#[test]
+fn complex_acosh_outside_the_real_domain_terminates_on_the_principal_branch() {
+    // Regression: the complex acosh path used to hang forever for values
+    // below one, freezing the REPL and any evaluation that reached it.
+    // acosh(-1/2) = 2*pi/3 * i on the principal branch.
+    let text = output("print(evalf(acosh(-0.5)));");
+    assert!(text.contains('i'), "expected a complex result, got {text}");
+    assert!(text.contains("2.094"), "expected ~2.094i, got {text}");
+    // Values inside the domain stay real and unchanged.
+    let text = output("print(evalf(acosh(2)));");
+    assert!(!text.contains('i'), "expected a real result, got {text}");
+    assert!(text.contains("1.316"), "expected ~1.316, got {text}");
 }
 
 #[test]

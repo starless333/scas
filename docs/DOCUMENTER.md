@@ -34,6 +34,8 @@ are recorded in `docs/decisions.md`.
 | `\[ ... \]` | **Render line.** Runs one expression and typesets it as a single display equation. |
 | `=>` | **Show-result marker.** Typeset the expression, then `= <evaluated value>`. |
 | `#{ expr }` | **Interpolation** inside `///` prose. Replaced by the typeset value of `expr`. |
+| `plot(expr, lower, upper)` | Samples an expression of `x` and emits a vector graph into the LaTeX document. |
+| `plot(expr, variable, lower, upper)` | Samples an expression of the named independent variable and emits a vector graph. |
 
 ### Example
 
@@ -46,6 +48,19 @@ are recorded in `docs/decisions.md`.
 \}
 /// At $x = 3$ the slope is $#{ subs(derivative(f(x), x), x, 3) }$.
 ```
+
+A plot can be used as a bare top-level statement or in a render line/block:
+
+```
+/// The parabola on $[-2, 2]$.
+plot(x^2, -2, 2);
+\\[ plot(sin(t), t, -pi, pi) \\]
+\\{ plot(cos(x), -pi, pi); \\}
+```
+
+Plots are drawn with LaTeX vector primitives and become part of the normal
+rendered document. Errors are reported as diagnostics with a visible
+placeholder, allowing the remaining document to render.
 
 Expected output:
 

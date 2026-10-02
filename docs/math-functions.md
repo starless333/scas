@@ -140,6 +140,24 @@ assumption functions when a conditional identity is intended:
 - `assume_positive(x)` (also implies real, nonnegative, and nonzero)
 - `assume_negative(x)` (also implies real and nonzero)
 
+The general form `assume(constraint)` accepts a single comparison over one
+variable or an `and` combination of them:
+
+```scas
+assume(x == 3);        // equality: substitutes into later expressions
+assume(y > 0 and y < 10);
+assume(z != 0);
+forget_assumptions();  // clears every recorded fact
+```
+
+Each comparison must put a plain variable on one side; symbolic bounds such
+as `y < x + 1` are allowed but never conflict-check numerically. A later
+`assume` whose comparison folds to a concrete boolean through existing
+equality facts is treated as a consistency check: `true` is accepted without
+adding a fact, and `false` is rejected as a contradiction. Range facts drive
+the same domain-safe simplifications as the named helpers (`assume(y > 0)`
+permits `sqrt(y^2) -> abs(y)`).
+
 For example, SCAS retains `x/x`, `sqrt(x^2)`, `exp(ln(x))`, and `ln(exp(x))`
 for an unconstrained symbol. After `assume_real(x)`, it may use
 `sqrt(x^2) = abs(x)` and `ln(exp(x)) = x`. After `assume_positive(x)`, all four

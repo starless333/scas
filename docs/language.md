@@ -42,10 +42,37 @@ are arbitrary precision; their complex extensions are explicitly unsupported.
 See [`math-functions.md`](math-functions.md) for the support matrix and branch
 conventions.
 
+The document renderer recognizes `plot` calls in ordinary source files and
+embeds the resulting graph as vector drawing commands in the same LaTeX
+document as other math. Use `plot(expression, lower, upper)` for the default
+independent variable `x`, or `plot(expression, variable, lower, upper)` to
+choose another variable. For example:
+
+```scas
+/// The curve $y = x^2$ on $[-2,2]$.
+plot(x^2, x, -2, 2);
+\[ plot(sin(t), t, -pi, pi) \]
+\{
+    plot(cos(x), -pi, pi) =>;
+\}
+```
+
+A bare top-level plot, render-line plot, or plot expression in a render block
+is emitted as a graph; plots in render blocks appear on their own aligned row.
+The plot expression is numerically sampled while preserving the surrounding
+interpreter state. Invalid bounds or expressions produce a diagnostic and a
+visible placeholder instead of stopping the rest of the document.
+
 `assume_real(x)`, `assume_integer(x)`, `assume_nonzero(x)`,
 `assume_nonnegative(x)`, `assume_positive(x)`, and `assume_negative(x)` attach
-domain facts to a symbol in the current interpreter session. Conditional
-rewrites require those facts: unconstrained `x/x` and `sqrt(x^2)` remain
-unchanged, a real `x` permits `sqrt(x^2) -> abs(x)`, and a nonnegative `x`
-permits `sqrt(x^2) -> x`. Contradictory sign assumptions are errors.
+domain facts to a symbol in the current interpreter session. The general form
+`assume(constraint)` accepts comparisons over one variable — `assume(x == 3)`,
+`assume(x > 0 and x < 10)`, `assume(x != 0)` — recording each as a fact.
+Equality facts substitute into later expressions, so after `assume(x == 3)`
+the expression `x + 1` evaluates to `4`, and later `assume` calls whose
+comparison folds to a concrete boolean are checked for consistency rather
+than re-recorded. Contradictions between facts are errors, and
+`forget_assumptions()` clears every fact. Conditional rewrites require those
+facts: unconstrained `x/x` and `sqrt(x^2)` remain unchanged, a real `x`
+permits `sqrt(x^2) -> abs(x)`, and a nonnegative `x` permits `sqrt(x^2) -> x`.
 Assumptions are never inferred from unrelated expressions.
