@@ -343,6 +343,76 @@ pub(super) fn evaluate_unary(
     }
 }
 
+// Even Bernoulli numbers used by the log-gamma asymptotic expansion. These
+// exact coefficients are compile-time data: generating the full Akiyama-
+// Tanigawa table for every gamma call used to dominate evaluation time.
+const EVEN_BERNOULLI: &[(&str, &str)] = &[
+    ("1", "6"),
+    ("-1", "30"),
+    ("1", "42"),
+    ("-1", "30"),
+    ("5", "66"),
+    ("-691", "2730"),
+    ("7", "6"),
+    ("-3617", "510"),
+    ("43867", "798"),
+    ("-174611", "330"),
+    ("854513", "138"),
+    ("-236364091", "2730"),
+    ("8553103", "6"),
+    ("-23749461029", "870"),
+    ("8615841276005", "14322"),
+    ("-7709321041217", "510"),
+    ("2577687858367", "6"),
+    ("-26315271553053477373", "1919190"),
+    ("2929993913841559", "6"),
+    ("-261082718496449122051", "13530"),
+    ("1520097643918070802691", "1806"),
+    ("-27833269579301024235023", "690"),
+    ("596451111593912163277961", "282"),
+    ("-5609403368997817686249127547", "46410"),
+    ("495057205241079648212477525", "66"),
+    ("-801165718135489957347924991853", "1590"),
+    ("29149963634884862421418123812691", "798"),
+    ("-2479392929313226753685415739663229", "870"),
+    ("84483613348880041862046775994036021", "354"),
+    ("-1215233140483755572040304994079820246041491", "56786730"),
+    ("12300585434086858541953039857403386151", "6"),
+    ("-106783830147866529886385444979142647942017", "510"),
+    ("1472600022126335654051619428551932342241899101", "64722"),
+    ("-78773130858718728141909149208474606244347001", "30"),
+    ("1505381347333367003803076567377857208511438160235", "4686"),
+    ("-5827954961669944110438277244641067365282488301844260429", "140100870"),
+    ("34152417289221168014330073731472635186688307783087", "6"),
+    ("-24655088825935372707687196040585199904365267828865801", "30"),
+    ("414846365575400828295179035549542073492199375372400483487", "3318"),
+    ("-4603784299479457646935574969019046849794257872751288919656867", "230010"),
+    ("1677014149185145836823154509786269900207736027570253414881613", "498"),
+    ("-2024576195935290360231131160111731009989917391198090877281083932477", "3404310"),
+    ("660714619417678653573847847426261496277830686653388931761996983", "6"),
+    ("-1311426488674017507995511424019311843345750275572028644296919890574047", "61410"),
+    ("1179057279021082799884123351249215083775254949669647116231545215727922535", "272118"),
+    ("-1295585948207537527989427828538576749659341483719435143023316326829946247", "1410"),
+    ("1220813806579744469607301679413201203958508415202696621436215105284649447", "6"),
+    ("-211600449597266513097597728109824233673043954389060234150638733420050668349987259", "4501770"),
+    ("67908260672905495624051117546403605607342195728504487509073961249992947058239", "6"),
+    ("-94598037819122125295227433069493721872702841533066936133385696204311395415197247711", "33330"),
+    ("3204019410860907078243020782116241775491817197152717450679002501086861530836678158791", "4326"),
+    ("-319533631363830011287103352796174274671189606078272738327103470162849568365549721224053", "1590"),
+    ("36373903172617414408151820151593427169231298640581690038930816378281879873386202346572901", "642"),
+    ("-3469342247847828789552088659323852541399766785760491146870005891371501266319724897592306597338057", "209191710"),
+    ("7645992940484742892248134246724347500528752413412307906683593870759797606269585779977930217515", "1518"),
+    ("-2650879602155099713352597214685162014443151499192509896451788427680966756514875515366781203552600109", "1671270"),
+    ("21737832319369163333310761086652991475721156679090831360806110114933605484234593650904188618562649", "42"),
+    ("-309553916571842976912513458033841416869004128064329844245504045721008957524571968271388199595754752259", "1770"),
+    ("366963119969713111534947151585585006684606361080699204301059440676414485045806461889371776354517095799", "6"),
+    ("-51507486535079109061843996857849983274095170353262675213092869167199297474922985358811329367077682677803282070131", "2328255930"),
+    ("49633666079262581912532637475990757438722790311060139770309311793150683214100431329033113678098037968564431", "6"),
+    ("-95876775334247128750774903107542444620578830013297336819553512729358593354435944413631943610268472689094609001", "30"),
+    ("5556330281949274850616324408918951380525567307126747246796782304333594286400508981287241419934529638692081513802696639", "4357878"),
+    ("-267754707742548082886954405585282394779291459592551740629978686063357792734863530145362663093519862048495908453718017", "510"),
+];
+
 fn bernoulli_numbers(maximum: usize) -> Vec<BigRational> {
     let mut work = vec![BigRational::zero(); maximum + 1];
     let mut numbers = vec![BigRational::zero(); maximum + 1];
@@ -356,42 +426,60 @@ fn bernoulli_numbers(maximum: usize) -> Vec<BigRational> {
     numbers
 }
 
-fn rational_float(value: &BigRational, precision: usize) -> Result<DBig, MathEvaluationError> {
-    let numerator = decimal_float(&value.numer().to_string(), precision)?;
-    let denominator = decimal_float(&value.denom().to_string(), precision)?;
+fn rational_float(
+    numerator: &str,
+    denominator: &str,
+    precision: usize,
+) -> Result<DBig, MathEvaluationError> {
+    let numerator = decimal_float(numerator, precision)?;
+    let denominator = decimal_float(denominator, precision)?;
     Ok(numerator / denominator)
 }
 
 fn log_gamma_positive(mut value: DBig, precision: usize) -> Result<DBig, MathEvaluationError> {
-    let work_precision = precision.saturating_add(16);
+    let work_precision = precision;
     value = value.with_precision(work_precision).value();
     if value <= DBig::ZERO {
         return Err(MathEvaluationError(
             "log-gamma positive branch requires a positive argument".to_string(),
         ));
     }
-    let threshold_integer = precision.saturating_mul(2).saturating_add(32);
+    let terms = precision.saturating_div(2).saturating_add(8).max(12);
+    let generated = (terms > EVEN_BERNOULLI.len())
+        .then(|| bernoulli_numbers(terms.saturating_mul(2)));
+    let threshold_integer = precision.saturating_div(2).saturating_add(10);
     let threshold = DBig::from(threshold_integer)
         .with_precision(work_precision)
         .value();
     let one = DBig::ONE.with_precision(work_precision).value();
     let half = decimal_float("0.5", work_precision)?;
-    let mut correction = DBig::ZERO.with_precision(work_precision).value();
+    // Γ(x + n) = (x)(x + 1)…(x + n - 1)Γ(x). Build that product and take
+    // one logarithm instead of evaluating a logarithm at every recurrence
+    // step; multiplication is dramatically cheaper at high precision.
+    let mut correction_product = DBig::ONE.with_precision(work_precision).value();
     while value < threshold {
-        correction += value.ln();
+        correction_product *= &value;
         value += &one;
     }
+    let correction = correction_product.ln();
 
     let pi = DBig::pi(work_precision);
     let mut result = (&value - &half) * value.ln() - &value
         + &half * (DBig::from(2).with_precision(work_precision).value() * pi).ln();
-    let terms = precision.saturating_div(2).saturating_add(12).max(12);
-    let bernoulli = bernoulli_numbers(terms.saturating_mul(2));
     let value_squared = &value * &value;
     let mut odd_power = value.clone();
     for k in 1..=terms {
         let index = k * 2;
-        let coefficient = rational_float(&bernoulli[index], work_precision)?;
+        let coefficient = if let Some((numerator, denominator)) = EVEN_BERNOULLI.get(k - 1) {
+            rational_float(numerator, denominator, work_precision)?
+        } else {
+            let bernoulli = &generated.as_ref().expect("generated above")[index];
+            rational_float(
+                &bernoulli.numer().to_string(),
+                &bernoulli.denom().to_string(),
+                work_precision,
+            )?
+        };
         let divisor = DBig::from(index * (index - 1))
             .with_precision(work_precision)
             .value()
@@ -403,7 +491,7 @@ fn log_gamma_positive(mut value: DBig, precision: usize) -> Result<DBig, MathEva
 }
 
 fn gamma_real(value: DBig, precision: usize, logarithm: bool) -> Result<DBig, MathEvaluationError> {
-    let work_precision = precision.saturating_add(16);
+    let work_precision = precision.saturating_add(8);
     let value = value.with_precision(work_precision).value();
     if value > DBig::ZERO {
         let log_gamma = log_gamma_positive(value, work_precision)?;

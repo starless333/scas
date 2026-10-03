@@ -5176,7 +5176,6 @@ impl<W: Write> Interpreter<W> {
                 let at_lower = Self::substitute_symbolic(&primitive, variable, lower);
                 let difference = Self::symbolic_binary_raw(at_upper, Sub, at_lower);
                 let simplified = self.simplify_symbolic_tree(&difference)?;
-                let simplified = self.simplify_symbolic_tree(&simplified)?;
                 let simplified = Polynomial::from_expression(&simplified, &self.symbols)
                     .map(|polynomial| polynomial.expanded_expression())
                     .unwrap_or(simplified);

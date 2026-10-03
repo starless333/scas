@@ -1,10 +1,11 @@
 use scas::ast::StatementKind;
-use scas::execute;
+use scas::{execute, execute_with_options, ExecutionOptions, Limits};
 use scas::interpreter::Interpreter;
 use scas::latex::LatexRenderer;
 use scas::lexer::{Scanner, SymbolTable};
 use scas::parser::Parser;
 use std::hint::black_box;
+use std::num::NonZeroU64;
 use std::time::{Duration, Instant};
 
 fn measure(iterations: u32, mut operation: impl FnMut()) -> Duration {
@@ -70,6 +71,94 @@ fn main() {
         "algebra tour end-to-end",
         measure(100, || {
             execute(black_box(tour), Vec::new()).unwrap();
+        }),
+    );
+
+    let definite_integrals = concat!(
+        "print(definite_integral(x*exp(x), x, -1, 1));",
+        "print(definite_integral(x + x^2, x, -1, 1));",
+        "print(definite_integral(x^2, x, -2, 2));",
+    );
+    report(
+        "3 definite integrals",
+        measure(100, || {
+            execute(black_box(definite_integrals), Vec::new()).unwrap();
+        }),
+    );
+
+    report(
+        "gamma (50 digits)",
+        measure(20, || {
+            execute_with_options(
+                black_box("print(gamma(0.5));"),
+                Vec::new(),
+                ExecutionOptions {
+                    limits: Limits::default(),
+                    decimal_precision: NonZeroU64::new(50).unwrap(),
+                },
+            )
+            .unwrap();
+        }),
+    );
+
+    let plain_render_lines = "\\[ sin(pi / 6) \\]\n".repeat(100);
+    report(
+        "document 100 plain",
+        measure(100, || {
+            black_box(scas::document::build(black_box(&plain_render_lines)).unwrap());
+        }),
+    );
+    let evaluated_render_lines = "\\[ sin(pi / 6) => \\]\n".repeat(100);
+    report(
+        "document 100 results",
+        measure(100, || {
+            black_box(scas::document::build(black_box(&evaluated_render_lines)).unwrap());
+        }),
+    );
+    let matrix_plain = "\\[ rref([1,2,3,4;5,6,7,8;2,3,5,7;11,13,17,19]) \\]\n".repeat(25);
+    report(
+        "document 25 rref",
+        measure(20, || {
+            black_box(scas::document::build(black_box(&matrix_plain)).unwrap());
+        }),
+    );
+    let matrix_results =
+        "\\[ rref([1,2,3,4;5,6,7,8;2,3,5,7;11,13,17,19]) => \\]\n".repeat(25);
+    report(
+        "document 25 rref steps",
+        measure(20, || {
+            black_box(scas::document::build(black_box(&matrix_results)).unwrap());
+        }),
+    );
+    report(
+        "live 25 rref results",
+        measure(20, || {
+            black_box(
+                scas::document::build_live_with_limits(
+                    black_box(&matrix_results),
+                    Limits::default(),
+                )
+                .unwrap(),
+            );
+        }),
+    );
+    let gamma_results = "\\[ evalf(gamma(0.5)) => \\]\n".repeat(25);
+    report(
+        "document 25 gamma",
+        measure(5, || {
+            black_box(scas::document::build(black_box(&gamma_results)).unwrap());
+        }),
+    );
+    report(
+        "live 25 gamma",
+        measure(5, || {
+            black_box(
+                scas::document::build_live_with_limits(
+                    black_box(&gamma_results),
+                    Limits::default(),
+                )
+                .unwrap(),
+            );
         }),
     );
 

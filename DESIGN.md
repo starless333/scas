@@ -38,7 +38,7 @@ typography:
     fontSize: "11px"
     fontWeight: 600
   code:
-    fontFamily: "egui Monospace, ui-monospace, monospace"
+    fontFamily: "IBM Plex Mono, ui-monospace, monospace"
     fontSize: "15px"
     fontWeight: 400
 rounded:
@@ -146,7 +146,7 @@ The default Dark Modern palette uses near-neutral charcoal layers, soft gray tex
 
 **Display Font:** egui Proportional with the platform system fallback  
 **Body Font:** egui Proportional with the platform system fallback  
-**Label/Mono Font:** egui Monospace with the platform monospace fallback
+**Label/Mono Font:** IBM Plex Mono with the platform monospace fallback
 
 **Character:** Typography is deliberately utilitarian and compact. Weight, case, and semantic color create hierarchy within a narrow 11–16px range so the workspace stays information-dense without becoming noisy.
 
@@ -156,7 +156,7 @@ The default Dark Modern palette uses near-neutral charcoal layers, soft gray tex
 - **Body** (regular, 13px): Standard interface copy, tree entries, output, and supporting content.
 - **Control** (regular, 12px): Menus, buttons, active file tabs, and compact actions.
 - **Label** (semibold, 11px): Uppercase panel titles, OUTPUT/PROBLEMS tabs, state, metadata, and the status bar.
-- **Code** (regular, 15px default): Editable SCAS source. Users may scale or replace this font without changing the chrome hierarchy.
+- **Code** (regular, 15px default): Editable SCAS source in IBM Plex Mono. Users may scale or replace this font without changing the chrome hierarchy.
 
 ### Named Rules
 

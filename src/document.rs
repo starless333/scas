@@ -9,6 +9,7 @@ use crate::parser::Parser;
 use crate::plot::{self, PlotBounds};
 use crate::{ExecutionError, Limits, RuntimeError};
 use std::io;
+use std::num::NonZeroU64;
 use std::ops::Range;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,24 +97,32 @@ impl Document {
 
 /// Parse, execute, and assemble one self-documenting SCAS source file.
 pub fn build(source: &str) -> Result<Document, ExecutionError> {
-    build_with_options_and_limits(source, BuildOptions::default(), Limits::default())
+    build_with_options_and_limits(source, BuildOptions::default(), Limits::default(), true)
 }
 
 pub fn build_with_options(source: &str, options: BuildOptions) -> Result<Document, ExecutionError> {
-    build_with_options_and_limits(source, options, Limits::default())
+    build_with_options_and_limits(source, options, Limits::default(), true)
 }
 
 /// Build a live document with a caller-selected evaluation budget. Editors
 /// use this to keep expensive or accidental computations from monopolizing a
 /// machine; explicit runs and exports retain the normal full budget.
 pub fn build_with_limits(source: &str, limits: Limits) -> Result<Document, ExecutionError> {
-    build_with_options_and_limits(source, BuildOptions::default(), limits)
+    build_with_options_and_limits(source, BuildOptions::default(), limits, true)
+}
+
+/// Build a latency-sensitive live preview. Dynamic result markers still
+/// evaluate normally, but operations that can emit large derivation traces
+/// return their concise value. Explicit builds retain the detailed steps.
+pub fn build_live_with_limits(source: &str, limits: Limits) -> Result<Document, ExecutionError> {
+    build_with_options_and_limits(source, BuildOptions::default(), limits, false)
 }
 
 fn build_with_options_and_limits(
     source: &str,
     options: BuildOptions,
     limits: Limits,
+    detailed_steps: bool,
 ) -> Result<Document, ExecutionError> {
     let mut scanner = Scanner::new(source);
     let tokens = scanner.scan_tokens().clone();
@@ -123,12 +132,18 @@ fn build_with_options_and_limits(
     let symbols = scanner.into_symbols();
     let statements = Parser::new(tokens).parse().map_err(ExecutionError::Parse)?;
     let mut interpreter = Interpreter::with_limits(symbols, io::sink(), limits);
+    if !detailed_steps {
+        let precision = limits.max_decimal_precision.min(34).max(1);
+        interpreter
+            .set_decimal_precision(NonZeroU64::new(precision).expect("precision is at least one"))
+            .map_err(ExecutionError::Runtime)?;
+    }
     let mut document = Document {
         packages: options.packages,
         ..Document::default()
     };
     for statement in &statements {
-        process_top_level(statement, &mut interpreter, &mut document)?;
+        process_top_level(statement, &mut interpreter, &mut document, detailed_steps)?;
     }
     Ok(document)
 }
@@ -137,6 +152,7 @@ fn process_top_level(
     statement: &Statement,
     interpreter: &mut Interpreter<io::Sink>,
     document: &mut Document,
+    detailed_steps: bool,
 ) -> Result<(), ExecutionError> {
     match &statement.kind {
         StatementKind::Expr(expression) => {
@@ -190,7 +206,12 @@ fn process_top_level(
             }
             let source = LatexRenderer::new(interpreter.symbols()).expression(expression);
             let latex = if *show_result {
-                match interpreter.evaluate_documented_expression(expression) {
+                let result = if detailed_steps {
+                    interpreter.evaluate_documented_expression(expression)
+                } else {
+                    interpreter.evaluate_expression(expression)
+                };
+                match result {
                     Ok(value) => format!(
                         r"\[{}\]",
                         render_evaluation(expression, &source, &value, interpreter)
@@ -213,7 +234,13 @@ fn process_top_level(
             });
         }
         StatementKind::RenderBlock(statements) => {
-            render_block(statements, statement.span, interpreter, document)?;
+            render_block(
+                statements,
+                statement.span,
+                interpreter,
+                document,
+                detailed_steps,
+            )?;
         }
         _ => interpreter
             .execute_statement(statement)
@@ -227,6 +254,7 @@ fn render_block(
     span: SourceSpan,
     interpreter: &mut Interpreter<io::Sink>,
     document: &mut Document,
+    detailed_steps: bool,
 ) -> Result<(), ExecutionError> {
     let mut rows = Vec::new();
     for statement in statements {
@@ -271,8 +299,13 @@ fn render_block(
                     ))
                 } else {
                     let text = LatexRenderer::new(interpreter.symbols()).expression(expression);
+                    let result = if detailed_steps {
+                        interpreter.evaluate_documented_expression(expression)
+                    } else {
+                        interpreter.evaluate_expression(expression)
+                    };
                     Some(
-                        match interpreter.evaluate_documented_expression(expression) {
+                        match result {
                             Ok(value) => render_evaluation(expression, &text, &value, interpreter),
                             Err(error) => {
                                 push_runtime_diagnostic(error, statement.span, document);
@@ -357,7 +390,7 @@ fn render_block(
                 (!parts.is_empty()).then(|| parts.join(r" \quad "))
             }
             StatementKind::RenderLine { .. } | StatementKind::RenderBlock(_) => {
-                process_top_level(statement, interpreter, document)?;
+                process_top_level(statement, interpreter, document, detailed_steps)?;
                 None
             }
             StatementKind::If { .. } | StatementKind::While { .. } | StatementKind::For { .. } => {
@@ -893,6 +926,16 @@ det_steps([1, 2; 3, 4]) =>;
         assert!(latex.contains(r"z = 1"));
         assert!(latex.contains(r"\begin{aligned}"));
         assert!(latex.matches("\\\\\n").count() >= 3, "{latex}");
+    }
+
+    #[test]
+    fn live_results_are_concise_while_explicit_builds_keep_derivations() {
+        let source = r"\[ rref([1, 2; 3, 4]) => \]";
+        let detailed = build(source).unwrap();
+        let live = build_live_with_limits(source, Limits::default()).unwrap();
+        assert!(detailed.body().contains(r"\sim"));
+        assert!(!live.body().contains(r"\sim"));
+        assert!(live.body().contains(r"\implies"));
     }
 
     #[test]

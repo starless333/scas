@@ -24,7 +24,10 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::{
+    mpsc::{self, Receiver, Sender, TryRecvError},
+    Arc, Mutex, OnceLock,
+};
 use std::time::{Duration, Instant};
 
 static NEXT_LATEX_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -35,9 +38,9 @@ let angle = π / 6;\n\
 \\[ sin(angle) => \\]\n\
 print(sin(angle));\n";
 const DEFAULT_AUTO_GREEK: bool = true;
-const DEFAULT_FONT_NAME: &str = "Roboto Mono";
+const DEFAULT_FONT_NAME: &str = "IBM Plex Mono";
 const DEFAULT_FONT_BYTES: &[u8] =
-    include_bytes!("../../assets/fonts/RobotoMono-Regular.otf");
+    include_bytes!("../../assets/fonts/IBMPlexMono-Regular.ttf");
 
 /// REPL inline plot drawing size, in character cells.
 const PLOT_ASCII_WIDTH: usize = 64;
@@ -141,7 +144,16 @@ struct LatexRender {
     size: [usize; 2],
 }
 
-type LatexDocumentResult = (u64, Result<Vec<LatexRender>, String>);
+type LatexDocumentResult = (u64, Result<Vec<Arc<LatexRender>>, String>);
+
+#[derive(Default)]
+struct LatexRenderCache {
+    entries: HashMap<u64, (String, [u8; 3], Arc<LatexRender>)>,
+    order: VecDeque<u64>,
+    bytes: usize,
+}
+
+static LATEX_RENDER_CACHE: OnceLock<Mutex<LatexRenderCache>> = OnceLock::new();
 
 struct HighlightCache {
     source: String,
@@ -222,7 +234,6 @@ enum WorkspaceTab {
 struct ReplEntry {
     source: String,
     input_latex: Option<String>,
-    result_latex: Option<String>,
     input_math_key: Option<u64>,
     result_math_key: Option<u64>,
     printed: String,
@@ -344,7 +355,6 @@ struct ScasApp {
     latex_render: Option<Receiver<LatexDocumentResult>>,
     latex_pending: Option<(String, [u8; 3], u64)>,
     last_latex_key: Option<u64>,
-    system_latex_preview: bool,
     latex_textures: Vec<egui::TextureHandle>,
     latex_render_error: Option<String>,
     repl_math_receiver: Option<Receiver<(u64, Result<LatexRender, String>)>>,
@@ -419,13 +429,11 @@ fn install_default_font(context: &egui::Context) {
         DEFAULT_FONT_NAME.to_owned(),
         FontData::from_owned(DEFAULT_FONT_BYTES.to_vec()),
     );
-    for family in [FontFamily::Monospace, FontFamily::Proportional] {
-        fonts
-            .families
-            .entry(family)
-            .or_default()
-            .insert(0, DEFAULT_FONT_NAME.to_owned());
-    }
+    fonts
+        .families
+        .entry(FontFamily::Monospace)
+        .or_default()
+        .insert(0, DEFAULT_FONT_NAME.to_owned());
     context.set_fonts(fonts);
 }
 
@@ -466,7 +474,7 @@ impl ScasApp {
             editor_monospace: true,
             settings_open: false,
             theme_path: "themes/dark-modern.toml".to_owned(),
-            font_path: "assets/fonts/RobotoMono-Regular.otf".to_owned(),
+            font_path: "assets/fonts/IBMPlexMono-Regular.ttf".to_owned(),
             preview: String::new(),
             preview_document: None,
             preview_error: None,
@@ -481,7 +489,6 @@ impl ScasApp {
             latex_render: None,
             latex_pending: None,
             last_latex_key: None,
-            system_latex_preview: true,
             latex_textures: Vec::new(),
             latex_render_error: None,
             repl_math_receiver: None,
@@ -864,21 +871,18 @@ impl ScasApp {
             self.queue_repl_math(latex, [repl_color.r(), repl_color.g(), repl_color.b()])
         });
         self.repl_input_math_due = None;
-        let mut result_latex = None;
         let mut result_math_key = None;
         let mut error = (!scan_error.is_empty()).then_some(scan_error);
         if error.is_none() {
             match Parser::new(tokens).parse() {
                 Ok(program) => match self.repl_interpreter.run_interactive_value(&program) {
                     Ok(Some(value)) => {
-                        result_latex =
-                            Some(LatexRenderer::new(self.repl_interpreter.symbols()).value(&value));
-                        result_math_key = result_latex.as_deref().map(|latex| {
-                            self.queue_repl_math(
-                                latex,
-                                [repl_color.r(), repl_color.g(), repl_color.b()],
-                            )
-                        });
+                        let latex =
+                            LatexRenderer::new(self.repl_interpreter.symbols()).value(&value);
+                        result_math_key = Some(self.queue_repl_math(
+                            &latex,
+                            [repl_color.r(), repl_color.g(), repl_color.b()],
+                        ));
                     }
                     Ok(None) => {}
                     Err(runtime) => error = Some(runtime.render(&submission, "<repl>")),
@@ -899,7 +903,6 @@ impl ScasApp {
         self.repl_entries.push(ReplEntry {
             source,
             input_latex,
-            result_latex,
             input_math_key,
             result_math_key,
             printed,
@@ -924,7 +927,6 @@ impl ScasApp {
             self.repl_entries.push(ReplEntry {
                 source: ":plot".to_owned(),
                 input_latex: None,
-                result_latex: None,
                 input_math_key: None,
                 result_math_key: None,
                 printed: GUI_PLOT_HELP.to_owned(),
@@ -958,7 +960,6 @@ impl ScasApp {
                         ReplEntry {
                             source: format!(":plot {rest}"),
                             input_latex: None,
-                            result_latex: None,
                             input_math_key: None,
                             result_math_key: None,
                             printed: format!(
@@ -983,7 +984,6 @@ impl ScasApp {
                     ReplEntry {
                         source: format!(":plot {rest}"),
                         input_latex: None,
-                        result_latex: None,
                         input_math_key: None,
                         result_math_key: None,
                         printed: String::new(),
@@ -1237,7 +1237,7 @@ impl ScasApp {
         self.analysis_result = Some(receiver);
         std::thread::spawn(move || {
             let diagnostics = source_diagnostics(&source);
-            let document = scas::document::build_with_limits(&source, live_preview_limits())
+            let document = scas::document::build_live_with_limits(&source, live_preview_limits())
                 .map_err(|error| error.to_string());
             let _ = sender.send(AnalysisResult {
                 generation,
@@ -1256,7 +1256,7 @@ impl ScasApp {
             Ok(document) => {
                 self.preview = document.latex();
                 let text_color = self.themes[self.selected_theme].ui.text.0;
-                if self.preview_open && self.system_latex_preview {
+                if self.preview_open {
                     self.start_latex_render(
                         document.body(),
                         [text_color.r(), text_color.g(), text_color.b()],
@@ -1335,7 +1335,7 @@ impl ScasApp {
     }
 
     fn start_latex_render(&mut self, body: String, color: [u8; 3]) {
-        if !self.system_latex_preview || !self.preview_open {
+        if !self.preview_open {
             return;
         }
         let mut hasher = DefaultHasher::new();
@@ -1404,9 +1404,6 @@ impl ScasApp {
     }
 
     fn poll_repl_math(&mut self, context: &egui::Context) {
-        if !self.system_latex_preview {
-            return;
-        }
         if self
             .repl_input_math_due
             .is_some_and(|_| self.repl_input_latex.is_none())
@@ -1623,62 +1620,32 @@ impl ScasApp {
                                         .size(10.5)
                                         .color(theme.ui.muted.0),
                                 );
-                                if self.system_latex_preview {
-                                    if let Some(key) = entry.input_math_key {
-                                        if let Some(texture) = self.repl_math_cache.get(&key) {
-                                            show_cm_texture(ui, texture, ui.available_width());
-                                        } else if let Some(error) = &self.repl_math_error {
-                                            ui.colored_label(theme.syntax.operator.0, error);
-                                        } else {
-                                            ui.label(
-                                                RichText::new("Typesetting in Computer Modern…")
-                                                    .italics()
-                                                    .color(theme.ui.muted.0),
-                                            );
-                                        }
-                                    } else if entry.input_latex.is_none() {
+                                if let Some(key) = entry.input_math_key {
+                                    if let Some(texture) = self.repl_math_cache.get(&key) {
+                                        show_cm_texture(ui, texture, ui.available_width());
+                                    } else if let Some(error) = &self.repl_math_error {
+                                        ui.colored_label(theme.syntax.operator.0, error);
+                                    } else {
                                         ui.label(
-                                            RichText::new(&entry.source)
-                                                .monospace()
-                                                .color(theme.ui.text.0),
+                                            RichText::new("Typesetting in Computer Modern…")
+                                                .italics()
+                                                .color(theme.ui.muted.0),
                                         );
                                     }
-                                } else if let Some(latex) = &entry.input_latex {
-                                    math_preview::show_expression(
-                                        ui,
-                                        latex,
-                                        theme.ui.text.0,
-                                        22.0,
-                                    );
-                                } else {
+                                } else if entry.input_latex.is_none() {
                                     ui.label(
                                         RichText::new(&entry.source)
                                             .monospace()
-                                            .size(13.0)
                                             .color(theme.ui.text.0),
                                     );
                                 }
-                                if self.system_latex_preview {
-                                    if let Some(key) = entry.result_math_key {
-                                        if let Some(texture) = self.repl_math_cache.get(&key) {
-                                            ui.with_layout(
-                                                egui::Layout::right_to_left(egui::Align::Center),
-                                                |ui| show_cm_texture(ui, texture, ui.available_width()),
-                                            );
-                                        }
+                                if let Some(key) = entry.result_math_key {
+                                    if let Some(texture) = self.repl_math_cache.get(&key) {
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| show_cm_texture(ui, texture, ui.available_width()),
+                                        );
                                     }
-                                } else if let Some(latex) = &entry.result_latex {
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            math_preview::show_expression(
-                                                ui,
-                                                latex,
-                                                theme.ui.accent.0,
-                                                22.0,
-                                            );
-                                        },
-                                    );
                                 }
                             });
                             if entry.input_latex.is_some() {
@@ -1743,12 +1710,10 @@ impl ScasApp {
                         ui.set_min_height(56.0);
                         if let Some(latex) = &self.repl_input_latex {
                             let mut rendered_texture = false;
-                            if self.system_latex_preview {
-                                if let Some(key) = self.repl_input_math_key {
-                                    if let Some(texture) = self.repl_math_cache.get(&key) {
-                                        show_cm_texture(ui, texture, ui.available_width());
-                                        rendered_texture = true;
-                                    }
+                            if let Some(key) = self.repl_input_math_key {
+                                if let Some(texture) = self.repl_math_cache.get(&key) {
+                                    show_cm_texture(ui, texture, ui.available_width());
+                                    rendered_texture = true;
                                 }
                             }
                             // Never replace valid math with a loading message:
@@ -2255,7 +2220,6 @@ impl ScasApp {
         let mut chosen_theme = None;
         let mut load_theme = false;
         let mut load_font = false;
-        let previous_system_preview = self.system_latex_preview;
         egui::Window::new("Editor settings")
             .open(&mut open)
             .resizable(false)
@@ -2293,12 +2257,6 @@ impl ScasApp {
                         }
                     });
                 ui.separator();
-                ui.label("Preview performance");
-                ui.checkbox(&mut self.system_latex_preview, "Computer Modern preview");
-                ui.small(
-                    "Uses system LaTeX for faithful typesetting. Off uses the fast structured fallback.",
-                );
-                ui.separator();
                 ui.label("Editor font");
                 ui.horizontal(|ui| {
                     ui.radio_value(&mut self.editor_monospace, true, "Monospace");
@@ -2310,21 +2268,9 @@ impl ScasApp {
                     ui.text_edit_singleline(&mut self.font_path);
                     load_font = ui.button("Load").clicked();
                 });
-                ui.small("Theme files use TOML; font files may be .ttf or .otf.");
+                ui.small("IBM Plex Mono is the default. Font files may be .ttf or .otf.");
             });
         self.settings_open = open;
-        if !previous_system_preview && self.system_latex_preview {
-            if let Some(document) = &self.preview_document {
-                let body = document.body();
-                let color = self.themes[self.selected_theme].ui.text.0;
-                self.start_latex_render(body, [color.r(), color.g(), color.b()]);
-            }
-            self.refresh_repl_latex();
-        } else if previous_system_preview && !self.system_latex_preview {
-            self.latex_pending = None;
-            self.repl_math_pending.clear();
-            self.repl_input_math_key = None;
-        }
         if let Some(index) = chosen_theme {
             self.themes[index].apply(context);
             self.status = format!("Using {}", self.themes[index].name);
@@ -3543,7 +3489,6 @@ impl eframe::App for ScasApp {
                         )),
                 )
                 .show(context, |ui| {
-                    let mut enable_system_preview = false;
                     ui.horizontal(|ui| {
                         ui.label(
                             RichText::new("DOCUMENT PREVIEW")
@@ -3564,21 +3509,15 @@ impl eframe::App for ScasApp {
                         );
                     });
                     ui.horizontal_wrapped(|ui| {
-                        let response = ui
-                            .toggle_value(&mut self.system_latex_preview, "Computer Modern")
-                            .on_hover_text("Use cached, serialized system LaTeX rendering");
-                        enable_system_preview = response.changed() && self.system_latex_preview;
+                        ui.label(
+                            RichText::new("Computer Modern")
+                                .size(10.5)
+                                .color(theme.ui.muted.0),
+                        );
                         if ui.small_button("Copy TeX").clicked() {
                             ui.output_mut(|output| output.copied_text.clone_from(&self.preview));
                         }
                     });
-                    if enable_system_preview {
-                        if let Some(document) = &self.preview_document {
-                            let body = document.body();
-                            let color = self.themes[self.selected_theme].ui.text.0;
-                            self.start_latex_render(body, [color.r(), color.g(), color.b()]);
-                        }
-                    }
                     if let Some(error) = &self.preview_error {
                         ui.colored_label(
                             self.themes[self.selected_theme].syntax.operator.0,
@@ -3600,8 +3539,7 @@ impl eframe::App for ScasApp {
                             .auto_shrink([false, false])
                             .show(ui, |ui| {
                                 if let Some(document) = &self.preview_document {
-                                    if self.system_latex_preview {
-                                        if !self.latex_textures.is_empty() {
+                                    if !self.latex_textures.is_empty() {
                                             let page_width = (preview_width - 52.0).max(180.0);
                                             let widest_chunk = self
                                                 .latex_textures
@@ -3644,15 +3582,6 @@ impl eframe::App for ScasApp {
                                                         });
                                                 },
                                             );
-                                        } else {
-                                            math_preview::show_document(
-                                                ui,
-                                                document,
-                                                self.themes[self.selected_theme].ui.text.0,
-                                                self.themes[self.selected_theme].ui.muted.0,
-                                                preview_scale,
-                                            );
-                                        }
                                     } else {
                                         math_preview::show_document(
                                             ui,
@@ -4571,20 +4500,32 @@ fn highlight(
         theme,
         &font_id,
     );
+    // Analysis runs asynchronously, so diagnostics can briefly belong to the
+    // preceding buffer revision. Snap their offsets to the current UTF-8 text
+    // before turning them into LayoutJob section boundaries; egui requires
+    // every boundary to fall between complete code points.
+    let diagnostic_ranges = diagnostics
+        .iter()
+        .filter_map(|diagnostic| {
+            let start = previous_char_boundary(source, diagnostic.byte_start);
+            let end = next_char_boundary(source, diagnostic.byte_end);
+            (start < end).then_some(start..end)
+        })
+        .collect::<Vec<_>>();
     let diagnostic_color = theme.syntax.operator.0;
     let original_sections = std::mem::take(&mut job.sections);
     for section in original_sections {
         let mut boundaries = vec![section.byte_range.start, section.byte_range.end];
-        for diagnostic in diagnostics {
-            if section.byte_range.start < diagnostic.byte_start
-                && diagnostic.byte_start < section.byte_range.end
+        for diagnostic in &diagnostic_ranges {
+            if section.byte_range.start < diagnostic.start
+                && diagnostic.start < section.byte_range.end
             {
-                boundaries.push(diagnostic.byte_start);
+                boundaries.push(diagnostic.start);
             }
-            if section.byte_range.start < diagnostic.byte_end
-                && diagnostic.byte_end < section.byte_range.end
+            if section.byte_range.start < diagnostic.end
+                && diagnostic.end < section.byte_range.end
             {
-                boundaries.push(diagnostic.byte_end);
+                boundaries.push(diagnostic.end);
             }
         }
         boundaries.sort_unstable();
@@ -4592,9 +4533,9 @@ fn highlight(
         for range in boundaries.windows(2) {
             let mut part = section.clone();
             part.byte_range = range[0]..range[1];
-            if diagnostics.iter().any(|diagnostic| {
-                part.byte_range.start < diagnostic.byte_end
-                    && diagnostic.byte_start < part.byte_range.end
+            if diagnostic_ranges.iter().any(|diagnostic| {
+                part.byte_range.start < diagnostic.end
+                    && diagnostic.start < part.byte_range.end
             }) {
                 part.format.underline = egui::Stroke::new(1.5, diagnostic_color);
             }
@@ -4602,6 +4543,22 @@ fn highlight(
         }
     }
     job
+}
+
+fn previous_char_boundary(text: &str, index: usize) -> usize {
+    let mut index = index.min(text.len());
+    while !text.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
+}
+
+fn next_char_boundary(text: &str, index: usize) -> usize {
+    let mut index = index.min(text.len());
+    while !text.is_char_boundary(index) {
+        index += 1;
+    }
+    index
 }
 
 fn source_diagnostics(source: &str) -> Vec<EditorDiagnostic> {
@@ -4864,54 +4821,146 @@ fn live_preview_limits() -> Limits {
     }
 }
 
-/// Split large aligned documents before rasterization. Each piece is still
-/// typeset by LaTeX, but no individual PNG can grow tall enough to exceed
-/// dvipng or GPU texture limits.
+/// Split generated documents at complete fragment and alignment boundaries.
+/// Result-heavy `=>` blocks can be far larger than their source; bounded,
+/// stable chunks avoid pathological TeX pages and are reusable after edits.
 fn latex_preview_chunks(body: &str) -> Vec<String> {
-    const BEGIN_ALIGN: &str = r"\begin{align*}";
-    const END_ALIGN: &str = r"\end{align*}";
     const MAX_ROWS: usize = 32;
-    const MAX_BYTES: usize = 16_000;
+    const MAX_BYTES: usize = 12_000;
 
+    let mut fragments: Vec<(String, bool)> = Vec::new();
+    for fragment in body.split("\n\n").filter(|part| !part.trim().is_empty()) {
+        let fragment = fragment.trim();
+        let parts = [
+            (r"\begin{align*}", r"\end{align*}"),
+            (r"\[\begin{aligned}", r"\end{aligned}\]"),
+        ]
+        .into_iter()
+        .find_map(|(begin, end)| {
+            fragment
+                .strip_prefix(begin)
+                .and_then(|rows| rows.strip_suffix(end))
+                .map(|rows| (begin, rows, end))
+        })
+        .map_or_else(
+            || vec![(fragment.to_owned(), false)],
+            |(begin, rows, end)| {
+                let total_rows = rows.split_inclusive("\\\\\n").count();
+                if total_rows <= MAX_ROWS && fragment.len() <= MAX_BYTES {
+                    return vec![(fragment.to_owned(), false)];
+                }
+                let mut parts = Vec::new();
+                let mut part = String::new();
+                let mut row_count = 0;
+                for row in rows.split_inclusive("\\\\\n") {
+                    if !part.is_empty()
+                        && (row_count >= MAX_ROWS || part.len() + row.len() > MAX_BYTES)
+                    {
+                        parts.push((format!("{begin}\n{}{end}", part.trim()), true));
+                        part.clear();
+                        row_count = 0;
+                    }
+                    part.push_str(row);
+                    row_count += 1;
+                }
+                if !part.trim().is_empty() {
+                    parts.push((format!("{begin}\n{}{end}", part.trim()), true));
+                }
+                parts
+            },
+        );
+
+        fragments.extend(parts);
+    }
+    if fragments.is_empty() {
+        return vec![body.to_owned()];
+    }
+    // Count-based grouping stays stable when one result changes length, which
+    // is what makes unchanged chunks reusable. The largest fragment selects a
+    // safe group size for the whole revision.
+    let largest = fragments
+        .iter()
+        .filter(|(_, isolated)| !isolated)
+        .map(|(fragment, _)| fragment.len())
+        .max()
+        .unwrap_or(1);
+    let fragments_per_chunk = match largest {
+        0..=512 => 64,
+        513..=2_048 => 16,
+        2_049..=8_192 => 4,
+        _ => 1,
+    };
     let mut chunks = Vec::new();
-    let mut remainder = body;
-    while let Some(begin_offset) = remainder.find(BEGIN_ALIGN) {
-        let prefix = &remainder[..begin_offset];
-        if !prefix.trim().is_empty() {
-            chunks.push(prefix.trim().to_owned());
-        }
-
-        let after_begin = &remainder[begin_offset + BEGIN_ALIGN.len()..];
-        let Some(end_offset) = after_begin.find(END_ALIGN) else {
-            chunks.push(remainder.trim().to_owned());
-            return chunks;
-        };
-        let rows = &after_begin[..end_offset];
-        let mut current = String::new();
-        let mut row_count = 0;
-        for row in rows.split_inclusive("\\\\\n") {
-            if !current.is_empty()
-                && (row_count >= MAX_ROWS || current.len() + row.len() > MAX_BYTES)
-            {
-                chunks.push(format!("{BEGIN_ALIGN}\n{}{END_ALIGN}", current.trim()));
-                current.clear();
-                row_count = 0;
+    let mut grouped = Vec::new();
+    for (fragment, isolated) in fragments {
+        if isolated {
+            if !grouped.is_empty() {
+                chunks.push(grouped.join("\n\n"));
+                grouped.clear();
             }
-            current.push_str(row);
-            row_count += 1;
+            chunks.push(fragment);
+        } else {
+            grouped.push(fragment);
+            if grouped.len() >= fragments_per_chunk {
+                chunks.push(grouped.join("\n\n"));
+                grouped.clear();
+            }
         }
-        if !current.trim().is_empty() {
-            chunks.push(format!("{BEGIN_ALIGN}\n{}{END_ALIGN}", current.trim()));
-        }
-        remainder = &after_begin[end_offset + END_ALIGN.len()..];
     }
-    if !remainder.trim().is_empty() {
-        chunks.push(remainder.trim().to_owned());
-    }
-    if chunks.is_empty() {
-        chunks.push(body.to_owned());
+    if !grouped.is_empty() {
+        chunks.push(grouped.join("\n\n"));
     }
     chunks
+}
+
+fn latex_render_cache_key(body: &str, color: [u8; 3]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    body.hash(&mut hasher);
+    color.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn render_latex_png_cached(body: &str, color: [u8; 3]) -> Result<Arc<LatexRender>, String> {
+    const MAX_CACHE_ENTRIES: usize = 32;
+    const MAX_CACHE_BYTES: usize = 64 * 1024 * 1024;
+    let key = latex_render_cache_key(body, color);
+    let cache = LATEX_RENDER_CACHE.get_or_init(|| Mutex::new(LatexRenderCache::default()));
+    {
+        let cache = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((cached_body, cached_color, render)) = cache.entries.get(&key) {
+            if cached_body == body && *cached_color == color {
+                return Ok(Arc::clone(render));
+            }
+        }
+    }
+
+    let render = Arc::new(render_latex_png(body, color)?);
+    let render_bytes = render.rgba.len();
+    if render_bytes > MAX_CACHE_BYTES {
+        return Ok(render);
+    }
+    let mut cache = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !cache.entries.contains_key(&key) {
+        while cache.entries.len() >= MAX_CACHE_ENTRIES
+            || cache.bytes.saturating_add(render_bytes) > MAX_CACHE_BYTES
+        {
+            if let Some(oldest) = cache.order.pop_front() {
+                if let Some((_, _, removed)) = cache.entries.remove(&oldest) {
+                    cache.bytes = cache.bytes.saturating_sub(removed.rgba.len());
+                }
+            } else {
+                break;
+            }
+        }
+        cache.order.push_back(key);
+    } else if let Some((_, _, previous)) = cache.entries.get(&key) {
+        cache.bytes = cache.bytes.saturating_sub(previous.rgba.len());
+    }
+    cache.bytes += render_bytes;
+    cache
+        .entries
+        .insert(key, (body.to_owned(), color, Arc::clone(&render)));
+    Ok(render)
 }
 
 fn render_repl_math_png(latex: &str, color: [u8; 3]) -> Result<LatexRender, String> {
@@ -4921,12 +4970,12 @@ fn render_repl_math_png(latex: &str, color: [u8; 3]) -> Result<LatexRender, Stri
 fn render_latex_document_pngs(
     body: &str,
     color: [u8; 3],
-) -> Result<Vec<LatexRender>, String> {
+) -> Result<Vec<Arc<LatexRender>>, String> {
     latex_preview_chunks(body)
         .into_iter()
         .enumerate()
         .map(|(index, chunk)| {
-            render_latex_png(&chunk, color)
+            render_latex_png_cached(&chunk, color)
                 .map_err(|error| format!("LaTeX preview chunk {}: {error}", index + 1))
         })
         .collect()
@@ -5403,6 +5452,43 @@ mod tests {
     }
 
     #[test]
+    fn unicode_document_diagnostics_keep_layout_ranges_on_char_boundaries() {
+        let source = concat!(
+            "/// A live, typeset result\n",
+            "let angle = π / 6;\n",
+            "\\[ sin(angle) => \\]\n",
+            "print(sin(angle));\n\n",
+            "\\[γ(1/2) => \\]",
+        );
+        let mut diagnostics = source_diagnostics(source);
+        let document = scas::document::build_with_limits(source, live_preview_limits()).unwrap();
+        diagnostics.extend(document.diagnostics.into_iter().map(|diagnostic| EditorDiagnostic {
+            byte_start: diagnostic.span.byte_start.min(source.len()),
+            byte_end: diagnostic.span.byte_end.max(diagnostic.span.byte_start + 1).min(source.len()),
+            line: diagnostic.span.line,
+            column: diagnostic.span.column,
+            message: diagnostic.message,
+        }));
+        diagnostics.push(EditorDiagnostic {
+            byte_start: 90,
+            byte_end: 91,
+            line: 6,
+            column: 3,
+            message: "stale diagnostic from the previous buffer revision".to_owned(),
+        });
+        let job = highlight(
+            source,
+            &Theme::bundled_themes()[0],
+            FontId::monospace(15.0),
+            &diagnostics,
+        );
+        assert!(job.sections.iter().all(|section| {
+            job.text.is_char_boundary(section.byte_range.start)
+                && job.text.is_char_boundary(section.byte_range.end)
+        }));
+    }
+
+    #[test]
     fn line_number_modes_produce_editor_gutter_values() {
         assert_eq!(
             displayed_line_number(LineNumberMode::Absolute, 4, 2),
@@ -5457,5 +5543,10 @@ solve(z^2-z, z) =>;
         assert!(pages
             .iter()
             .all(|page| page.size[0] > 20 && page.size[1] > 20));
+        let cached = render_latex_document_pngs(&gallery.body(), [20, 20, 20]).unwrap();
+        assert!(pages
+            .iter()
+            .zip(&cached)
+            .all(|(page, cached)| Arc::ptr_eq(page, cached)));
     }
 }
