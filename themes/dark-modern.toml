@@ -3,8 +3,10 @@ dark = true
 
 [ui]
 background = "#181818"
-panel = "#1f1f1f"
-editor = "#1e1e1e"
+panel = "#252526"
+editor = "#1f1f1f"
+title_bar = "#3c3c3c"
+activity_bar = "#333333"
 text = "#cccccc"
 muted = "#9d9d9d"
 accent = "#007acc"

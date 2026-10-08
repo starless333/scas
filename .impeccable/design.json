@@ -1,134 +1,472 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-09-29T14:47:22-04:00",
+  "generatedAt": "2026-10-08T18:45:28-04:00",
   "title": "Design System: SCAS Desktop IDE",
   "extensions": {
     "colorMeta": {
-      "workspace": { "role": "neutral", "displayName": "Workspace Charcoal", "tonalRamp": ["#080808", "#181818", "#2f2f2f", "#4b4b4b", "#707070", "#999999", "#c7c7c7", "#f2f2f2"] },
-      "panel": { "role": "neutral", "displayName": "Panel Charcoal", "tonalRamp": ["#0a0a0a", "#1f1f1f", "#363636", "#525252", "#767676", "#9e9e9e", "#cacaca", "#f3f3f3"] },
-      "editor": { "role": "neutral", "displayName": "Editor Charcoal", "tonalRamp": ["#090909", "#1e1e1e", "#353535", "#515151", "#757575", "#9d9d9d", "#c9c9c9", "#f3f3f3"] },
-      "text": { "role": "neutral", "displayName": "Soft Foreground", "tonalRamp": ["#1f1f1f", "#3d3d3d", "#5d5d5d", "#7e7e7e", "#9f9f9f", "#bdbdbd", "#d9d9d9", "#f4f4f4"] },
-      "muted": { "role": "neutral", "displayName": "Muted Steel", "tonalRamp": ["#181818", "#353535", "#535353", "#747474", "#949494", "#b3b3b3", "#d2d2d2", "#f3f3f3"] },
-      "accent": { "role": "primary", "displayName": "Workbench Blue", "tonalRamp": ["#001b2e", "#003d66", "#005f9f", "#007acc", "#2d98df", "#69b7e8", "#a5d5f2", "#e2f3fc"] },
-      "accent-contrast": { "role": "neutral", "displayName": "Accent Contrast", "tonalRamp": ["#1a1a1a", "#3b3b3b", "#5d5d5d", "#808080", "#a3a3a3", "#c4c4c4", "#e2e2e2", "#ffffff"] },
-      "selection": { "role": "primary", "displayName": "Selection Blue", "tonalRamp": ["#0b1a28", "#17324c", "#264f78", "#3f6f9b", "#668fb5", "#91b2ce", "#bfd5e6", "#edf5fa"] },
-      "syntax-plain": { "role": "neutral", "displayName": "Syntax Plain", "tonalRamp": ["#202020", "#3f3f3f", "#626262", "#858585", "#a7a7a7", "#c1c1c1", "#dddddd", "#f6f6f6"] },
-      "syntax-keyword": { "role": "tertiary", "displayName": "Syntax Keyword Mauve", "tonalRamp": ["#321b31", "#5e365c", "#875284", "#aa70a6", "#c586c0", "#d9abd5", "#ead1e8", "#faf0f9"] },
-      "syntax-number": { "role": "tertiary", "displayName": "Syntax Number Sage", "tonalRamp": ["#283026", "#4c5948", "#71816b", "#98a991", "#b5cea8", "#cce0c2", "#e2efdc", "#f5faf2"] },
-      "syntax-string": { "role": "tertiary", "displayName": "Syntax String Clay", "tonalRamp": ["#351e17", "#633a2c", "#915844", "#b8755d", "#ce9178", "#dfb09d", "#edd0c4", "#faeee9"] },
-      "syntax-comment": { "role": "tertiary", "displayName": "Syntax Comment Green", "tonalRamp": ["#182715", "#304928", "#486c3c", "#5d8a4d", "#6a9955", "#94b687", "#bed3b7", "#ebf0e8"] },
-      "syntax-doc-comment": { "role": "tertiary", "displayName": "Syntax Documentation Green", "tonalRamp": ["#162412", "#2c4325", "#436538", "#568047", "#608b4e", "#8baa7e", "#b9cab2", "#e8efe5"] },
-      "syntax-identifier": { "role": "tertiary", "displayName": "Syntax Identifier Ice", "tonalRamp": ["#153036", "#2b5964", "#43838f", "#68aebb", "#9cdcfe", "#b9e7ff", "#d6f1ff", "#f0faff"] },
-      "syntax-operator": { "role": "neutral", "displayName": "Syntax Operator", "tonalRamp": ["#202020", "#3f3f3f", "#626262", "#858585", "#a7a7a7", "#c1c1c1", "#dddddd", "#f6f6f6"] },
-      "syntax-delimiter": { "role": "tertiary", "displayName": "Syntax Delimiter Gold", "tonalRamp": ["#382f00", "#6b5900", "#9e8500", "#d0af00", "#ffd700", "#ffe45c", "#ffef9d", "#fff9dc"] },
-      "syntax-render-marker": { "role": "tertiary", "displayName": "Syntax Render Teal", "tonalRamp": ["#0f302b", "#1f5b52", "#2e8679", "#3eaa99", "#4ec9b0", "#80dac8", "#b2eadf", "#e7f8f3"] }
+      "workspace": {
+        "role": "neutral",
+        "displayName": "Workspace Charcoal",
+        "tonalRamp": [
+          "#080808",
+          "#181818",
+          "#2f2f2f",
+          "#4b4b4b",
+          "#707070",
+          "#999999",
+          "#c7c7c7",
+          "#f2f2f2"
+        ]
+      },
+      "panel": {
+        "role": "neutral",
+        "displayName": "Explorer and Panel Gray",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252526",
+          "#3c3c3d",
+          "#575759",
+          "#777779",
+          "#9e9e9f",
+          "#cacacb",
+          "#f3f3f3"
+        ]
+      },
+      "editor": {
+        "role": "neutral",
+        "displayName": "Editor Charcoal",
+        "tonalRamp": [
+          "#0a0a0a",
+          "#1f1f1f",
+          "#363636",
+          "#525252",
+          "#767676",
+          "#9e9e9e",
+          "#cacaca",
+          "#f3f3f3"
+        ]
+      },
+      "text": {
+        "role": "neutral",
+        "displayName": "Soft Foreground",
+        "tonalRamp": [
+          "#1f1f1f",
+          "#3d3d3d",
+          "#5d5d5d",
+          "#7e7e7e",
+          "#9f9f9f",
+          "#bdbdbd",
+          "#d9d9d9",
+          "#f4f4f4"
+        ]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "Muted Steel",
+        "tonalRamp": [
+          "#181818",
+          "#353535",
+          "#535353",
+          "#747474",
+          "#949494",
+          "#b3b3b3",
+          "#d2d2d2",
+          "#f3f3f3"
+        ]
+      },
+      "accent": {
+        "role": "primary",
+        "displayName": "Workbench Blue",
+        "tonalRamp": [
+          "#001b2e",
+          "#003d66",
+          "#005f9f",
+          "#007acc",
+          "#2d98df",
+          "#69b7e8",
+          "#a5d5f2",
+          "#e2f3fc"
+        ]
+      },
+      "accent-contrast": {
+        "role": "neutral",
+        "displayName": "Accent Contrast",
+        "tonalRamp": [
+          "#1a1a1a",
+          "#3b3b3b",
+          "#5d5d5d",
+          "#808080",
+          "#a3a3a3",
+          "#c4c4c4",
+          "#e2e2e2",
+          "#ffffff"
+        ]
+      },
+      "selection": {
+        "role": "primary",
+        "displayName": "Selection Blue",
+        "tonalRamp": [
+          "#0b1a28",
+          "#17324c",
+          "#264f78",
+          "#3f6f9b",
+          "#668fb5",
+          "#91b2ce",
+          "#bfd5e6",
+          "#edf5fa"
+        ]
+      },
+      "syntax-plain": {
+        "role": "neutral",
+        "displayName": "Syntax Plain",
+        "tonalRamp": [
+          "#202020",
+          "#3f3f3f",
+          "#626262",
+          "#858585",
+          "#a7a7a7",
+          "#c1c1c1",
+          "#dddddd",
+          "#f6f6f6"
+        ]
+      },
+      "syntax-keyword": {
+        "role": "tertiary",
+        "displayName": "Syntax Keyword Mauve",
+        "tonalRamp": [
+          "#321b31",
+          "#5e365c",
+          "#875284",
+          "#aa70a6",
+          "#c586c0",
+          "#d9abd5",
+          "#ead1e8",
+          "#faf0f9"
+        ]
+      },
+      "syntax-number": {
+        "role": "tertiary",
+        "displayName": "Syntax Number Sage",
+        "tonalRamp": [
+          "#283026",
+          "#4c5948",
+          "#71816b",
+          "#98a991",
+          "#b5cea8",
+          "#cce0c2",
+          "#e2efdc",
+          "#f5faf2"
+        ]
+      },
+      "syntax-string": {
+        "role": "tertiary",
+        "displayName": "Syntax String Clay",
+        "tonalRamp": [
+          "#351e17",
+          "#633a2c",
+          "#915844",
+          "#b8755d",
+          "#ce9178",
+          "#dfb09d",
+          "#edd0c4",
+          "#faeee9"
+        ]
+      },
+      "syntax-comment": {
+        "role": "tertiary",
+        "displayName": "Syntax Comment Green",
+        "tonalRamp": [
+          "#182715",
+          "#304928",
+          "#486c3c",
+          "#5d8a4d",
+          "#6a9955",
+          "#94b687",
+          "#bed3b7",
+          "#ebf0e8"
+        ]
+      },
+      "syntax-doc-comment": {
+        "role": "tertiary",
+        "displayName": "Syntax Documentation Green",
+        "tonalRamp": [
+          "#162412",
+          "#2c4325",
+          "#436538",
+          "#568047",
+          "#608b4e",
+          "#8baa7e",
+          "#b9cab2",
+          "#e8efe5"
+        ]
+      },
+      "syntax-identifier": {
+        "role": "tertiary",
+        "displayName": "Syntax Identifier Ice",
+        "tonalRamp": [
+          "#153036",
+          "#2b5964",
+          "#43838f",
+          "#68aebb",
+          "#9cdcfe",
+          "#b9e7ff",
+          "#d6f1ff",
+          "#f0faff"
+        ]
+      },
+      "syntax-operator": {
+        "role": "neutral",
+        "displayName": "Syntax Operator",
+        "tonalRamp": [
+          "#202020",
+          "#3f3f3f",
+          "#626262",
+          "#858585",
+          "#a7a7a7",
+          "#c1c1c1",
+          "#dddddd",
+          "#f6f6f6"
+        ]
+      },
+      "syntax-delimiter": {
+        "role": "tertiary",
+        "displayName": "Syntax Delimiter Gold",
+        "tonalRamp": [
+          "#382f00",
+          "#6b5900",
+          "#9e8500",
+          "#d0af00",
+          "#ffd700",
+          "#ffe45c",
+          "#ffef9d",
+          "#fff9dc"
+        ]
+      },
+      "syntax-render-marker": {
+        "role": "tertiary",
+        "displayName": "Syntax Render Teal",
+        "tonalRamp": [
+          "#0f302b",
+          "#1f5b52",
+          "#2e8679",
+          "#3eaa99",
+          "#4ec9b0",
+          "#80dac8",
+          "#b2eadf",
+          "#e7f8f3"
+        ]
+      },
+      "title-bar": {
+        "role": "neutral",
+        "displayName": "Title Bar Gray",
+        "tonalRamp": [
+          "#101010",
+          "#252525",
+          "#3c3c3c",
+          "#565656",
+          "#747474",
+          "#999999",
+          "#c6c6c6",
+          "#f1f1f1"
+        ]
+      },
+      "activity-bar": {
+        "role": "neutral",
+        "displayName": "Activity Rail Gray",
+        "tonalRamp": [
+          "#0d0d0d",
+          "#222222",
+          "#333333",
+          "#505050",
+          "#717171",
+          "#999999",
+          "#c7c7c7",
+          "#f2f2f2"
+        ]
+      }
     },
     "typographyMeta": {
-      "heading": { "displayName": "Heading", "purpose": "Rare dialog and rendered-document headings." },
-      "body": { "displayName": "Body", "purpose": "Standard interface content and tree rows." },
-      "control": { "displayName": "Control", "purpose": "Menus, buttons, tabs, and compact actions." },
-      "label": { "displayName": "Chrome Label", "purpose": "Uppercase panel titles, state, metadata, and status." },
-      "code": { "displayName": "Source Code", "purpose": "Editable SCAS source at a user-scalable 15px default." }
+      "heading": {
+        "displayName": "Heading",
+        "purpose": "Rare dialog and rendered-document headings."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Standard interface content and tree rows."
+      },
+      "control": {
+        "displayName": "Control",
+        "purpose": "Menus, buttons, tabs, and compact actions."
+      },
+      "label": {
+        "displayName": "Chrome Label",
+        "purpose": "Uppercase panel titles, state, metadata, and status."
+      },
+      "code": {
+        "displayName": "Source Code",
+        "purpose": "JetBrains Mono for editable SCAS source and code surfaces at a user-scalable 27px startup default."
+      }
     },
     "shadows": [
-      { "name": "window-ambient", "value": "0 6px 18px rgba(0,0,0,0.31)", "purpose": "Native settings and dialog windows only." },
-      { "name": "popup-ambient", "value": "0 8px 24px 2px rgba(0,0,0,0.37)", "purpose": "Menus, completions, and transient popups only." }
+      {
+        "name": "window-ambient",
+        "value": "0 6px 18px rgba(0,0,0,0.31)",
+        "purpose": "Native settings and dialog windows only."
+      },
+      {
+        "name": "popup-ambient",
+        "value": "0 8px 24px 2px rgba(0,0,0,0.37)",
+        "purpose": "Menus, completions, and transient popups only."
+      }
     ],
     "motion": [
-      { "name": "state-standard", "value": "160ms ease", "purpose": "Restrained hover, selection, toggle, and focus state changes." }
+      {
+        "name": "state-standard",
+        "value": "160ms ease",
+        "purpose": "Restrained hover, selection, toggle, and focus state changes."
+      }
     ]
   },
   "components": [
     {
+      "name": "Custom Title Bar",
+      "kind": "nav",
+      "refersTo": "command-bar",
+      "description": "38px draggable native window chrome with menus, centered project Quick Open, pane toggles, and window controls.",
+      "html": "<header class=\"ds-title\"><strong>SCAS</strong><nav>File　Edit　View　Go　Run　Terminal</nav><button class=\"ds-project\">SCAS project</button><button aria-label=\"Minimize\">Minimize</button><button aria-label=\"Maximize\">Maximize</button><button aria-label=\"Close\">Close</button></header>",
+      "css": ".ds-title{height:38px;display:flex;align-items:center;gap:10px;padding:4px 7px;background:#3c3c3c;color:#ccc;font:12px system-ui,sans-serif}.ds-project{margin:auto;width:38%;height:26px;border:1px solid #666;background:#363636;color:#ccc}"
+    },
+    {
       "name": "Primary Run Button",
       "kind": "button",
       "refersTo": "button-primary",
-      "description": "The compact accent action for running the current document.",
-      "html": "<button class=\"ds-btn-primary\">Run</button>",
-      "css": ".ds-btn-primary { height:24px; padding:3px 7px; border:0; border-radius:2px; background:#007acc; color:#fff; font:12px system-ui,sans-serif; transition:background 160ms ease,outline-color 160ms ease; } .ds-btn-primary:hover { background:#198bd5; } .ds-btn-primary:focus-visible { outline:1px solid #9cdcfe; outline-offset:1px; } .ds-btn-primary:active { background:#0066ab; }"
+      "description": "The compact accent action for running the active document.",
+      "html": "<button class=\"ds-run\">Run</button>",
+      "css": ".ds-run{height:24px;padding:3px 7px;border:0;border-radius:2px;background:#007acc;color:#fff;font:12px system-ui,sans-serif}.ds-run:focus-visible{outline:1px solid #9cdcfe}"
     },
     {
       "name": "Neutral Control",
       "kind": "button",
       "refersTo": "button-neutral",
-      "description": "A compact secondary action used throughout panel headers and toolbars.",
-      "html": "<button class=\"ds-btn-neutral\">Copy TeX</button>",
-      "css": ".ds-btn-neutral { height:24px; padding:3px 7px; border:1px solid rgba(157,157,157,.28); border-radius:2px; background:#1f1f1f; color:#cccccc; font:12px system-ui,sans-serif; transition:background 160ms ease,border-color 160ms ease; } .ds-btn-neutral:hover { background:#264f78; } .ds-btn-neutral:focus-visible { outline:1px solid #007acc; outline-offset:1px; } .ds-btn-neutral:active { background:#007acc; color:#fff; }"
+      "description": "A compact supporting control for panels and toolbars.",
+      "html": "<button class=\"ds-neutral\">Copy TeX</button>",
+      "css": ".ds-neutral{height:24px;padding:3px 7px;border:1px solid #666;border-radius:2px;background:#252526;color:#ccc;font:12px system-ui,sans-serif}.ds-neutral:hover{background:#264f78}"
     },
     {
       "name": "Theme File Input",
       "kind": "input",
-      "description": "A compact native settings field for external theme and font paths.",
+      "description": "A native settings field for external theme paths.",
       "html": "<input class=\"ds-input\" value=\"themes/dark-modern.toml\" aria-label=\"Theme file\">",
-      "css": ".ds-input { height:24px; min-width:210px; padding:3px 7px; border:1px solid rgba(157,157,157,.28); border-radius:2px; background:#1e1e1e; color:#cccccc; font:13px system-ui,sans-serif; transition:border-color 160ms ease; } .ds-input:hover { border-color:#9d9d9d; } .ds-input:focus-visible { outline:0; border-color:#007acc; } .ds-input:disabled { color:#6f6f6f; }"
+      "css": ".ds-input{height:24px;min-width:210px;padding:3px 7px;border:1px solid #666;border-radius:2px;background:#1f1f1f;color:#ccc;font:13px system-ui,sans-serif}.ds-input:focus-visible{outline:1px solid #007acc}"
     },
     {
       "name": "Activity Rail Item",
       "kind": "nav",
       "refersTo": "activity-button",
-      "description": "A custom-stroked 40×38px destination inside the fixed 48px rail.",
+      "description": "A compact destination in the fixed 46px activity rail.",
       "html": "<button class=\"ds-activity is-active\" aria-label=\"Explorer\"><svg viewBox=\"0 0 20 20\" aria-hidden=\"true\"><rect x=\"2\" y=\"2\" width=\"11\" height=\"13\" rx=\"1\"/><rect x=\"7\" y=\"5\" width=\"11\" height=\"13\" rx=\"1\"/></svg></button>",
-      "css": ".ds-activity { width:40px; height:38px; display:grid; place-items:center; border:0; border-radius:2px; background:transparent; color:#9d9d9d; transition:background 160ms ease,color 160ms ease; } .ds-activity svg { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:1.6; } .ds-activity:hover,.ds-activity.is-active { background:#264f78; color:#cccccc; } .ds-activity:focus-visible { outline:1px solid #007acc; outline-offset:-1px; }"
+      "css": ".ds-activity{width:40px;height:38px;border:0;background:#333;color:#9d9d9d;}.ds-activity svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.6}.ds-activity:hover,.ds-activity.is-active{background:#3c3c3c;color:#ccc}.ds-activity:focus-visible{outline:1px solid #007acc}"
     },
     {
       "name": "Explorer File Row",
       "kind": "nav",
-      "description": "A dense tree row with redundant disclosure and file/folder cues.",
-      "html": "<button class=\"ds-tree-row\"><svg viewBox=\"0 0 16 18\" aria-hidden=\"true\"><path d=\"M1 6h14v10H1zM2 6l5-3\"/></svg><span>symbolic_algebra.scas</span></button>",
-      "css": ".ds-tree-row { width:100%; height:22px; display:flex; align-items:center; gap:6px; padding:2px 4px; border:0; border-radius:2px; background:transparent; color:#cccccc; font:13px system-ui,sans-serif; text-align:left; transition:background 160ms ease; } .ds-tree-row svg { width:16px; height:18px; fill:none; stroke:#9d9d9d; stroke-width:1.2; } .ds-tree-row:hover { background:#264f78; } .ds-tree-row:focus-visible { outline:1px solid #007acc; }"
+      "description": "A dense hierarchical row with file or folder cues.",
+      "html": "<button class=\"ds-tree-row\">▸　symbolic_algebra.scas</button>",
+      "css": ".ds-tree-row{width:100%;height:22px;padding:2px 4px;border:0;background:#252526;color:#ccc;text-align:left;font:13px system-ui,sans-serif}.ds-tree-row:hover{background:#264f78}"
     },
     {
       "name": "Active Editor Tab",
       "kind": "nav",
       "refersTo": "editor-tab-active",
-      "description": "A flat active-file row with accent underline and explicit dirty state.",
-      "html": "<div class=\"ds-editor-tab\"><strong>notes.scas •</strong><span>Modified</span><small>SCAS</small><button aria-label=\"Close editor\">Close</button></div>",
-      "css": ".ds-editor-tab { height:34px; display:flex; align-items:center; gap:8px; padding:5px 10px; border-bottom:1px solid rgba(157,157,157,.20); background:#1f1f1f; color:#cccccc; font:12px system-ui,sans-serif; } .ds-editor-tab strong { align-self:stretch; display:flex; align-items:center; border-bottom:2px solid #007acc; } .ds-editor-tab span,.ds-editor-tab small { color:#9d9d9d; font-size:11px; } .ds-editor-tab button { margin-left:auto; border:1px solid rgba(157,157,157,.28); border-radius:2px; background:#1f1f1f; color:#cccccc; } .ds-editor-tab button:hover { background:#264f78; } .ds-editor-tab button:focus-visible { outline:1px solid #007acc; }"
+      "description": "An editor-filled active document tab with SC mark and dirty dot.",
+      "html": "<div class=\"ds-editor-tab\"><strong>SC</strong><span>notes.scas •</span><button aria-label=\"Close tab\">×</button></div>",
+      "css": ".ds-editor-tab{height:34px;display:flex;align-items:center;gap:8px;padding:2px 10px;background:#1f1f1f;color:#ccc;font:12px system-ui,sans-serif}.ds-editor-tab strong{color:#007acc;font-size:10px}.ds-editor-tab button{margin-left:auto;border:0;background:transparent;color:#9d9d9d}"
     },
     {
-      "name": "Live Typeset Preview",
-      "kind": "custom",
-      "description": "The signature source-adjacent panel for live rendered mathematical output.",
-      "html": "<section class=\"ds-preview\"><header><strong>DOCUMENT PREVIEW</strong><em>LIVE</em><button>Computer Modern</button><button>Copy TeX</button></header><div class=\"ds-preview-rule\"></div><article><h3>Rendered document</h3><small>Live output from the current SCAS source</small><div class=\"ds-paper\">A live, typeset result<br><span>sin(angle) = ½</span></div></article></section>",
-      "css": ".ds-preview { min-width:280px; padding:7px 10px; border-left:1px solid rgba(157,157,157,.22); background:#1f1f1f; color:#cccccc; font:13px system-ui,sans-serif; } .ds-preview header { display:flex; align-items:center; gap:7px; } .ds-preview header strong { font-size:11px; } .ds-preview em { color:#007acc; font:normal 10.5px system-ui,sans-serif; } .ds-preview button { margin-left:auto; border:1px solid rgba(157,157,157,.28); border-radius:2px; background:#1f1f1f; color:#cccccc; } .ds-preview button+button { margin-left:0; } .ds-preview button:hover { background:#264f78; } .ds-preview button:focus-visible { outline:1px solid #007acc; } .ds-preview-rule { margin-top:6px; border-top:1px solid rgba(157,157,157,.22); } .ds-preview article { padding-top:10px; } .ds-preview h3 { margin:0; font-size:15px; } .ds-preview small { color:#9d9d9d; } .ds-paper { margin-top:8px; padding:18px; background:#1e1e1e; text-align:center; font-family:serif; line-height:2.4; }"
-    },
-    {
-      "name": "Output Dock Tabs",
+      "name": "Breadcrumb Row",
       "kind": "nav",
-      "description": "Compact OUTPUT and PROBLEMS tabs at the top of the resizable bottom dock.",
-      "html": "<nav class=\"ds-dock-tabs\" aria-label=\"Bottom panel\"><button class=\"is-active\">OUTPUT</button><button>PROBLEMS 0</button><button class=\"ds-copy\">Copy</button></nav>",
-      "css": ".ds-dock-tabs { height:30px; display:flex; align-items:center; gap:6px; padding:0 10px; border-bottom:1px solid rgba(157,157,157,.22); background:#1e1e1e; } .ds-dock-tabs button { padding:3px 7px; border:0; border-radius:2px; background:transparent; color:#cccccc; font:600 11px system-ui,sans-serif; } .ds-dock-tabs button:hover,.ds-dock-tabs .is-active { background:#264f78; } .ds-dock-tabs button:focus-visible { outline:1px solid #007acc; } .ds-dock-tabs .ds-copy { margin-left:auto; font-weight:400; }"
+      "description": "The 23px path cue between the tab and source editor.",
+      "html": "<div class=\"ds-crumb\"><strong>SC</strong><span>src / notes.scas</span><span>› …</span></div>",
+      "css": ".ds-crumb{height:23px;display:flex;align-items:center;gap:6px;padding-left:18px;background:#1f1f1f;color:#9d9d9d;font:12px system-ui,sans-serif}.ds-crumb strong{color:#007acc;font-size:10px}"
+    },
+    {
+      "name": "Quick Open",
+      "kind": "custom",
+      "description": "A top-centered search for files in the current workspace, opened from the project control or Ctrl+P.",
+      "html": "<section class=\"ds-quick\"><input aria-label=\"Search SCAS files\" placeholder=\"Search SCAS files by name\"><div>notes.scas</div></section>",
+      "css": ".ds-quick{width:470px;padding:8px;background:#252526;color:#ccc;box-shadow:0 8px 24px #0006;font:13px system-ui,sans-serif}.ds-quick input{width:100%;background:#1f1f1f;color:#ccc;border:1px solid #666}"
+    },
+    {
+      "name": "Optional Live Preview",
+      "kind": "custom",
+      "description": "A source-adjacent mathematical preview shown on demand.",
+      "html": "<section class=\"ds-preview\"><header>DOCUMENT PREVIEW　<em>LIVE</em></header><p>Computer Modern　<button>Copy TeX</button></p><article>Rendered mathematics</article></section>",
+      "css": ".ds-preview{min-width:220px;padding:7px 10px;border-left:1px solid #555;background:#252526;color:#ccc;font:13px system-ui,sans-serif}.ds-preview em{color:#007acc;font-style:normal}.ds-preview article{padding:18px;background:#1f1f1f}"
+    },
+    {
+      "name": "Optional Output Dock",
+      "kind": "nav",
+      "description": "OUTPUT and PROBLEMS tabs in a bottom dock opened by run or user action.",
+      "html": "<nav class=\"ds-dock\"><button>OUTPUT</button><button>PROBLEMS 0</button><button>Copy</button></nav>",
+      "css": ".ds-dock{height:30px;display:flex;align-items:center;gap:6px;padding:0 10px;border-top:1px solid #555;background:#1f1f1f}.ds-dock button{border:0;background:transparent;color:#ccc;font:600 11px system-ui,sans-serif}.ds-dock button:hover{background:#264f78}"
     },
     {
       "name": "Accent Status Bar",
       "kind": "custom",
       "refersTo": "status-bar",
-      "description": "The 22px workspace anchor for run state, operation, encoding, cursor line, and diagnostics.",
-      "html": "<footer class=\"ds-status\"><strong>READY</strong><span>Ready</span><span class=\"ds-status-meta\">SCAS&nbsp;&nbsp; UTF-8&nbsp;&nbsp; Ln 1&nbsp;&nbsp; Problems 0</span></footer>",
-      "css": ".ds-status { height:22px; display:flex; align-items:center; gap:6px; padding:2px 8px; background:#007acc; color:#fff; font:11px system-ui,sans-serif; } .ds-status strong { font-weight:700; } .ds-status-meta { margin-left:auto; } .ds-status:focus-within { outline:1px solid #9cdcfe; outline-offset:-1px; }"
+      "description": "The 26px footer for diagnostics, operation, cursor, indentation, encoding, line ending, and workspace type.",
+      "html": "<footer class=\"ds-status\"><span>● 0</span><span>Ready</span><span class=\"ds-status-meta\">Ln 1, Col 1　Spaces: 4　UTF-8　CRLF　SCAS</span></footer>",
+      "css": ".ds-status{height:26px;display:flex;align-items:center;gap:10px;padding:2px 8px;background:#007acc;color:#fff;font:11px system-ui,sans-serif}.ds-status-meta{margin-left:auto}"
+    },
+    {
+      "name": "Unsaved Changes Dialog",
+      "kind": "custom",
+      "description": "Save, Discard, or Cancel before a dirty document is replaced or the window closes.",
+      "html": "<section class=\"ds-dialog\"><strong>Unsaved changes</strong><p>Save changes to this document?</p><button>Save</button><button>Discard</button><button>Cancel</button></section>",
+      "css": ".ds-dialog{width:320px;padding:12px;background:#252526;color:#ccc;box-shadow:0 6px 18px #0005;font:13px system-ui,sans-serif}.ds-dialog button{margin-right:6px;background:#252526;color:#ccc;border:1px solid #666}"
     }
   ],
   "narrative": {
     "northStar": "The Mathematical Workbench",
-    "overview": "SCAS is a dense, native Operate-mode desktop IDE: familiar enough to trust immediately, quiet enough to keep source and rendered mathematics in focus. Its workspace topology follows established developer tools, while its restraint, sparse accent usage, and precise spacing take their cue from Zed. The visual system is functional, flat, and theme-led rather than branded through ornament.\n\nThe signature workflow is simultaneous source and live typeset output. Explorer, editor, preview, diagnostics, program output, and status remain visible as one connected instrument; the live mathematical preview is the product-specific focal surface, never a detached secondary destination. Twelve bundled developer themes share the same semantic TOML contract, with Dark Modern as the default, and external theme loading remains a first-class extension point.",
+    "overview": "SCAS is a dense, native Operate-mode desktop IDE. The supplied VS Code dark reference anchors its window chrome and panel hierarchy; restrained spacing and sparse accent use keep attention on the source editor. A borderless, maximized window opens with a custom title bar, Explorer, an active document tab, breadcrumbs, and a status bar. The visual system is flat and theme-led.\n\nThe editor owns startup. Mathematical preview and the bottom output/problems dock are available on demand, while running a document opens output automatically. When opened, preview stays adjacent to source and retains the last good result during editing errors. Twelve bundled themes share the semantic TOML contract, with Dark Modern as the default and external theme loading supported.",
     "keyCharacteristics": [
       "Dense, flat panels divided by quiet one-pixel structure.",
-      "Compact 11–13px interface chrome around a 15px code surface.",
-      "A stable IDE topology with collapsible and resizable supporting panes.",
+      "Compact 11–13px interface chrome around a user-scalable 27px starting code surface.",
+      "An editor-first layout with collapsible and resizable supporting panes.",
       "One theme accent reserved for selection, active state, live state, and status.",
       "Custom vector icons drawn in a consistent 1.6px stroke language.",
-      "Source and rendered mathematics held in direct visual conversation."
+      "A familiar title bar, project Quick Open, Explorer, tabs, breadcrumbs, and status bar."
     ],
     "rules": [
-      { "name": "The One Accent Rule", "body": "Accent color communicates action or state; it is not ambient decoration.", "section": "colors" },
-      { "name": "The Semantic Theme Rule", "body": "Components consume named UI and syntax roles, never theme-specific color literals.", "section": "colors" },
-      { "name": "The Chrome Ceiling Rule", "body": "Routine interface chrome stays between 11px and 13px; 15–16px is reserved for code, rendered-document headings, and exceptional hierarchy.", "section": "typography" },
-      { "name": "The Stable Topology Rule", "body": "Resizing and collapsing redistribute work area but do not reorder navigation, source, preview, output, or status.", "section": "layout" },
-      { "name": "The Flat Workspace Rule", "body": "Persistent IDE panels never float; use tonal layers and separators, not card shadows.", "section": "elevation" }
+      {
+        "name": "The One Accent Rule",
+        "body": "Accent color communicates action or state; it is not ambient decoration.",
+        "section": "colors"
+      },
+      {
+        "name": "The Semantic Theme Rule",
+        "body": "Components consume named UI and syntax roles, never theme-specific color literals.",
+        "section": "colors"
+      },
+      {
+        "name": "The Chrome Ceiling Rule",
+        "body": "Routine interface chrome stays between 11px and 13px; the editor font is independently scalable and starts at 27px.",
+        "section": "typography"
+      },
+      {
+        "name": "The Editor-First Rule",
+        "body": "Source receives the available workspace at launch; supporting panes open only when requested or needed by an action.",
+        "section": "layout"
+      },
+      {
+        "name": "The Flat Workspace Rule",
+        "body": "Persistent IDE panels never float; use tonal layers and separators, not card shadows.",
+        "section": "elevation"
+      }
     ],
     "dos": [
-      "Do preserve the menu bar → activity rail/Explorer → editor/preview → output dock → status bar topology.",
-      "Do keep source and the live mathematical result visible together whenever width permits.",
+      "Do preserve the title bar → activity rail/Explorer → editor and breadcrumbs → optional preview/output → status bar topology.",
+      "Do keep the editor dominant on startup and make preview and output easy to summon.",
       "Do consume the shared TOML theme roles and preserve all twelve bundled themes plus external loading.",
       "Do use one-pixel separators, 2px control corners, compact spacing, and the shared 160ms state motion.",
       "Do pair color with text, shape, count, or position for dirty, live, run, selection, and diagnostic state."
@@ -137,7 +475,7 @@
       "Don't turn persistent panels into rounded cards, add gradients, or introduce ambient workspace shadows.",
       "Don't spend accent color on decoration or allow syntax colors to leak into general chrome.",
       "Don't replace the custom vector family with emoji, icon fonts, or mixed stroke weights.",
-      "Don't hide live typeset output behind a separate workflow when a simultaneous preview can fit.",
+      "Don't force preview or output open at startup; show output when a run needs it.",
       "Don't enlarge routine chrome beyond the established 11–13px range or loosen the compact density without a platform accessibility reason."
     ]
   }

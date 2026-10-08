@@ -17,6 +17,10 @@ pub struct UiColors {
     pub background: HexColor,
     pub panel: HexColor,
     pub editor: HexColor,
+    #[serde(default)]
+    pub title_bar: Option<HexColor>,
+    #[serde(default)]
+    pub activity_bar: Option<HexColor>,
     pub text: HexColor,
     pub muted: HexColor,
     pub accent: HexColor,
@@ -75,6 +79,16 @@ fn parse_hex(value: &str) -> Result<Color32, String> {
 }
 
 impl Theme {
+    pub fn title_bar_color(&self) -> Color32 {
+        self.ui.title_bar.map_or(self.ui.panel.0, |color| color.0)
+    }
+
+    pub fn activity_bar_color(&self) -> Color32 {
+        self.ui
+            .activity_bar
+            .map_or(self.ui.background.0, |color| color.0)
+    }
+
     fn bundled(source: &str) -> Self {
         toml::from_str(source).expect("bundled themes must be valid")
     }
