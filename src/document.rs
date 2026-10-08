@@ -89,7 +89,7 @@ impl Document {
             }
         }
         format!(
-            "\\documentclass[11pt]{{article}}\n\\usepackage{{amsmath}}\n\\usepackage{{amssymb}}\n\\usepackage{{upgreek}}\n\\usepackage{{booktabs}}\n\\usepackage{{xcolor}}\n\\usepackage[margin=1in]{{geometry}}\n{user_packages}\\begin{{document}}\n{}\n\\end{{document}}\n",
+            "\\documentclass[11pt]{{article}}\n\\usepackage[T1]{{fontenc}}\n\\usepackage{{lmodern}}\n\\usepackage{{microtype}}\n\\usepackage{{amsmath}}\n\\usepackage{{amssymb}}\n\\usepackage{{upgreek}}\n\\usepackage{{booktabs}}\n\\usepackage{{xcolor}}\n\\usepackage[margin=1in]{{geometry}}\n\\setlength{{\\parindent}}{{0pt}}\n\\setlength{{\\parskip}}{{0.65em}}\n\\setlength{{\\jot}}{{0.45em}}\n\\emergencystretch=2em\n\\allowdisplaybreaks[4]\n{user_packages}\\begin{{document}}\n{}\n\\end{{document}}\n",
             self.body()
         )
     }
@@ -97,32 +97,32 @@ impl Document {
 
 /// Parse, execute, and assemble one self-documenting SCAS source file.
 pub fn build(source: &str) -> Result<Document, ExecutionError> {
-    build_with_options_and_limits(source, BuildOptions::default(), Limits::default(), true)
+    build_with_options_and_limits(source, BuildOptions::default(), Limits::default(), false)
 }
 
 pub fn build_with_options(source: &str, options: BuildOptions) -> Result<Document, ExecutionError> {
-    build_with_options_and_limits(source, options, Limits::default(), true)
+    build_with_options_and_limits(source, options, Limits::default(), false)
 }
 
 /// Build a live document with a caller-selected evaluation budget. Editors
 /// use this to keep expensive or accidental computations from monopolizing a
 /// machine; explicit runs and exports retain the normal full budget.
 pub fn build_with_limits(source: &str, limits: Limits) -> Result<Document, ExecutionError> {
-    build_with_options_and_limits(source, BuildOptions::default(), limits, true)
+    build_with_options_and_limits(source, BuildOptions::default(), limits, false)
 }
 
-/// Build a latency-sensitive live preview. Dynamic result markers still
-/// evaluate normally, but operations that can emit large derivation traces
-/// return their concise value. Explicit builds retain the detailed steps.
+/// Build a latency-sensitive live preview. The caller-selected limits keep
+/// evaluation bounded, while dynamic result markers retain the same detailed
+/// derivations as explicit builds.
 pub fn build_live_with_limits(source: &str, limits: Limits) -> Result<Document, ExecutionError> {
-    build_with_options_and_limits(source, BuildOptions::default(), limits, false)
+    build_with_options_and_limits(source, BuildOptions::default(), limits, true)
 }
 
 fn build_with_options_and_limits(
     source: &str,
     options: BuildOptions,
     limits: Limits,
-    detailed_steps: bool,
+    latency_sensitive: bool,
 ) -> Result<Document, ExecutionError> {
     let mut scanner = Scanner::new(source);
     let tokens = scanner.scan_tokens().clone();
@@ -132,7 +132,7 @@ fn build_with_options_and_limits(
     let symbols = scanner.into_symbols();
     let statements = Parser::new(tokens).parse().map_err(ExecutionError::Parse)?;
     let mut interpreter = Interpreter::with_limits(symbols, io::sink(), limits);
-    if !detailed_steps {
+    if latency_sensitive {
         let precision = limits.max_decimal_precision.min(34).max(1);
         interpreter
             .set_decimal_precision(NonZeroU64::new(precision).expect("precision is at least one"))
@@ -143,7 +143,7 @@ fn build_with_options_and_limits(
         ..Document::default()
     };
     for statement in &statements {
-        process_top_level(statement, &mut interpreter, &mut document, detailed_steps)?;
+        process_top_level(statement, &mut interpreter, &mut document)?;
     }
     Ok(document)
 }
@@ -152,7 +152,6 @@ fn process_top_level(
     statement: &Statement,
     interpreter: &mut Interpreter<io::Sink>,
     document: &mut Document,
-    detailed_steps: bool,
 ) -> Result<(), ExecutionError> {
     match &statement.kind {
         StatementKind::Expr(expression) => {
@@ -206,11 +205,7 @@ fn process_top_level(
             }
             let source = LatexRenderer::new(interpreter.symbols()).expression(expression);
             let latex = if *show_result {
-                let result = if detailed_steps {
-                    interpreter.evaluate_documented_expression(expression)
-                } else {
-                    interpreter.evaluate_expression(expression)
-                };
+                let result = interpreter.evaluate_documented_expression(expression);
                 match result {
                     Ok(value) => format!(
                         r"\[{}\]",
@@ -234,13 +229,7 @@ fn process_top_level(
             });
         }
         StatementKind::RenderBlock(statements) => {
-            render_block(
-                statements,
-                statement.span,
-                interpreter,
-                document,
-                detailed_steps,
-            )?;
+            render_block(statements, statement.span, interpreter, document)?;
         }
         _ => interpreter
             .execute_statement(statement)
@@ -254,7 +243,6 @@ fn render_block(
     span: SourceSpan,
     interpreter: &mut Interpreter<io::Sink>,
     document: &mut Document,
-    detailed_steps: bool,
 ) -> Result<(), ExecutionError> {
     let mut rows = Vec::new();
     for statement in statements {
@@ -299,20 +287,14 @@ fn render_block(
                     ))
                 } else {
                     let text = LatexRenderer::new(interpreter.symbols()).expression(expression);
-                    let result = if detailed_steps {
-                        interpreter.evaluate_documented_expression(expression)
-                    } else {
-                        interpreter.evaluate_expression(expression)
-                    };
-                    Some(
-                        match result {
-                            Ok(value) => render_evaluation(expression, &text, &value, interpreter),
-                            Err(error) => {
-                                push_runtime_diagnostic(error, statement.span, document);
-                                format!(r"{text} &= \text{{\textbf{{?}}}}")
-                            }
-                        },
-                    )
+                    let result = interpreter.evaluate_documented_expression(expression);
+                    Some(match result {
+                        Ok(value) => render_evaluation(expression, &text, &value, interpreter),
+                        Err(error) => {
+                            push_runtime_diagnostic(error, statement.span, document);
+                            format!(r"{text} &= \text{{\textbf{{?}}}}")
+                        }
+                    })
                 }
             }
             StatementKind::Let { name, value } => {
@@ -345,7 +327,7 @@ fn render_block(
                 body: FunctionBody::Expression(body),
             } => {
                 let renderer = LatexRenderer::new(interpreter.symbols());
-                let name = interpreter.symbols().resolve(*name).to_owned();
+                let name = renderer.identifier(interpreter.symbols().resolve(*name));
                 let params = params
                     .iter()
                     .map(|symbol| renderer.identifier(interpreter.symbols().resolve(*symbol)))
@@ -355,9 +337,7 @@ fn render_block(
                 interpreter
                     .execute_statement(statement)
                     .map_err(ExecutionError::Runtime)?;
-                Some(format!(
-                    r"\operatorname{{{name}}}\left({params}\right) &= {body}"
-                ))
+                Some(format!(r"{name}\left({params}\right) &= {body}"))
             }
             StatementKind::Chain(statements) => {
                 let mut parts = Vec::new();
@@ -390,7 +370,7 @@ fn render_block(
                 (!parts.is_empty()).then(|| parts.join(r" \quad "))
             }
             StatementKind::RenderLine { .. } | StatementKind::RenderBlock(_) => {
-                process_top_level(statement, interpreter, document, detailed_steps)?;
+                process_top_level(statement, interpreter, document)?;
                 None
             }
             StatementKind::If { .. } | StatementKind::While { .. } | StatementKind::For { .. } => {
@@ -522,7 +502,9 @@ fn render_evaluation(
                     .collect::<Vec<_>>()
                     .join(r",\quad ")
             };
-            return format!(r"{equation} = 0 \implies {solutions}");
+            return format!(
+                r"\begin{{aligned}}{equation} &= 0 \\ &\implies {solutions}\end{{aligned}}"
+            );
         }
     }
 
@@ -579,6 +561,29 @@ fn render_derivation(
     use crate::interpreter::value::StepOperation;
 
     let base_name = name.strip_suffix("_steps").unwrap_or(name);
+    if base_name == "trace" {
+        if let Some(terms) = steps.iter().find_map(|step| match &step.value {
+            crate::interpreter::value::Value::Array(values)
+                if values
+                    .iter()
+                    .all(|value| !matches!(value, crate::interpreter::value::Value::Array(_))) =>
+            {
+                Some(
+                    values
+                        .iter()
+                        .map(|value| renderer.value(value))
+                        .collect::<Vec<_>>()
+                        .join(" + "),
+                )
+            }
+            _ => None,
+        }) {
+            return format!(
+                r"\begin{{aligned}}{source} &= {terms} \\ &= {}\end{{aligned}}",
+                renderer.value(result)
+            );
+        }
+    }
     let input = match (base_name, args) {
         ("inverse", [matrix]) => format!(r"\left[{}\mid I\right]", renderer.expression(matrix)),
         ("solve_linear", [matrix, vector]) => format!(
@@ -590,43 +595,82 @@ fn render_derivation(
         _ => source.to_owned(),
     };
     let mut rows = Vec::new();
-    for (index, step) in steps.iter().enumerate() {
+    let mut last_rendered_value = None;
+    for step in steps {
         let value = renderer.value(&step.value);
         match &step.operation {
-            StepOperation::Start => rows.push(format!(r"{input} &= {value}")),
-            StepOperation::SwapRows { first, second } => rows.push(format!(
-                r"&\sim {value} && \left(R_{{{}}}\leftrightarrow R_{{{}}}\right)",
-                first + 1,
-                second + 1
-            )),
-            StepOperation::ScaleRow { row, divisor } => rows.push(format!(
-                r"&\sim {value} && \left(R_{{{}}}\leftarrow \frac{{1}}{{{}}}R_{{{}}}\right)",
-                row + 1,
-                renderer.value(divisor),
-                row + 1
-            )),
+            StepOperation::Start => {
+                rows.push(format!(r"{input} &= {value}"));
+                last_rendered_value = Some(&step.value);
+            }
+            StepOperation::EvaluateArguments { values } => {
+                if base_name == "matmul" && values.len() == 2 {
+                    rows.push(format!(
+                        r"{source} &= {}\,{}",
+                        renderer.value(&values[0]),
+                        renderer.value(&values[1])
+                    ));
+                }
+            }
+            StepOperation::SwapRows { first, second } => {
+                rows.push(format!(
+                    r"&\sim {value} && \left(R_{{{}}}\leftrightarrow R_{{{}}}\right)",
+                    first + 1,
+                    second + 1
+                ));
+                last_rendered_value = Some(&step.value);
+            }
+            StepOperation::ScaleRow { row, divisor } => {
+                rows.push(format!(
+                    r"&\sim {value} && \left(R_{{{}}}\leftarrow \frac{{1}}{{{}}}R_{{{}}}\right)",
+                    row + 1,
+                    renderer.value(divisor),
+                    row + 1
+                ));
+                last_rendered_value = Some(&step.value);
+            }
             StepOperation::AddRowMultiple {
                 target,
                 source,
                 factor,
-            } => rows.push(format!(
-                r"&\sim {value} && \left(R_{{{}}}\leftarrow R_{{{}}}-\left({}\right)R_{{{}}}\right)",
-                target + 1,
-                target + 1,
-                renderer.value(factor),
-                source + 1
-            )),
-            StepOperation::Explanation(explanation) => rows.push(format!(
-                r"{} &= {value} && \left({explanation}\right)",
-                if index == 0 { source } else { "" }
-            )),
+            } => {
+                rows.push(format!(
+                    r"&\sim {value} && \left(R_{{{}}}\leftarrow R_{{{}}}-\left({}\right)R_{{{}}}\right)",
+                    target + 1,
+                    target + 1,
+                    renderer.value(factor),
+                    source + 1
+                ));
+                last_rendered_value = Some(&step.value);
+            }
+            StepOperation::Explanation(explanation) => {
+                let left = if rows.is_empty() {
+                    source.to_owned()
+                } else if matches!(base_name, "det" | "rank") {
+                    semantic_result_name(base_name, args, renderer)
+                } else {
+                    String::new()
+                };
+                if base_name == "matmul" {
+                    rows.push(format!(r"&= {value}"));
+                } else if base_name == "characteristic_polynomial" {
+                    rows.push(format!(r"{left} &= {value}"));
+                } else {
+                    rows.push(format!(r"{left} &= {value} && \left({explanation}\right)"));
+                }
+                last_rendered_value = Some(&step.value);
+            }
         }
     }
-    rows.push(format!(
-        r"{} &= {}",
-        semantic_result_name(base_name, args, renderer),
-        renderer.value(result)
-    ));
+    let needs_named_result = matches!(base_name, "inverse" | "rref" | "solve_linear");
+    let result_already_shown = last_rendered_value.is_some_and(|value| value.equals(result));
+    if needs_named_result || !result_already_shown {
+        rows.push(format!(
+            r"{} &= {}",
+            semantic_result_name(base_name, args, renderer),
+            renderer.value(result)
+        ));
+    }
     format!(r"\begin{{aligned}}{}\end{{aligned}}", rows.join(" \\\\\n"))
 }
 
@@ -646,7 +690,21 @@ fn semantic_result_name(name: &str, args: &[Expr], renderer: &LatexRenderer<'_>)
             renderer.expression(matrix),
             renderer.expression(vector)
         ),
+        ("matmul", _)
+        | ("trace", _)
+        | ("det", _)
+        | ("characteristic_polynomial", _)
+        | ("eigenvalues", _)
+        | ("eigenvectors", _)
+        | ("transpose", _) => {
+            let rendered = args
+                .iter()
+                .map(|argument| renderer.expression(argument))
+                .collect::<Vec<_>>();
+            render_conventional_call(name, &rendered)
+        }
         _ => {
+            let name = renderer.identifier(name);
             let rendered = args
                 .iter()
                 .map(|arg| renderer.expression(arg))
@@ -654,6 +712,21 @@ fn semantic_result_name(name: &str, args: &[Expr], renderer: &LatexRenderer<'_>)
                 .join(", ");
             format!(r"\operatorname{{{name}}}\left({rendered}\right)")
         }
+    }
+}
+
+fn render_conventional_call(name: &str, args: &[String]) -> String {
+    match (name, args) {
+        ("matmul", [left, right]) => format!(r"{left}\,{right}"),
+        ("trace", [matrix]) => format!(r"\operatorname{{tr}}\left({matrix}\right)"),
+        ("det", [matrix]) => format!(r"\det\left({matrix}\right)"),
+        ("transpose", [matrix]) => format!(r"{matrix}^{{\mathsf T}}"),
+        ("characteristic_polynomial", [matrix, variable]) => {
+            format!(r"p_{{{matrix}}}\left({variable}\right)")
+        }
+        ("eigenvalues", [matrix]) => format!(r"\sigma\left({matrix}\right)"),
+        ("eigenvectors", [matrix]) => format!(r"\mathcal{{E}}\left({matrix}\right)"),
+        _ => format!(r"\operatorname{{{name}}}\left({}\right)", args.join(", ")),
     }
 }
 
@@ -830,10 +903,19 @@ mod tests {
         assert!(document.fragments[2].latex.contains(r"y &= x \cdot 4"));
         assert!(document.fragments[2].latex.contains(r"\frac{y}{2} = 4"));
         assert!(document.latex().contains(r"\usepackage{amsmath}"));
+        assert!(document.latex().contains(r"\allowdisplaybreaks[4]"));
         assert!(document
             .fragments
             .iter()
             .all(|fragment| fragment.span.line > 0));
+    }
+
+    #[test]
+    fn user_function_definitions_and_calls_use_math_identifiers() {
+        let document = build("\\{ f(x)=2x+1; solve(f(x),x) =>; \\}\n").unwrap();
+        assert!(document.body().contains(r"f\left(x\right) &= 2x + 1"));
+        assert!(document.body().contains(r"f\left(x\right) &= 0"));
+        assert!(!document.body().contains(r"\operatorname{f}"));
     }
 
     #[test]
@@ -921,7 +1003,8 @@ det_steps([1, 2; 3, 4]) =>;
         .unwrap();
         let latex = &document.fragments[0].latex;
         assert!(latex.contains(r"\mathrm{long}_{\mathrm{name}} = 2 \quad x = 1"));
-        assert!(latex.contains(r"z^{2} - z = 0 \implies"), "{latex}");
+        assert!(latex.contains(r"z^{2} - z &= 0"), "{latex}");
+        assert!(latex.contains(r"&\implies z = 0"), "{latex}");
         assert!(latex.contains(r"z = 0"));
         assert!(latex.contains(r"z = 1"));
         assert!(latex.contains(r"\begin{aligned}"));
@@ -929,13 +1012,33 @@ det_steps([1, 2; 3, 4]) =>;
     }
 
     #[test]
-    fn live_results_are_concise_while_explicit_builds_keep_derivations() {
-        let source = r"\[ rref([1, 2; 3, 4]) => \]";
+    fn live_results_keep_full_determinant_and_rref_derivations() {
+        let source = r#"
+\[ det([1, 2; 3, 4]) => \]
+\[ rref([1, 2; 3, 4]) => \]
+"#;
         let detailed = build(source).unwrap();
         let live = build_live_with_limits(source, Limits::default()).unwrap();
-        assert!(detailed.body().contains(r"\sim"));
-        assert!(!live.body().contains(r"\sim"));
-        assert!(live.body().contains(r"\implies"));
+
+        assert_eq!(live.body(), detailed.body());
+        assert_eq!(live.body().matches(r"\sim").count(), 4, "{}", live.body());
+        assert!(
+            live.body()
+                .contains(r"\text{product of pivots, adjusted for row swaps}"),
+            "{}",
+            live.body()
+        );
+        assert!(
+            live.body()
+                .contains(r"R_{2}\leftarrow R_{2}-\left(3\right)R_{1}"),
+            "{}",
+            live.body()
+        );
+        assert!(
+            live.body().contains(r"R_{2}\leftarrow \frac{1}{-2}R_{2}"),
+            "{}",
+            live.body()
+        );
     }
 
     #[test]
@@ -952,5 +1055,9 @@ det_steps([1, 2; 3, 4]) =>;
             "{latex}"
         );
         assert!(latex.contains(r"\operatorname{rref}"), "{latex}");
+        assert!(
+            latex.contains(r"\end{pmatrix} && \left(R_"),
+            "row-operation annotations should sit beside their matrices: {latex}"
+        );
     }
 }

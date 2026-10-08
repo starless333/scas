@@ -268,6 +268,12 @@ pub struct UserFunction {
 #[derive(Debug, Clone)]
 pub enum StepOperation {
     Start,
+    /// Show the call again after its argument expressions have been evaluated.
+    /// This gives every documented builtin a concrete substitution step even
+    /// when the builtin has no specialized internal trace.
+    EvaluateArguments {
+        values: Vec<Value>,
+    },
     SwapRows {
         first: usize,
         second: usize,

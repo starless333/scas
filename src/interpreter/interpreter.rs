@@ -345,44 +345,208 @@ impl<W: Write> Interpreter<W> {
             .map_err(|flow| self.describe_top_level(flow))
     }
 
-    /// Evaluate an expression for a dynamic document result. Operations with
-    /// meaningful internal work select their structured variant here, keeping
-    /// ordinary execution concise while making `=>` maximally informative.
+    /// Evaluate an expression for a dynamic document result. Every builtin
+    /// produces renderer-visible work: operations with specialized traces use
+    /// them, while the rest show argument evaluation and the mathematical rule
+    /// being applied. Ordinary execution remains concise.
     pub fn evaluate_documented_expression(
         &mut self,
         expression: &Expr,
     ) -> Result<Value, RuntimeError> {
-        let ExprKind::Call { callee, args } = &expression.kind else {
+        let effective = self
+            .substitute_expression_constraints(expression)
+            .unwrap_or_else(|| expression.clone());
+        let ExprKind::Call { callee, args } = &effective.kind else {
             return self.evaluate_expression(expression);
         };
         let ExprKind::Variable(symbol) = callee.kind else {
             return self.evaluate_expression(expression);
         };
-        let documented = match self.symbols.resolve(symbol) {
-            "transpose" => Some(Builtin::TransposeSteps),
-            "trace" => Some(Builtin::TraceSteps),
-            "det" => Some(Builtin::DeterminantSteps),
-            "rank" => Some(Builtin::RankSteps),
-            "rref" => Some(Builtin::RrefSteps),
-            "inverse" => Some(Builtin::InverseSteps),
-            "matmul" => Some(Builtin::MatmulSteps),
-            "dot" => Some(Builtin::DotSteps),
-            "cross" => Some(Builtin::CrossSteps),
-            "norm" => Some(Builtin::NormSteps),
-            "solve_linear" => Some(Builtin::SolveLinearSteps),
-            _ => None,
-        };
-        let Some(documented) = documented else {
+        let Some(Value::Builtin(builtin)) = Environment::get(&self.globals, symbol) else {
             return self.evaluate_expression(expression);
+        };
+        let documented = match builtin {
+            Builtin::Transpose => Builtin::TransposeSteps,
+            Builtin::Trace => Builtin::TraceSteps,
+            Builtin::Determinant => Builtin::DeterminantSteps,
+            Builtin::Rank => Builtin::RankSteps,
+            Builtin::Rref => Builtin::RrefSteps,
+            Builtin::Inverse => Builtin::InverseSteps,
+            Builtin::Matmul => Builtin::MatmulSteps,
+            Builtin::Dot => Builtin::DotSteps,
+            Builtin::Cross => Builtin::CrossSteps,
+            Builtin::Norm => Builtin::NormSteps,
+            Builtin::SolveLinear => Builtin::SolveLinearSteps,
+            Builtin::Lu => Builtin::LuSteps,
+            Builtin::Qr => Builtin::QrSteps,
+            Builtin::Cholesky => Builtin::CholeskySteps,
+            _ => builtin,
         };
         let env = Rc::clone(&self.globals);
         self.current_span = Some(expression.span);
-        let values = args
+        let argument_values = args
             .iter()
             .map(|argument| self.evaluate(&env, argument))
-            .collect::<ExecResult<Vec<_>>>()
-            .and_then(|values| self.call_builtin(documented, values));
-        values.map_err(|flow| self.describe_top_level(flow))
+            .collect::<ExecResult<Vec<_>>>();
+        let value = argument_values.and_then(|values| {
+            let result = self.call_builtin(documented, values.clone())?;
+            if let Value::Derivation { result, steps } = result {
+                if values.is_empty()
+                    || steps
+                        .first()
+                        .is_some_and(|step| matches!(step.operation, StepOperation::Start))
+                {
+                    return Ok(Value::Derivation { result, steps });
+                }
+                let mut enriched = Vec::with_capacity(steps.len() + 1);
+                enriched.push(DerivationStep {
+                    value: Value::Nil,
+                    operation: StepOperation::EvaluateArguments { values },
+                });
+                enriched.extend(steps.iter().cloned());
+                return Ok(Value::Derivation {
+                    result,
+                    steps: Rc::new(enriched),
+                });
+            }
+            if matches!(
+                builtin,
+                Builtin::Solve | Builtin::Derivative | Builtin::Integral
+            ) {
+                return Ok(result);
+            }
+            let mut steps = Vec::with_capacity(2);
+            if !values.is_empty() {
+                steps.push(DerivationStep {
+                    value: Value::Nil,
+                    operation: StepOperation::EvaluateArguments { values },
+                });
+            }
+            steps.push(DerivationStep {
+                value: result.clone(),
+                operation: StepOperation::Explanation(
+                    Self::builtin_derivation_explanation(builtin).to_owned(),
+                ),
+            });
+            Ok(Self::derivation(result, steps))
+        });
+        value.map_err(|flow| self.describe_top_level(flow))
+    }
+
+    /// A concise mathematical description for the generic derivation step.
+    /// This match is intentionally exhaustive: adding a builtin requires an
+    /// explicit decision about how its work should be described in LaTeX.
+    fn builtin_derivation_explanation(builtin: Builtin) -> &'static str {
+        match builtin {
+            Builtin::Abs => r"\text{apply the absolute-value definition}",
+            Builtin::Sqrt | Builtin::Cbrt => r"\text{evaluate the principal root}",
+            Builtin::Exp | Builtin::Ln | Builtin::Log | Builtin::Log10 | Builtin::Log2 => {
+                r"\text{apply the exponential/logarithm definition}"
+            }
+            Builtin::Sin
+            | Builtin::Cos
+            | Builtin::Tan
+            | Builtin::Sec
+            | Builtin::Csc
+            | Builtin::Cot
+            | Builtin::Asin
+            | Builtin::Acos
+            | Builtin::Atan
+            | Builtin::Atan2 => r"\text{apply the trigonometric definition}",
+            Builtin::Sinh
+            | Builtin::Cosh
+            | Builtin::Tanh
+            | Builtin::Asinh
+            | Builtin::Acosh
+            | Builtin::Atanh => r"\text{apply the hyperbolic definition}",
+            Builtin::Erf | Builtin::Erfc | Builtin::Gamma | Builtin::Lgamma => {
+                r"\text{evaluate the special function}"
+            }
+            Builtin::Floor | Builtin::Ceil | Builtin::Round | Builtin::Trunc => {
+                r"\text{apply the integer-rounding definition}"
+            }
+            Builtin::Min | Builtin::Max => r"\text{compare the arguments}",
+            Builtin::Hypot => r"\text{use }\sqrt{x^2+y^2}",
+            Builtin::Gcd => r"\text{apply the Euclidean algorithm}",
+            Builtin::Lcm => r"\text{use }\operatorname{lcm}(a,b)=|ab|/\gcd(a,b)",
+            Builtin::Sign => r"\text{compare with zero}",
+            Builtin::Degrees => r"\text{multiply radians by }180/\pi",
+            Builtin::Radians => r"\text{multiply degrees by }\pi/180",
+            Builtin::Evalf => r"\text{evaluate numerically at the active precision}",
+            Builtin::Simplify => r"\text{apply exact simplification identities}",
+            Builtin::Expand => r"\text{distribute products and powers}",
+            Builtin::Factor => r"\text{factor over the exact polynomial domain}",
+            Builtin::Apart => r"\text{compute a partial-fraction decomposition}",
+            Builtin::Together => r"\text{combine terms over a common denominator}",
+            Builtin::Horner => r"\text{rewrite in Horner form}",
+            Builtin::Collect => r"\text{collect like powers}",
+            Builtin::Subs => r"\text{substitute and simplify}",
+            Builtin::Solve => r"\text{solve for the requested variable}",
+            Builtin::Derivative => r"\text{differentiate term by term}",
+            Builtin::Integral => r"\text{apply antiderivative rules}",
+            Builtin::AssumeNonzero
+            | Builtin::AssumeNonnegative
+            | Builtin::AssumePositive
+            | Builtin::AssumeNegative
+            | Builtin::AssumeInteger
+            | Builtin::AssumeReal
+            | Builtin::Assume => r"\text{record the domain assumption}",
+            Builtin::ForgetAssumptions => r"\text{clear the active assumptions}",
+            Builtin::Transpose | Builtin::TransposeSteps => {
+                r"\text{exchange row and column indices}"
+            }
+            Builtin::Trace | Builtin::TraceSteps => r"\text{sum the diagonal entries}",
+            Builtin::Determinant | Builtin::DeterminantSteps => {
+                r"\text{reduce to triangular form and multiply pivots}"
+            }
+            Builtin::Rank | Builtin::RankSteps => r"\text{row-reduce and count pivots}",
+            Builtin::Rref | Builtin::RrefSteps => r"\text{perform Gauss--Jordan elimination}",
+            Builtin::Inverse | Builtin::InverseSteps => r"\text{row-reduce }[A\mid I]",
+            Builtin::Matmul | Builtin::MatmulSteps => r"\text{take row--column dot products}",
+            Builtin::Dot | Builtin::DotSteps => r"\text{sum component products}",
+            Builtin::Cross | Builtin::CrossSteps => {
+                r"\text{expand the }3\times3\text{ determinant}"
+            }
+            Builtin::Norm | Builtin::NormSteps => {
+                r"\text{take the square root of the squared norm}"
+            }
+            Builtin::SolveLinear | Builtin::SolveLinearSteps => {
+                r"\text{row-reduce the augmented system}"
+            }
+            Builtin::Gradient => r"\text{differentiate with respect to each variable}",
+            Builtin::Jacobian => r"\text{form the matrix of first partial derivatives}",
+            Builtin::Hessian => r"\text{form the matrix of second partial derivatives}",
+            Builtin::DefiniteIntegral => r"\text{evaluate an antiderivative at the bounds}",
+            Builtin::Limit => r"\text{substitute, simplify, and resolve indeterminate forms}",
+            Builtin::Series => r"\text{assemble Taylor coefficients from successive derivatives}",
+            Builtin::Sum => r"\text{evaluate and add the indexed terms}",
+            Builtin::Product => r"\text{evaluate and multiply the indexed factors}",
+            Builtin::MultipleIntegral => r"\text{integrate successively in the listed variables}",
+            Builtin::Dsolve => r"\text{solve the characteristic or integrating-factor equation}",
+            Builtin::CharacteristicPolynomial => r"\text{expand }\det(\lambda I-A)",
+            Builtin::Eigenvalues => r"\text{solve the characteristic equation}",
+            Builtin::Eigenvectors => r"\text{solve }(A-\lambda I)v=0",
+            Builtin::Lu | Builtin::LuSteps => r"\text{apply Doolittle elimination}",
+            Builtin::Qr | Builtin::QrSteps => r"\text{apply modified Gram--Schmidt}",
+            Builtin::Cholesky | Builtin::CholeskySteps => {
+                r"\text{construct }L\text{ such that }A=LL^{\mathsf T}"
+            }
+            Builtin::NullSpace => r"\text{read a basis from the free variables of the RREF}",
+            Builtin::ColumnSpace => r"\text{select the original pivot columns}",
+            Builtin::GramSchmidt => r"\text{orthogonalize and normalize successively}",
+            Builtin::Projection => {
+                r"\text{use }\operatorname{proj}_u(v)=\frac{v\cdot u}{u\cdot u}u"
+            }
+            Builtin::ChangeBasis => r"\text{solve for the coordinates in the target basis}",
+            Builtin::MatrixExp => r"\text{apply the exponential to the diagonal entries}",
+            Builtin::JordanForm => r"\text{assemble the Jordan blocks}",
+            Builtin::Degree => r"\text{find the greatest nonzero exponent}",
+            Builtin::Coefficients => r"\text{collect coefficients by descending degree}",
+            Builtin::Resultant => r"\text{compute the Sylvester determinant}",
+            Builtin::Discriminant => r"\text{compute the polynomial discriminant}",
+            Builtin::PolynomialGcd => r"\text{apply the polynomial Euclidean algorithm}",
+            Builtin::PolynomialDivRem => r"\text{perform polynomial long division}",
+        }
     }
 
     pub fn symbols(&self) -> &SymbolTable {
@@ -1332,7 +1496,7 @@ impl<W: Write> Interpreter<W> {
                             DerivationStep {
                                 value: total,
                                 operation: StepOperation::Explanation(
-                                    "sum the diagonal".to_owned(),
+                                    r"\text{sum the diagonal}".to_owned(),
                                 ),
                             },
                         ],
@@ -2139,7 +2303,14 @@ impl<W: Write> Interpreter<W> {
             let Some(found) =
                 (column..size).find(|row| !Self::definitely_zero(&matrix[*row][column]))
             else {
-                return Ok((Self::integer_value(0), history));
+                let zero = Self::integer_value(0);
+                history.push(DerivationStep {
+                    value: zero.clone(),
+                    operation: StepOperation::Explanation(
+                        r"\text{a pivot column is zero, so the matrix is singular}".to_owned(),
+                    ),
+                });
+                return Ok((zero, history));
             };
             if found != column {
                 matrix.swap(found, column);
@@ -2179,6 +2350,12 @@ impl<W: Write> Interpreter<W> {
                 });
             }
         }
+        history.push(DerivationStep {
+            value: determinant.clone(),
+            operation: StepOperation::Explanation(
+                r"\text{product of pivots, adjusted for row swaps}".to_owned(),
+            ),
+        });
         Ok((determinant, history))
     }
 

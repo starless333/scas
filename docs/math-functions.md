@@ -126,7 +126,11 @@ Every operation also has a documenting form with a `_steps` suffix:
 directly; ordinary calls such as `rref(A) =>;` automatically select that
 documented execution. Row reduction records and displays every row
 swap, scale, and row replacement beside the corresponding `A \sim A'`
-transition. The unsuffixed forms return only the result.
+transition. Determinants also show the triangular reduction and pivot product.
+More generally, every builtin rendered with `=>` shows evaluated arguments,
+the mathematical rule applied, and the exact result; specialized traces add
+all intermediate work available. The unsuffixed forms return only the result
+during ordinary, non-document execution.
 
 ## Constraints and assumptions
 

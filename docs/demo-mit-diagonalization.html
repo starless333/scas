@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="A complete SCAS solution to MIT OpenCourseWare 18.06SC Session 22, with exact source and the five-page LaTeX result side by side.">
+  <title>MIT Diagonalization Demo · SCAS</title>
+  <link rel="stylesheet" href="assets/site.css">
+  <script defer src="assets/site.js"></script>
+</head>
+<body>
+<a class="skip-link" href="#main-content">Skip to content</a>
+<div class="mobile-bar"><a href="index.html">SCAS docs</a><button type="button" data-nav-toggle aria-expanded="false" aria-controls="documentation-nav" aria-label="Open documentation navigation">Menu</button></div>
+<div class="layout">
+  <aside class="rail" id="documentation-nav">
+    <div class="brand"><a href="index.html">SCAS</a><span>0.1.0</span></div>
+    <nav aria-label="Documentation">
+      <div class="nav-group"><span>Start</span><a href="index.html">Overview</a><a href="getting-started.html">Getting started</a><a href="language.html">Language</a></div>
+      <div class="nav-group"><span>Mathematics</span><a href="builtins.html">Builtin reference</a><a href="calculus.html">Calculus</a><a href="linear-algebra.html">Linear algebra</a></div>
+      <div class="nav-group"><span>Workflow</span><a href="documenter.html">Executable documents</a><a href="ide.html">Desktop IDE &amp; CLI</a><a href="internals.html">Architecture &amp; limits</a></div>
+      <div class="nav-group"><span>Demos</span><a aria-current="page" href="demo-mit-diagonalization.html">MIT diagonalization</a></div>
+      <div class="nav-group"><span>On this page</span><a href="#workbench">Source + result</a><a href="#complete-render">Complete render</a><a href="#coverage">What it exercises</a></div>
+    </nav>
+  </aside>
+
+  <main class="document demo-document" id="main-content" tabindex="-1">
+    <header class="demo-masthead">
+      <div>
+        <h1>A real problem set, solved as an executable document.</h1>
+        <p>Two diagonalization problems from MIT OpenCourseWare become one exact SCAS program and a polished five-page solution. The renderer uses the notation a mathematics student would write: products such as <i>SDS</i><sup>−1</sup>, characteristic polynomials such as <i>p</i><sub>A</sub>(λ), and explicit row operations.</p>
+      </div>
+      <div class="demo-actions" aria-label="Demo downloads">
+        <a class="action-primary" href="assets/demos/mit-18-06-session-22/solution.scas" download>Download .scas</a>
+        <a href="assets/demos/mit-18-06-session-22/solution.pdf">Open PDF</a>
+        <a href="assets/demos/mit-18-06-session-22/solution.tex" download>Generated .tex</a>
+      </div>
+    </header>
+
+    <section class="demo-workbench" id="workbench" aria-label="SCAS source and rendered LaTeX">
+      <div class="demo-pane source-pane">
+        <div class="demo-pane-head"><strong>solution.scas</strong><span data-source-meta>loading exact source</span></div>
+        <pre class="demo-source"><code data-source-file="assets/demos/mit-18-06-session-22/solution.scas">Loading the current SCAS source…</code></pre>
+      </div>
+      <div class="demo-pane render-pane">
+        <div class="demo-pane-head"><strong>LaTeX output</strong><span>page 1 of 5 · compiled with pdfTeX</span></div>
+        <div class="render-sheet"><a class="page-link" href="assets/demos/mit-18-06-session-22/page-1.svg" aria-label="Open rendered solution page 1 at full size"><img src="assets/demos/mit-18-06-session-22/page-1.svg" alt="First page of the polished solution, with a title, the complete first problem statement, characteristic polynomial, eigenvectors, and diagonalization setup."></a></div>
+        <a class="continue-link" href="#complete-render">Continue through all five rendered pages</a>
+      </div>
+    </section>
+
+    <section class="demo-narrative" id="coverage">
+      <h2>The derivation reads like mathematics.</h2>
+      <p>The generated document states each problem before solving it, explains why each computation is being performed, and keeps the algebra attached to the argument. Internal function names disappear from the typeset result: matrix products become juxtaposition, inverses become superscripts, and row reductions retain every elementary operation.</p>
+      <dl class="coverage-list">
+        <div><dt>Exact algebra</dt><dd>Rational matrices, characteristic polynomials, equation solving, and limiting powers without floating-point drift.</dd></div>
+        <div><dt>Visible linear algebra</dt><dd>Determinant elimination, Gauss–Jordan inverses, RREF, eigenvectors, diagonal reconstruction, and projection checks.</dd></div>
+        <div><dt>Submission quality</dt><dd>Problem statements, explanatory prose, conventional notation, section hierarchy, typography, and page breaks share one source.</dd></div>
+      </dl>
+    </section>
+
+    <section class="complete-render" id="complete-render">
+      <div class="render-heading">
+        <div><h2>The complete five-page render</h2><p>These pages were compiled directly from the generated <code>solution.tex</code>. Select any page to inspect it at full size.</p></div>
+        <a href="assets/demos/mit-18-06-session-22/solution.pdf">Read as PDF</a>
+      </div>
+      <div class="page-gallery">
+        <figure><a class="page-link" href="assets/demos/mit-18-06-session-22/page-1.svg" aria-label="Open rendered solution page 1 at full size"><img src="assets/demos/mit-18-06-session-22/page-1.svg" alt="Page 1: complete Problem 22.1 statement, characteristic polynomial, eigenvectors, and matrices S and D."></a><figcaption><a href="assets/demos/mit-18-06-session-22/page-1.svg">1 / 5 · open full size</a></figcaption></figure>
+        <figure><a class="page-link" href="assets/demos/mit-18-06-session-22/page-2.svg" aria-label="Open rendered solution page 2 at full size"><img src="assets/demos/mit-18-06-session-22/page-2.svg" alt="Page 2: Gauss-Jordan inverse, verification of A equals S D S inverse, all diagonalizers, and the inverse matrix."></a><figcaption><a href="assets/demos/mit-18-06-session-22/page-2.svg">2 / 5 · open full size</a></figcaption></figure>
+        <figure><a class="page-link" href="assets/demos/mit-18-06-session-22/page-3.svg" aria-label="Open rendered solution page 3 at full size"><img src="assets/demos/mit-18-06-session-22/page-3.svg" alt="Page 3: complete Problem 22.2 statement, exact trace and determinant, characteristic polynomial, eigenvalues, and diagonalization setup."></a><figcaption><a href="assets/demos/mit-18-06-session-22/page-3.svg">3 / 5 · open full size</a></figcaption></figure>
+        <figure><a class="page-link" href="assets/demos/mit-18-06-session-22/page-4.svg" aria-label="Open rendered solution page 4 at full size"><img src="assets/demos/mit-18-06-session-22/page-4.svg" alt="Page 4: inverse of Q, verification of B equals Q Lambda Q inverse, powers of Lambda, and the limiting projection."></a><figcaption><a href="assets/demos/mit-18-06-session-22/page-4.svg">4 / 5 · open full size</a></figcaption></figure>
+        <figure><a class="page-link" href="assets/demos/mit-18-06-session-22/page-5.svg" aria-label="Open rendered solution page 5 at full size"><img src="assets/demos/mit-18-06-session-22/page-5.svg" alt="Page 5: RREF of the limiting projection and exact checks that B P equals P squared equals P."></a><figcaption><a href="assets/demos/mit-18-06-session-22/page-5.svg">5 / 5 · open full size</a></figcaption></figure>
+      </div>
+    </section>
+
+    <section class="accessible-results" aria-labelledby="result-summary-heading">
+      <h2 id="result-summary-heading">Results in text</h2>
+      <details>
+        <summary>Read an accessible summary of the computed solution</summary>
+        <div>
+          <p>For A = [[4, 0], [1, 2]], the characteristic polynomial is lambda squared minus 6 lambda plus 8, with eigenvalues 4 and 2. Eigenvectors (2, 1) and (0, 1) form S, while D has diagonal entries 4 and 2. Gauss–Jordan reduction gives inverse(S) = [[1/2, 0], [-1/2, 1]], and S D inverse(S) reconstructs A.</p>
+          <p>Every diagonalizing matrix independently rescales those two eigenvectors and may swap their order. The same matrices diagonalize inverse(A), whose eigenvalues are 1/4 and 1/2.</p>
+          <p>For B = [[3/5, 9/10], [2/5, 1/10]], the eigenvalues are 1 and -3/10 with eigenvectors (9, 4) and (1, -1). The transient eigenvalue decays, so the powers converge to P = [[9/13, 9/13], [4/13, 4/13]]. SCAS verifies RREF(P) = [[1, 1], [0, 0]], B P = P, and P squared = P.</p>
+        </div>
+      </details>
+    </section>
+
+    <section class="source-note">
+      <h2>Problem-set provenance</h2>
+      <p>This demonstration answers Problems 22.1 and 22.2 from MIT OpenCourseWare’s <cite>18.06SC Linear Algebra, Fall 2011</cite>. SCAS uses exact fractions in place of the second problem’s printed decimals.</p>
+      <p><a href="https://ocw.mit.edu/courses/18-06sc-linear-algebra-fall-2011/resources/mit18_06scf11_ses2-9prob/">Read the original problem set</a> · <a href="https://ocw.mit.edu/courses/18-06sc-linear-algebra-fall-2011/resources/mit18_06scf11_ses2-9sol/">Compare MIT’s solution</a></p>
+    </section>
+
+    <footer class="footer">SCAS demo · Continue with <a href="documenter.html">executable documents</a> or the <a href="linear-algebra.html">linear algebra guide</a>.</footer>
+  </main>
+</div>
+</body>
+</html>

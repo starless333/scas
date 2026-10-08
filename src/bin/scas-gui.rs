@@ -159,7 +159,6 @@ struct HighlightCache {
     source: String,
     theme: usize,
     font_size_bits: u32,
-    monospace: bool,
     diagnostics_revision: u64,
     job: LayoutJob,
 }
@@ -337,7 +336,6 @@ struct ScasApp {
     themes: Vec<Theme>,
     selected_theme: usize,
     editor_font_size: f32,
-    editor_monospace: bool,
     settings_open: bool,
     theme_path: String,
     font_path: String,
@@ -471,7 +469,6 @@ impl ScasApp {
             themes,
             selected_theme: 0,
             editor_font_size: 15.0,
-            editor_monospace: true,
             settings_open: false,
             theme_path: "themes/dark-modern.toml".to_owned(),
             font_path: "assets/fonts/IBMPlexMono-Regular.ttf".to_owned(),
@@ -1554,11 +1551,6 @@ impl ScasApp {
                     .entry(FontFamily::Monospace)
                     .or_default()
                     .insert(0, name.clone());
-                fonts
-                    .families
-                    .entry(FontFamily::Proportional)
-                    .or_default()
-                    .insert(0, name.clone());
                 context.set_fonts(fonts);
                 self.status = format!("Loaded font {name}");
             }
@@ -2259,8 +2251,7 @@ impl ScasApp {
                 ui.separator();
                 ui.label("Editor font");
                 ui.horizontal(|ui| {
-                    ui.radio_value(&mut self.editor_monospace, true, "Monospace");
-                    ui.radio_value(&mut self.editor_monospace, false, "Proportional");
+                    ui.label("Monospace");
                     ui.add(egui::Slider::new(&mut self.editor_font_size, 9.0..=32.0).suffix(" pt"));
                 });
                 ui.horizontal(|ui| {
@@ -3811,19 +3802,11 @@ impl eframe::App for ScasApp {
                         &insertion,
                     );
                 }
-                let font_id = FontId::new(
-                    self.editor_font_size,
-                    if self.editor_monospace {
-                        FontFamily::Monospace
-                    } else {
-                        FontFamily::Proportional
-                    },
-                );
+                let font_id = FontId::monospace(self.editor_font_size);
                 let cache_is_current = self.highlight_cache.as_ref().is_some_and(|cache| {
                     cache.source == self.source
                         && cache.theme == self.selected_theme
                         && cache.font_size_bits == self.editor_font_size.to_bits()
-                        && cache.monospace == self.editor_monospace
                         && cache.diagnostics_revision == self.diagnostics_revision
                 });
                 if !cache_is_current {
@@ -3831,7 +3814,6 @@ impl eframe::App for ScasApp {
                         source: self.source.clone(),
                         theme: self.selected_theme,
                         font_size_bits: self.editor_font_size.to_bits(),
-                        monospace: self.editor_monospace,
                         diagnostics_revision: self.diagnostics_revision,
                         job: highlight(
                             &self.source,
@@ -4845,14 +4827,15 @@ fn latex_preview_chunks(body: &str) -> Vec<String> {
         .map_or_else(
             || vec![(fragment.to_owned(), false)],
             |(begin, rows, end)| {
-                let total_rows = rows.split_inclusive("\\\\\n").count();
+                let alignment_rows = split_top_level_alignment_rows(rows);
+                let total_rows = alignment_rows.len();
                 if total_rows <= MAX_ROWS && fragment.len() <= MAX_BYTES {
                     return vec![(fragment.to_owned(), false)];
                 }
                 let mut parts = Vec::new();
                 let mut part = String::new();
                 let mut row_count = 0;
-                for row in rows.split_inclusive("\\\\\n") {
+                for row in alignment_rows {
                     if !part.is_empty()
                         && (row_count >= MAX_ROWS || part.len() + row.len() > MAX_BYTES)
                     {
@@ -4911,6 +4894,44 @@ fn latex_preview_chunks(body: &str) -> Vec<String> {
         chunks.push(grouped.join("\n\n"));
     }
     chunks
+}
+
+/// Split an alignment at row separators belonging to its outer environment.
+/// A rendered derivation is itself an `aligned` environment and may contain
+/// many `\\` rows; those must stay together when the preview is paginated.
+fn split_top_level_alignment_rows(rows: &str) -> Vec<&str> {
+    const BEGIN: &str = r"\begin{aligned}";
+    const END: &str = r"\end{aligned}";
+    const SEPARATOR: &str = "\\\\\n";
+
+    let mut result = Vec::new();
+    let mut start = 0;
+    let mut cursor = 0;
+    let mut nested_depth = 0_u32;
+    while cursor < rows.len() {
+        let rest = &rows[cursor..];
+        if rest.starts_with(BEGIN) {
+            nested_depth += 1;
+            cursor += BEGIN.len();
+        } else if rest.starts_with(END) {
+            nested_depth = nested_depth.saturating_sub(1);
+            cursor += END.len();
+        } else if nested_depth == 0 && rest.starts_with(SEPARATOR) {
+            cursor += SEPARATOR.len();
+            result.push(&rows[start..cursor]);
+            start = cursor;
+        } else {
+            cursor += rest
+                .chars()
+                .next()
+                .expect("cursor remains on a character boundary")
+                .len_utf8();
+        }
+    }
+    if start < rows.len() {
+        result.push(&rows[start..]);
+    }
+    result
 }
 
 fn latex_render_cache_key(body: &str, color: [u8; 3]) -> u64 {
@@ -5155,12 +5176,21 @@ mod tests {
         assert!(document.fragments.len() >= 2);
         let chunks = latex_preview_chunks(&document.body());
         assert!(chunks.len() > 2);
-        assert!(chunks
-            .iter()
-            .all(|chunk| chunk.matches("\\\\\n").count() <= 32));
         assert!(chunks.iter().skip(1).all(|chunk| {
-            chunk.starts_with(r"\begin{align*}") && chunk.ends_with(r"\end{align*}")
+            chunk
+                .strip_prefix(r"\begin{align*}")
+                .and_then(|rows| rows.strip_suffix(r"\end{align*}"))
+                .is_some_and(|rows| split_top_level_alignment_rows(rows).len() <= 32)
         }));
+    }
+
+    #[test]
+    fn preview_chunking_keeps_nested_derivation_rows_together() {
+        let rows = "\\begin{aligned}a&=b \\\\\nc&=d\\end{aligned} \\\\\ne&=f";
+        let split = split_top_level_alignment_rows(rows);
+        assert_eq!(split.len(), 2);
+        assert!(split[0].contains("c&=d\\end{aligned}"));
+        assert_eq!(split[1], "e&=f");
     }
 
     #[test]
@@ -5543,10 +5573,12 @@ solve(z^2-z, z) =>;
         assert!(pages
             .iter()
             .all(|page| page.size[0] > 20 && page.size[1] > 20));
-        let cached = render_latex_document_pngs(&gallery.body(), [20, 20, 20]).unwrap();
-        assert!(pages
-            .iter()
-            .zip(&cached)
-            .all(|(page, cached)| Arc::ptr_eq(page, cached)));
+
+        // The complete all-steps gallery may intentionally exceed the bounded
+        // texture cache. Verify caching with a normal-sized page instead of
+        // requiring an unusually large document to remain resident in full.
+        let cached_page = render_latex_png_cached(r"\[x^2+1\]", [20, 20, 20]).unwrap();
+        let cached_again = render_latex_png_cached(r"\[x^2+1\]", [20, 20, 20]).unwrap();
+        assert!(Arc::ptr_eq(&cached_page, &cached_again));
     }
 }

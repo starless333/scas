@@ -218,6 +218,21 @@ impl<'a> LatexRenderer<'a> {
         }
         match op {
             BinaryOp::Div => {
+                if let ExprKind::Unary {
+                    op: UnaryOp::Neg,
+                    expr,
+                } = &left.kind
+                {
+                    output.push_str(r"-\frac{");
+                    self.write_expr(expr, 0, output);
+                    output.push_str("}{");
+                    self.write_expr(right, 0, output);
+                    output.push('}');
+                    if parenthesize {
+                        output.push_str(r"\right)");
+                    }
+                    return;
+                }
                 output.push_str(r"\frac{");
                 self.write_expr(left, 0, output);
                 output.push_str("}{");
@@ -325,6 +340,59 @@ impl<'a> LatexRenderer<'a> {
                 self.write_expr(argument, 13, output);
                 output.push_str(r"^{-1}");
             }
+            ("matmul", [left, right]) | ("matmul_steps", [left, right]) => {
+                let rendered_left = self.expression(left);
+                let rendered_right = self.expression(right);
+                output.push_str(&rendered_left);
+                if rendered_left == rendered_right {
+                    output.push_str(r"^{2}");
+                } else {
+                    output.push_str(r"\,");
+                    output.push_str(&rendered_right);
+                }
+            }
+            ("rank", [argument]) | ("rank_steps", [argument]) => {
+                output.push_str(r"\operatorname{rank}\left(");
+                self.write_expr(argument, 0, output);
+                output.push_str(r"\right)");
+            }
+            ("rref", [argument]) | ("rref_steps", [argument]) => {
+                output.push_str(r"\operatorname{rref}\left(");
+                self.write_expr(argument, 0, output);
+                output.push_str(r"\right)");
+            }
+            ("characteristic_polynomial", [matrix, variable]) => {
+                output.push_str(r"p_{");
+                self.write_expr(matrix, 0, output);
+                output.push_str(r"}\left(");
+                self.write_expr(variable, 0, output);
+                output.push_str(r"\right)");
+            }
+            ("eigenvalues", [argument]) => {
+                output.push_str(r"\sigma\left(");
+                self.write_expr(argument, 0, output);
+                output.push_str(r"\right)");
+            }
+            ("eigenvectors", [argument]) => {
+                output.push_str(r"\mathcal{E}\left(");
+                self.write_expr(argument, 0, output);
+                output.push_str(r"\right)");
+            }
+            ("null_space", [argument]) => {
+                output.push_str(r"\ker\left(");
+                self.write_expr(argument, 0, output);
+                output.push_str(r"\right)");
+            }
+            ("column_space", [argument]) => {
+                output.push_str(r"\operatorname{col}\left(");
+                self.write_expr(argument, 0, output);
+                output.push_str(r"\right)");
+            }
+            ("matrix_exp", [argument]) => {
+                output.push_str(r"e^{");
+                self.write_expr(argument, 0, output);
+                output.push('}');
+            }
             ("limit", [argument, variable, point]) | ("limit", [argument, variable, point, _]) => {
                 output.push_str(r"\lim_{");
                 self.write_expr(variable, 0, output);
@@ -425,9 +493,7 @@ impl<'a> LatexRenderer<'a> {
                 output.push_str(r"\right)");
             }
             _ => {
-                output.push_str(r"\operatorname{");
-                self.write_identifier(name, output);
-                output.push('}');
+                self.write_function_name(name, output);
                 self.write_arguments(args, output);
             }
         }
@@ -481,7 +547,7 @@ impl<'a> LatexRenderer<'a> {
             return;
         }
         let (base, subscript) = name.split_once('_').unwrap_or((name, ""));
-        if let Some(command) = upright_greek_command(base) {
+        if let Some(command) = greek_command(base) {
             output.push_str(command);
         } else if base.chars().count() == 1 {
             // TeX math letters are italic by default. Single-letter names are
@@ -493,10 +559,23 @@ impl<'a> LatexRenderer<'a> {
             output.push_str(base);
             output.push('}');
         }
-        if !subscript.is_empty() {
+        if subscript == "inverse" {
+            output.push_str(r"^{-1}");
+        } else if !subscript.is_empty() {
             output.push_str(r"_{\mathrm{");
             output.push_str(subscript);
             output.push_str("}}");
+        }
+    }
+
+    fn write_function_name(&self, name: &str, output: &mut String) {
+        let base = name.split_once('_').map_or(name, |(base, _)| base);
+        if base.chars().count() == 1 {
+            self.write_identifier(name, output);
+        } else {
+            output.push_str(r"\operatorname{");
+            self.write_identifier(name, output);
+            output.push('}');
         }
     }
 
@@ -646,6 +725,75 @@ impl<'a> LatexRenderer<'a> {
                     output.push_str(r"\log_{2}\left(");
                     self.write_symbolic(argument, 0, output);
                     output.push_str(r"\right)");
+                }
+                (Builtin::Transpose | Builtin::TransposeSteps, [argument]) => {
+                    self.write_symbolic(argument, 13, output);
+                    output.push_str(r"^{\mathsf T}");
+                }
+                (Builtin::Determinant | Builtin::DeterminantSteps, [argument]) => {
+                    output.push_str(r"\det\left(");
+                    self.write_symbolic(argument, 0, output);
+                    output.push_str(r"\right)");
+                }
+                (Builtin::Trace | Builtin::TraceSteps, [argument]) => {
+                    output.push_str(r"\operatorname{tr}\left(");
+                    self.write_symbolic(argument, 0, output);
+                    output.push_str(r"\right)");
+                }
+                (Builtin::Inverse | Builtin::InverseSteps, [argument]) => {
+                    self.write_symbolic(argument, 13, output);
+                    output.push_str(r"^{-1}");
+                }
+                (Builtin::Matmul | Builtin::MatmulSteps, [left, right]) => {
+                    self.write_symbolic(left, 10, output);
+                    if left.equals(right) {
+                        output.push_str(r"^{2}");
+                    } else {
+                        output.push_str(r"\,");
+                        self.write_symbolic(right, 10, output);
+                    }
+                }
+                (Builtin::Rank | Builtin::RankSteps, [argument]) => {
+                    output.push_str(r"\operatorname{rank}\left(");
+                    self.write_symbolic(argument, 0, output);
+                    output.push_str(r"\right)");
+                }
+                (Builtin::Rref | Builtin::RrefSteps, [argument]) => {
+                    output.push_str(r"\operatorname{rref}\left(");
+                    self.write_symbolic(argument, 0, output);
+                    output.push_str(r"\right)");
+                }
+                (Builtin::CharacteristicPolynomial, [matrix, variable]) => {
+                    output.push_str(r"p_{");
+                    self.write_symbolic(matrix, 0, output);
+                    output.push_str(r"}\left(");
+                    self.write_symbolic(variable, 0, output);
+                    output.push_str(r"\right)");
+                }
+                (Builtin::Eigenvalues, [argument]) => {
+                    output.push_str(r"\sigma\left(");
+                    self.write_symbolic(argument, 0, output);
+                    output.push_str(r"\right)");
+                }
+                (Builtin::Eigenvectors, [argument]) => {
+                    output.push_str(r"\mathcal{E}\left(");
+                    self.write_symbolic(argument, 0, output);
+                    output.push_str(r"\right)");
+                }
+                (Builtin::NullSpace, [argument]) => {
+                    output.push_str(r"\ker\left(");
+                    self.write_symbolic(argument, 0, output);
+                    output.push_str(r"\right)");
+                }
+                (Builtin::ColumnSpace, [argument]) => {
+                    output.push_str(r"\operatorname{col}\left(");
+                    self.write_symbolic(argument, 0, output);
+                    output.push_str(r"\right)");
+                }
+                (Builtin::MatrixExp, [argument]) => {
+                    output.push_str(r"e^{");
+                    self.write_symbolic(argument, 0, output);
+                    output.push('}');
                 }
                 _ => {
                     let name = function.name();
@@ -809,54 +957,6 @@ fn greek_command(name: &str) -> Option<&'static str> {
     })
 }
 
-fn upright_greek_command(name: &str) -> Option<&'static str> {
-    greek_command(name).map(|command| match command {
-        r"\alpha" => r"\upalpha",
-        r"\beta" => r"\upbeta",
-        r"\gamma" => r"\upgamma",
-        r"\delta" => r"\updelta",
-        r"\epsilon" => r"\upepsilon",
-        r"\varepsilon" => r"\upvarepsilon",
-        r"\zeta" => r"\upzeta",
-        r"\eta" => r"\upeta",
-        r"\theta" => r"\uptheta",
-        r"\vartheta" => r"\upvartheta",
-        r"\iota" => r"\upiota",
-        r"\kappa" => r"\upkappa",
-        r"\lambda" => r"\uplambda",
-        r"\mu" => r"\upmu",
-        r"\nu" => r"\upnu",
-        r"\xi" => r"\upxi",
-        "o" => "o",
-        r"\pi" => r"\uppi",
-        r"\varpi" => r"\upvarpi",
-        r"\rho" => r"\uprho",
-        r"\varrho" => r"\upvarrho",
-        r"\sigma" => r"\upsigma",
-        r"\varsigma" => r"\upvarsigma",
-        r"\tau" => r"\uptau",
-        r"\upsilon" => r"\upupsilon",
-        r"\phi" => r"\upphi",
-        r"\varphi" => r"\upvarphi",
-        r"\chi" => r"\upchi",
-        r"\psi" => r"\uppsi",
-        r"\omega" => r"\upomega",
-        "A" | "B" | "E" | "Z" | "H" | "I" | "K" | "M" | "N" | "O" | "P" | "T" | "X" => command,
-        r"\Gamma" => r"\Upgamma",
-        r"\Delta" => r"\Updelta",
-        r"\Theta" => r"\Uptheta",
-        r"\Lambda" => r"\Uplambda",
-        r"\Xi" => r"\Upxi",
-        r"\Pi" => r"\Uppi",
-        r"\Sigma" => r"\Upsigma",
-        r"\Upsilon" => r"\Upupsilon",
-        r"\Phi" => r"\Upphi",
-        r"\Psi" => r"\Uppsi",
-        r"\Omega" => r"\Upomega",
-        _ => unreachable!("all Greek commands are mapped"),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -945,7 +1045,7 @@ mod tests {
 
     #[test]
     fn renders_identifiers_vectors_and_matrices() {
-        assert_eq!(render("alpha_1 + β"), r"\upalpha_{\mathrm{1}} + \upbeta");
+        assert_eq!(render("alpha_1 + β"), r"\alpha_{\mathrm{1}} + \beta");
         assert_eq!(
             render("[x, 1/2]"),
             r"\begin{pmatrix}x \\ \frac{1}{2}\end{pmatrix}"
@@ -960,7 +1060,29 @@ mod tests {
         );
         assert_eq!(
             render("ζ + η + ϑ + ξ + υ + ψ + Ξ"),
-            r"\upzeta + \upeta + \upvartheta + \upxi + \upupsilon + \uppsi + \Upxi"
+            r"\zeta + \eta + \vartheta + \xi + \upsilon + \psi + \Xi"
+        );
+    }
+
+    #[test]
+    fn renders_linear_algebra_calls_as_conventional_mathematics() {
+        assert_eq!(render("matmul(S, matmul(D, inverse(S)))"), r"S\,D\,S^{-1}");
+        assert_eq!(
+            render("characteristic_polynomial(A, lambda)"),
+            r"p_{A}\left(\lambda\right)"
+        );
+        assert_eq!(render("eigenvalues(A)"), r"\sigma\left(A\right)");
+        assert_eq!(render("eigenvectors(A)"), r"\mathcal{E}\left(A\right)");
+        assert_eq!(render("matrix_exp(A)"), r"e^{A}");
+        assert!(!render("matmul(A, B)").contains(r"\operatorname"));
+    }
+
+    #[test]
+    fn renders_single_letter_function_names_as_math_identifiers() {
+        assert_eq!(render("f(x)"), r"f\left(x\right)");
+        assert_eq!(
+            render("velocity(x)"),
+            r"\operatorname{\mathrm{velocity}}\left(x\right)"
         );
     }
 

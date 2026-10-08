@@ -7,7 +7,7 @@
     let A = [1, 2; 3, 4];
     det(A) =&gt;;
     inverse(A) =&gt;;
-\}</code></pre><p>For supported linear-algebra operations, an evaluated rendering automatically exposes structured working from the corresponding <code>_steps</code> implementation.</p></section>
+\}</code></pre><p>Every builtin emits structured aligned working when rendered with <code>=&gt;</code>: evaluated arguments, the mathematical rule being applied, and the exact result. Operations with deeper traces add all available intermediate work—for example, row reduction shows every swap, scale, and row replacement, while determinant evaluation shows elimination and the final pivot product.</p></section>
 <section><h2 class="rule-heading">Prose and interpolation</h2><pre><code>let radius = 5;
 let area = pi * radius^2;
 /// A circle of radius #{ radius } has exact area #{ area }.

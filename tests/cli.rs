@@ -89,6 +89,11 @@ fn builtin_rendering_gallery_is_complete_and_buildable() {
             "builtin gallery is missing {name}"
         );
     }
+    assert_eq!(
+        source.matches("=>;").count(),
+        Builtin::ALL.len(),
+        "every builtin gallery entry must request its rendered derivation"
+    );
     let rendered = document::build(&source).expect("builtin gallery should build");
     assert!(
         rendered.diagnostics.is_empty(),
@@ -96,6 +101,11 @@ fn builtin_rendering_gallery_is_complete_and_buildable() {
         rendered.diagnostics
     );
     assert!(rendered.body().contains(r"\begin{align*}"));
+    assert_eq!(
+        rendered.body().matches(r"\begin{aligned}").count(),
+        Builtin::ALL.len(),
+        "every builtin must emit a structured aligned derivation"
+    );
 }
 
 #[test]

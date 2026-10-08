@@ -1,0 +1,105 @@
+/// \begin{center}{\Large\bfseries Diagonalization and Powers of a Matrix}\\[0.4em]{\large MIT 18.06SC, Session 22 --- Worked Solutions}\\[0.6em]\textit{Problems 22.1 and 22.2}\end{center}
+/// \vspace{0.25em}\hrule\vspace{1em}
+/// All arithmetic below is exact. Row operations shown in the solution are produced by SCAS.
+
+/// \section*{Problem 22.1}
+/// \textbf{Problem.} Let \(A=\begin{pmatrix}4&0\\1&2\end{pmatrix}\). Diagonalize \(A\), describe every possible diagonalizing matrix, and determine which matrices diagonalize \(A^{-1}\).
+
+let A = [4, 0; 1, 2];
+
+/// \subsection*{Solution}
+/// Because \(A\) is triangular, its eigenvalues are visible on the diagonal. The characteristic polynomial confirms them:
+\[
+    characteristic_polynomial(A, lambda) =>
+\]
+\[
+    solve(characteristic_polynomial(A, lambda), lambda) =>
+\]
+
+/// For \(\lambda=4\), solving \((A-4I)v=0\) gives \(v_1=(2,1)^{\mathsf T}\). For \(\lambda=2\), solving \((A-2I)v=0\) gives \(v_2=(0,1)^{\mathsf T}\). SCAS obtains the same eigenbasis, listed by rows:
+\[
+    eigenvectors(A) =>
+\]
+
+/// Put the eigenvectors in the columns of \(S\), and put the corresponding eigenvalues on the diagonal of \(D\):
+\{
+    let S = [2, 0; 1, 1];
+    let D = [4, 0; 0, 2];
+\}
+
+/// To verify \(A=SDS^{-1}\), first compute \(S^{-1}\) by Gauss--Jordan elimination, then multiply:
+\[
+    inverse(S) =>
+\]
+\[
+    matmul(matmul(S, D), inverse(S)) =>
+\]
+
+/// Hence \(A=SDS^{-1}\). Since the eigenspaces are one-dimensional, every diagonalizing matrix is obtained by independently rescaling the two eigenvectors, with an optional swap of the columns. Equivalently,
+/// \[S'=\begin{pmatrix}2a&0\\a&b\end{pmatrix},\qquad a,b\ne0,\]
+/// or the same matrix with its two columns exchanged.
+
+/// The inverse has the same eigenvectors and reciprocal eigenvalues. Thus
+let D_inverse = [1/4, 0; 0, 1/2];
+\[
+    inverse(A) =>
+\]
+\[
+    matmul(matmul(S, D_inverse), inverse(S)) =>
+\]
+/// Therefore every matrix \(S'\) described above also diagonalizes \(A^{-1}\), with diagonal matrix \(\operatorname{diag}(1/4,1/2)\) (or the swapped ordering).
+
+/// \newpage
+/// \section*{Problem 22.2}
+/// \textbf{Problem.} Diagonalize the Markov matrix \(B=\begin{pmatrix}0.6&0.9\\0.4&0.1\end{pmatrix}\). Then find \(\lim_{k\to\infty}\Lambda^k\) and \(\lim_{k\to\infty}B^k\).
+
+/// We use the exact fractions \(3/5,9/10,2/5,1/10\) in place of the printed decimals.
+let B = [3/5, 9/10; 2/5, 1/10];
+
+/// \subsection*{Solution}
+/// The trace and determinant provide a quick check on the characteristic polynomial:
+\{
+    trace(B) =>;
+    det(B) =>;
+\}
+\[
+    characteristic_polynomial(B, lambda) =>
+\]
+\[
+    solve(characteristic_polynomial(B, lambda), lambda) =>
+\]
+
+/// The eigenvalues are \(1\) and \(-3/10\). Corresponding eigenvectors are \((9,4)^{\mathsf T}\) and \((1,-1)^{\mathsf T}\), so choose
+\{
+    let Q = [9, 1; 4, -1];
+    let Lambda = [1, 0; 0, -3/10];
+\}
+
+/// A row reduction gives \(Q^{-1}\), and direct multiplication verifies the diagonalization \(B=Q\Lambda Q^{-1}\):
+\[
+    inverse(Q) =>
+\]
+\[
+    matmul(matmul(Q, Lambda), inverse(Q)) =>
+\]
+
+/// Since \(B^k=Q\Lambda^kQ^{-1}\), the powers are controlled by
+/// \[\Lambda^k=\begin{pmatrix}1&0\\0&(-3/10)^k\end{pmatrix}.\]
+/// The second diagonal entry tends to zero. Therefore
+/// \[\lim_{k\to\infty}\Lambda^k=\begin{pmatrix}1&0\\0&0\end{pmatrix}.\]
+
+/// Substitution gives the limiting projection
+let P = [9/13, 9/13; 4/13, 4/13];
+/// \[\lim_{k\to\infty}B^k=Q\begin{pmatrix}1&0\\0&0\end{pmatrix}Q^{-1}=P=\begin{pmatrix}\frac{9}{13}&\frac{9}{13}\\[2pt]\frac{4}{13}&\frac{4}{13}\end{pmatrix}.\]
+
+/// As an exact check, the reduced row-echelon form has one pivot, so \(P\) has rank one:
+\[
+    rref(P) =>
+\]
+/// Finally, \(P\) is stationary and idempotent:
+\{
+    matmul(B, P) =>;
+    matmul(P, P) =>;
+\}
+
+/// Thus every initial probability vector converges to the steady-state vector \((9/13,4/13)^{\mathsf T}\).
