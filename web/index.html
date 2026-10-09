@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#252526">
+  <meta name="description" content="Write, run, and preview exact mathematics in the SCAS browser IDE.">
+  <title>SCAS · Browser IDE</title>
+  <link rel="stylesheet" href="./site.css">
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+  <main id="workspace">
+    <canvas id="scas-canvas" aria-label="SCAS browser IDE"></canvas>
+    <div id="loading" role="status" aria-live="polite">
+      <span class="mark">SCAS</span>
+      <span id="loading-message">Loading the mathematical workbench…</span>
+    </div>
+  </main>
+  <noscript>SCAS requires JavaScript and WebAssembly to run in your browser.</noscript>
+</body>
+</html>

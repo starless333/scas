@@ -4,6 +4,9 @@ This is a roadmap for the symbolic simplifier. Checked identities are currently
 implemented. An unchecked identity is a candidate, not a promise about current
 behavior.
 
+Checklist reviewed 2026-10-08; this IDE diagnostics/terminal pass did not
+change symbolic rewrite coverage.
+
 The simplifier must distinguish unconditional identities from identities that
 need domain assumptions. For example, `x / x = 1` requires `x != 0`, and
 `sqrt(x^2) = x` is false over the reals when `x < 0` (the result is `abs(x)`).
@@ -121,7 +124,8 @@ The assumptions system tracks facts such as `real(x)`, `x > 0`, `x != 0`, and
   hyperbolic sine/cosine, and standard secant/cosecant products
 - [x] Differentiate general powers plus inverse-trigonometric and hyperbolic functions
 - [x] Differentiate `erf`, `erfc`, logarithms with fixed bases, roots, and
-      assumption-qualified absolute values- [x] Bounded integration by parts for polynomial-times-exponential and
+      assumption-qualified absolute values
+- [x] Bounded integration by parts for polynomial-times-exponential and
       polynomial-times-trigonometric forms: the tabular rule integrates
       `p(x) * g(linear)` for `g` in `exp`, `sin`, `cos`, `sinh`, `cosh`
       (the families closed under repeated integration), expanding at most 8

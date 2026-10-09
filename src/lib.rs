@@ -2,12 +2,17 @@
 
 pub mod ast;
 pub mod document;
+pub mod intelligence;
 pub mod interpreter;
 pub mod latex;
 pub mod lexer;
 pub mod number;
 pub mod parser;
 pub mod plot;
+#[cfg(all(feature = "web", target_arch = "wasm32"))]
+mod web;
+#[cfg(feature = "web")]
+pub mod web_runtime;
 
 use ast::SourceSpan;
 use interpreter::Interpreter;

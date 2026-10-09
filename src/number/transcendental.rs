@@ -445,8 +445,8 @@ fn log_gamma_positive(mut value: DBig, precision: usize) -> Result<DBig, MathEva
         ));
     }
     let terms = precision.saturating_div(2).saturating_add(8).max(12);
-    let generated = (terms > EVEN_BERNOULLI.len())
-        .then(|| bernoulli_numbers(terms.saturating_mul(2)));
+    let generated =
+        (terms > EVEN_BERNOULLI.len()).then(|| bernoulli_numbers(terms.saturating_mul(2)));
     let threshold_integer = precision.saturating_div(2).saturating_add(10);
     let threshold = DBig::from(threshold_integer)
         .with_precision(work_precision)

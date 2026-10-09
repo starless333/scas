@@ -1,19 +1,54 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta http-equiv="refresh" content="0; url=builtins.html">
-  <meta name="description" content="The SCAS mathematical function reference has moved into the complete documentation suite.">
-  <link rel="canonical" href="builtins.html">
-  <link rel="stylesheet" href="assets/site.css">
-  <title>SCAS Builtin Reference</title>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="SCAS mathematical functions, exact evaluation, precision, complex branches, and assumptions.">
+  <title>Mathematical Functions · SCAS</title>
+  <link rel="stylesheet" href="assets/site.css"><script defer src="assets/site.js"></script>
 </head>
 <body>
-  <main class="document"><div class="content">
-    <h1>Builtin reference</h1>
-    <p>The complete function reference is now part of the
-      <a href="builtins.html">SCAS documentation suite</a>.</p>
-  </div></main>
+<a class="skip-link" href="#main-content">Skip to content</a>
+<div class="mobile-bar"><a href="index.html">SCAS docs</a><button type="button" data-nav-toggle aria-expanded="false" aria-controls="documentation-nav" aria-label="Open documentation navigation">Menu</button></div>
+<div class="layout">
+  <aside class="rail" id="documentation-nav">
+    <div class="brand"><a href="index.html">SCAS</a><span>0.1.0</span></div>
+    <nav aria-label="Documentation">
+      <div class="nav-group"><span>Start</span><a href="index.html">Overview</a><a href="getting-started.html">Getting started</a><a href="language.html">Language</a></div>
+      <div class="nav-group"><span>Mathematics</span><a aria-current="page" href="math-functions.html">Functions &amp; precision</a><a href="builtins.html">Builtin reference</a><a href="calculus.html">Calculus</a><a href="linear-algebra.html">Linear algebra</a></div>
+      <div class="nav-group"><span>Workflow</span><a href="documenter.html">Executable documents</a><a href="ide.html">Desktop IDE &amp; CLI</a><a href="internals.html">Architecture &amp; limits</a></div>
+      <div class="nav-group"><span>Demos</span><a href="demo-mit-diagonalization.html">MIT diagonalization</a></div>
+    </nav>
+  </aside>
+  <main class="document" id="main-content" tabindex="-1">
+    <header class="masthead"><h1>Exact first. Decimal when requested.</h1><p>SCAS keeps integers, rationals, and symbolic constants exact. Ask for a decimal approximation when you need one, with a precision you control.</p></header>
+    <div class="content">
+      <section><h2>Exactness and precision</h2><pre><code>print(sin(pi / 6));    // 1/2
+print(log(8, 2));      // 3
+print(gamma(6));       // 120
+print(sqrt(2));        // sqrt(2)
+print(evalf(sqrt(2))); // decimal at the active precision
+print(sqrt(2.0));      // decimal input requests approximation</code></pre><p>The active precision defaults to 100 significant digits. Set it with <code>--precision N</code> for a batch run or <code>:precision N</code> in the REPL. SCAS uses guard digits internally and rounds the displayed result to the requested precision.</p></section>
+      <section><h2 class="rule-heading">Function families</h2><div class="table-wrap"><table><thead><tr><th>Family</th><th>Functions</th><th>Domain</th></tr></thead><tbody>
+        <tr><td>Constants</td><td><code>pi</code>, <code>e</code>, <code>tau</code>, <code>phi</code></td><td>Exact symbolic constants.</td></tr>
+        <tr><td>Roots and powers</td><td><code>sqrt</code>, <code>cbrt</code>, <code>^</code></td><td>Real and complex.</td></tr>
+        <tr><td>Exponential and logs</td><td><code>exp</code>, <code>ln</code>, <code>log</code>, <code>log10</code>, <code>log2</code></td><td>Real and complex principal values.</td></tr>
+        <tr><td>Trigonometric</td><td><code>sin</code>, <code>cos</code>, <code>tan</code>, <code>sec</code>, <code>csc</code>, <code>cot</code></td><td>Real and complex.</td></tr>
+        <tr><td>Inverse trigonometric</td><td><code>asin</code>, <code>acos</code>, <code>atan</code>, <code>atan2</code></td><td>Complex, except real-only <code>atan2</code>.</td></tr>
+        <tr><td>Hyperbolic</td><td><code>sinh</code>, <code>cosh</code>, <code>tanh</code>, <code>asinh</code>, <code>acosh</code>, <code>atanh</code></td><td>Real and complex.</td></tr>
+        <tr><td>Special</td><td><code>erf</code>, <code>erfc</code>, <code>gamma</code>, <code>lgamma</code></td><td>Real inputs.</td></tr>
+        <tr><td>Utilities</td><td><code>abs</code>, <code>sign</code>, <code>floor</code>, <code>ceil</code>, <code>round</code>, <code>trunc</code>, <code>min</code>, <code>max</code>, <code>hypot</code></td><td>Real, except complex <code>abs</code>.</td></tr>
+      </tbody></table></div><p>For individual signatures and boundaries, use the <a href="builtins.html">builtin reference</a>.</p></section>
+      <section><h2 class="rule-heading">Complex values and branches</h2><p>When an elementary result is not real, SCAS returns its principal complex value. Square roots, logarithms, inverse trigonometric and hyperbolic functions, and fractional powers use their principal branches. <code>cbrt</code> keeps the real cube root for real inputs. Exact poles such as <code>tan(pi/2)</code> produce errors.</p><p>Complex values support arithmetic, integer powers, equality, and <code>abs</code>; they are unordered. <code>atan2</code>, ordering, rounding, <code>min</code>, and <code>max</code> require real inputs. Complex special functions such as <code>gamma</code> and <code>erf</code> remain outside the current implementation.</p></section>
+      <section><h2 class="rule-heading">Assumptions protect symbolic rewrites</h2><p>SCAS does not treat an unknown symbol as positive or even real. State what you know before asking for identities that depend on a domain:</p><pre><code>print(sqrt(x^2));    // unsimplified
+assume_real(x);
+print(sqrt(x^2));    // abs(x)
+assume_positive(x);
+print(sqrt(x^2));    // x
+forget_assumptions();</code></pre><p>Helpers include <code>assume_real</code>, <code>assume_integer</code>, <code>assume_nonzero</code>, <code>assume_nonnegative</code>, <code>assume_positive</code>, and <code>assume_negative</code>. Use <code>assume(x &gt; 0 and x &lt; 10)</code> for bounds. Contradictory numeric facts are rejected.</p></section>
+      <section><h2 class="rule-heading">Continue into symbolic work</h2><p><a href="calculus.html">Calculus</a> covers differentiation and integration rules. <a href="linear-algebra.html">Linear algebra</a> covers exact matrices and structured steps. The <a href="demo-mit-diagonalization.html">MIT example</a> shows both exact evaluation and rendered derivation in one source file.</p></section>
+    </div>
+    <footer class="footer">Extended explanations and examples are in <a href="math-functions.md">the mathematical functions reference source</a>.</footer>
+  </main>
+</div>
 </body>
 </html>

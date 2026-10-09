@@ -288,12 +288,18 @@ multi-series colors, auto y-fit.
 
 ### 4.2 Editor (features other IDEs treat as table stakes)
 
+- [x] VS Code-style source diagnostics: severity-colored ranges, gutter markers,
+      inline messages, and a Problems list that navigates to source.
+- [x] Integrated PTY/VT terminal beside Output and Problems, with direct
+      keystrokes, resizing, colors, alternate screen, and persistent scrollback.
+- [ ] Complete terminal parity with dedicated emulators (selection/copy,
+      extended mouse modes, hyperlinks, and less common escape sequences).
 - [ ] Find / replace (with regex and case toggles).
 - [ ] Go-to-line, bracket match highlighting, auto-closing brackets/quotes.
 - [ ] Code folding for `\\{ … \\}` document blocks and `fn` bodies.
 - [ ] Hover documentation for builtins (signature + one-line summary from
       `docs/math-functions.md`).
-- [ ] Signature help / parameter hints inside call parentheses.
+- [x] Signature help / parameter hints inside call parentheses.
 - [ ] Quick fixes for common diagnostics (e.g. "add missing `;`").
 - [ ] Multi-cursor editing and column selection.
 

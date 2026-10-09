@@ -88,24 +88,31 @@ See `docs/DOCUMENTER.md` for the full design of the documenter.
 - [ ] Tabs or multiple buffers
 - [x] **Run button** and shortcut; output panel
 - [x] **Live LaTeX preview** pane, driven by documenter output
-- [ ] **Debounced, off-thread rendering**
+- [x] **Debounced, off-thread rendering** (400 ms analysis debounce; preview render worker)
 - [x] Preview keeps the **last good render** on parse errors
-- [ ] Save/open, dirty indicator, autosave or unsaved-changes prompt
+- [x] Save/open, dirty indicator, and unsaved-changes prompt (autosave not implemented)
 - [x] Line numbers, current-line highlight
 
 ---
 
 ## Phase 3: Language intelligence
 
-- [x] **Inline diagnostics** (underlines, hover messages) using lexer/parser/documenter diagnostics
-- [x] Diagnostics panel
-- [ ] **Autocomplete** for built-ins, user functions, and function-template names
-- [ ] **Signature help**
-- [ ] **Hover to evaluate** any expression
-- [ ] **Go to definition**, **find references**, **rename symbol**
-- [ ] **Click-to-navigate**: preview to source and source to preview using fragment spans (cheap now, since output order equals source order)
-- [ ] **LSP server** (`tower-lsp`) exposing the above
-- [ ] GUI as one LSP client; test the server in VS Code or Neovim
+- [x] **Inline diagnostics** (underlines, gutter icons, inline messages, hover messages) using lexer/parser/documenter diagnostics
+- [x] **Problems panel** with severity, file/position, and click-to-source navigation
+- [x] **Integrated PTY/VT terminal** beside Problems and Output (direct input, resizing, scrollback, alternate screen)
+- [x] **Autocomplete** for built-ins and user functions; the snippets menu provides document/function templates
+- [ ] Complete template-name autocomplete, including user-configured LaTeX function templates
+- [x] **Signature help** for user functions and common built-ins
+- [x] **Bounded hover evaluation** for arithmetic expressions with preceding top-level bindings
+- [ ] Hover evaluation with full runtime scope and all expression forms
+- [x] **Go to definition**, **find references**, **rename symbol** for unambiguous document-level bindings
+- [ ] Scope-aware cross-file navigation and rename
+- [x] **Preview/source navigation** using fragment spans (exact in structured preview; rendered images navigate at chunk granularity)
+- [ ] Pixel-accurate source mapping within multi-fragment rendered images
+- [x] **LSP server** (`tower-lsp`) with diagnostics, completion, signature help, hover, definition, references, and rename
+- [ ] LSP documenter diagnostics and completion parity with the GUI
+- [x] Test the server in Neovim (headless initialization and definition request)
+- [ ] Make the GUI an LSP protocol client (it currently shares the source-index engine directly)
 
 ---
 
@@ -116,7 +123,10 @@ See `docs/DOCUMENTER.md` for the full design of the documenter.
 - [ ] **Incremental parsing / evaluation caching**
 - [x] **Benchmarks** (dependency-free harness) with numbers you can quote
 - [x] **Release pipeline**: prebuilt binaries for Linux, macOS, Windows
-- [ ] **WASM build** and a **public web playground**
+- [x] **WASM build** and a locally working browser IDE — status in
+      [docs/WASM_ROADMAP.md](docs/WASM_ROADMAP.md)
+- [ ] **Public web playground** — GitHub Pages workflow exists, but the public
+      URL has not been verified or linked from the README.
 
 ---
 
@@ -127,7 +137,7 @@ Pick one or two and do them well.
 - [ ] **`\steps[ expr ]`**: expand a rewrite trace generically (`before &= after && \text{(rule)}`)
 - [ ] Rewrite-rule tracing in the engine (power, sum, product, chain, constant multiple)
 - [ ] Row-reduction traces for matrices
-- [ ] **Graphing pane** for `f(x)` and its derivative
+- [x] **Graphing pane** for expressions including `f(x)` and `derivative(f(x), x)`
 - [ ] **Inline results**: ghost annotation of evaluated values at the end of lines
 - [ ] **`check` / `assert`** with gutter pass/fail indicators (replaces the old `// Answer:` idea)
 - [ ] Typeset functions or algorithms from `fn` declarations
@@ -141,7 +151,7 @@ Pick one or two and do them well.
 - [ ] **REPL panel** sharing the file's environment
 - [ ] **Formatter** (`fmt`) and format-on-save
 - [ ] **Linter** (unused variables, shadowing, etc.)
-- [ ] **Snippets/templates** (e.g. a problem skeleton with `///` prose and a render block)
+- [x] **Snippets/templates** (editor insertion menu with document and code templates)
 - [ ] **Debugger / step-through evaluator**
 
 ---

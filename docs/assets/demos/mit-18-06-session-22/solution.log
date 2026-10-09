@@ -1,4 +1,4 @@
-This is pdfTeX, Version 3.141592653-2.6-1.40.29 (TeX Live 2026/Arch Linux) (preloaded format=pdflatex 2026.6.8)  6 OCT 2026 00:46
+This is pdfTeX, Version 3.141592653-2.6-1.40.29 (TeX Live 2026/Arch Linux) (preloaded format=pdflatex 2026.6.8)  9 OCT 2026 01:22
 entering extended mode
  restricted \write18 enabled.
  %&-line parsing enabled.
@@ -259,7 +259,7 @@ File: t1lmr.fd 2015/05/01 v1.6.1 Font defs for Latin Modern
 File: l3backend-pdftex.def 2025-10-09 L3 backend support: PDF output (pdfTeX)
 \l__color_backend_stack_int=\count305
 )
-No file solution.aux.
+(docs/assets/demos/mit-18-06-session-22/solution.aux)
 \openout1 = `solution.aux'.
 
 LaTeX Font Info:    Checking defaults for OML/cmm/m/it on input line 16.
@@ -293,6 +293,7 @@ Package microtype Info: Patching command `\showhyphens'.
 Package microtype Info: No adjustment of tracking.
 Package microtype Info: No adjustment of interword spacing.
 Package microtype Info: No adjustment of character kerning.
+
 (/usr/share/texmf-dist/tex/latex/microtype/mt-cmr.cfg
 File: mt-cmr.cfg 2013/05/19 v2.2 microtype config. file: Computer Modern Roman 
 (RS)
@@ -394,9 +395,15 @@ File: mt-msb.cfg 2005/06/01 v1.0 microtype config. file: AMS symbols (b) (RS)
 )
 (/usr/share/texmf-dist/tex/latex/microtype/mt-eur.cfg
 File: mt-eur.cfg 2006/07/31 v1.1 microtype config. file: AMS Euler Roman (RS)
-)
+) [1
+
+{/var/lib/texmf/fonts/map/pdftex/updmap/pdftex.map}{/usr/share/texmf-dist/fonts
+/enc/dvips/lm/lm-ec.enc}{/usr/share/texmf-dist/fonts/enc/dvips/lm/lm-mathit.enc
+}{/usr/share/texmf-dist/fonts/enc/dvips/lm/lm-rm.enc}{/usr/share/texmf-dist/fon
+ts/enc/dvips/lm/lm-mathex.enc}{/usr/share/texmf-dist/fonts/enc/dvips/lm/lm-math
+sy.enc}] [2] [3]
 LaTeX Font Info:    Trying to load font information for OT1+lmss on input line 
-31.
+91.
 
 (/usr/share/texmf-dist/tex/latex/lm/ot1lmss.fd
 File: ot1lmss.fd 2015/05/01 v1.6.1 Font defs for Latin Modern
@@ -405,13 +412,7 @@ Package microtype Info: Loading generic protrusion settings for font family
 (microtype)             `lmss' (encoding: OT1).
 (microtype)             For optimal results, create family-specific settings.
 (microtype)             See the microtype manual for details.
- [1
-
-{/var/lib/texmf/fonts/map/pdftex/updmap/pdftex.map}{/usr/share/texmf-dist/fonts
-/enc/dvips/lm/lm-ec.enc}{/usr/share/texmf-dist/fonts/enc/dvips/lm/lm-mathit.enc
-}{/usr/share/texmf-dist/fonts/enc/dvips/lm/lm-rm.enc}{/usr/share/texmf-dist/fon
-ts/enc/dvips/lm/lm-mathex.enc}{/usr/share/texmf-dist/fonts/enc/dvips/lm/lm-math
-sy.enc}] [2] [3] [4] [5]
+ [4] [5] [6]
 (docs/assets/demos/mit-18-06-session-22/solution.aux)
  ***********
 LaTeX2e <2025-11-01>
@@ -419,13 +420,13 @@ L3 programming layer <2026-01-19>
  ***********
  ) 
 Here is how much of TeX's memory you used:
- 6171 strings out of 469515
- 93581 string characters out of 5470808
- 555983 words of memory out of 5000000
- 34690 multiletter control sequences out of 15000+600000
- 681197 words of font info for 105 fonts, out of 8000000 for 9000
+ 6156 strings out of 469515
+ 93506 string characters out of 5470808
+ 558974 words of memory out of 5000000
+ 34687 multiletter control sequences out of 15000+600000
+ 674725 words of font info for 97 fonts, out of 8000000 for 9000
  14 hyphenation exceptions out of 8191
- 57i,20n,65p,1044b,260s stack positions out of 10000i,1000n,20000p,200000b,200000s
+ 57i,14n,65p,1044b,209s stack positions out of 10000i,1000n,20000p,200000b,200000s
 </usr/share/texmf-dist/fonts/type1/public/lm/lmbx10.pfb></usr/share/texmf-dis
 t/fonts/type1/public/lm/lmbx12.pfb></usr/share/texmf-dist/fonts/type1/public/lm
 /lmex10.pfb></usr/share/texmf-dist/fonts/type1/public/lm/lmmi10.pfb></usr/share
@@ -435,11 +436,11 @@ r/share/texmf-dist/fonts/type1/public/lm/lmr8.pfb></usr/share/texmf-dist/fonts/
 type1/public/lm/lmri10.pfb></usr/share/texmf-dist/fonts/type1/public/lm/lmss8.p
 fb></usr/share/texmf-dist/fonts/type1/public/lm/lmsy10.pfb></usr/share/texmf-di
 st/fonts/type1/public/lm/lmsy8.pfb>
-Output written on docs/assets/demos/mit-18-06-session-22/solution.pdf (5 pages,
- 193514 bytes).
+Output written on docs/assets/demos/mit-18-06-session-22/solution.pdf (6 pages,
+ 193228 bytes).
 PDF statistics:
- 88 PDF objects out of 1000 (max. 8388607)
- 55 compressed objects within 1 object stream
+ 91 PDF objects out of 1000 (max. 8388607)
+ 57 compressed objects within 1 object stream
  0 named destinations out of 1000 (max. 500000)
- 30721 words of extra memory for PDF output out of 35830 (max. 10000000)
+ 26625 words of extra memory for PDF output out of 29859 (max. 10000000)
 

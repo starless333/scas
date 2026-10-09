@@ -1,0 +1,135 @@
+\documentclass[11pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{upgreek}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage[margin=1in]{geometry}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.65em}
+\setlength{\jot}{0.45em}
+\emergencystretch=2em
+\allowdisplaybreaks[4]
+\begin{document}
+\begin{center}{\Large\bfseries Diagonalization and Powers of a Matrix}\\[0.4em]{\large MIT 18.06SC, Session 22 --- Worked Solutions}\\[0.6em]\textit{Problems 22.1 and 22.2}\end{center}
+\vspace{0.25em}\hrule\vspace{1em}
+All arithmetic is exact; SCAS displays the row operations used below.
+
+\section*{Problem 22.1}
+\textbf{Problem.} Let \(A=\begin{pmatrix}4&0\\1&2\end{pmatrix}\). Diagonalize \(A\), describe every possible diagonalizing matrix, and determine which matrices diagonalize \(A^{-1}\).
+
+\subsection*{Solution}
+The triangular matrix has eigenvalues \(4\) and \(2\):
+
+\[\begin{aligned}p_{A}\left(\lambda\right) &= \lambda^{2} - 6 \cdot \lambda + 8\end{aligned}\]
+
+\[\begin{aligned}p_{A}\left(\lambda\right) &= 0 \\ &\implies \lambda = 2,\quad \lambda = 4\end{aligned}\]
+
+An eigenbasis, listed by rows, is
+
+\[\begin{aligned}\mathcal{E}\left(A\right) &= \begin{pmatrix}2 & 1 \\ 0 & 1\end{pmatrix}\end{aligned}\]
+
+Use these eigenvectors as columns of \(S\):
+
+\begin{align*}S &= \begin{pmatrix}2 & 0 \\ 1 & 1\end{pmatrix} \\
+D &= \begin{pmatrix}4 & 0 \\ 0 & 2\end{pmatrix}\end{align*}
+
+Gauss--Jordan elimination finds the inverse:
+
+\[\begin{aligned}\left[S\mid I\right] &= \begin{pmatrix}2 & 0 & 1 & 0 \\ 1 & 1 & 0 & 1\end{pmatrix} \\
+&\sim \begin{pmatrix}1 & 0 & \frac{1}{2} & 0 \\ 1 & 1 & 0 & 1\end{pmatrix} && \left(R_{1}\leftarrow \frac{1}{2}R_{1}\right) \\
+&\sim \begin{pmatrix}1 & 0 & \frac{1}{2} & 0 \\ 0 & 1 & -\frac{1}{2} & 1\end{pmatrix} && \left(R_{2}\leftarrow R_{2}-\left(1\right)R_{1}\right) \\
+S^{-1} &= \begin{pmatrix}\frac{1}{2} & 0 \\ -\frac{1}{2} & 1\end{pmatrix}\end{aligned}\]
+
+Now multiply \(SD\) and then \(SDS^{-1}\):
+
+\[\begin{aligned}S\,D &= \begin{pmatrix}2 & 0 \\ 1 & 1\end{pmatrix}\,\begin{pmatrix}4 & 0 \\ 0 & 2\end{pmatrix} \\
+&= \begin{pmatrix}8 & 0 \\ 4 & 2\end{pmatrix}\end{aligned}\]
+
+\[\begin{aligned}S\,D\,S^{-1} &= \begin{pmatrix}8 & 0 \\ 4 & 2\end{pmatrix}\,\begin{pmatrix}\frac{1}{2} & 0 \\ -\frac{1}{2} & 1\end{pmatrix} \\
+&= \begin{pmatrix}4 & 0 \\ 1 & 2\end{pmatrix}\end{aligned}\]
+
+Hence \(A=SDS^{-1}\). Since the eigenspaces are one-dimensional, every diagonalizing matrix is obtained by independently rescaling the two eigenvectors, with an optional swap of the columns. Equivalently,
+\[S'=\begin{pmatrix}2a&0\\a&b\end{pmatrix},\qquad a,b\ne0,\]
+or the same matrix with its two columns exchanged.
+
+The inverse has the same eigenvectors and reciprocal eigenvalues:
+
+\[\begin{aligned}\left[A\mid I\right] &= \begin{pmatrix}4 & 0 & 1 & 0 \\ 1 & 2 & 0 & 1\end{pmatrix} \\
+&\sim \begin{pmatrix}1 & 0 & \frac{1}{4} & 0 \\ 1 & 2 & 0 & 1\end{pmatrix} && \left(R_{1}\leftarrow \frac{1}{4}R_{1}\right) \\
+&\sim \begin{pmatrix}1 & 0 & \frac{1}{4} & 0 \\ 0 & 2 & -\frac{1}{4} & 1\end{pmatrix} && \left(R_{2}\leftarrow R_{2}-\left(1\right)R_{1}\right) \\
+&\sim \begin{pmatrix}1 & 0 & \frac{1}{4} & 0 \\ 0 & 1 & -\frac{1}{8} & \frac{1}{2}\end{pmatrix} && \left(R_{2}\leftarrow \frac{1}{2}R_{2}\right) \\
+A^{-1} &= \begin{pmatrix}\frac{1}{4} & 0 \\ -\frac{1}{8} & \frac{1}{2}\end{pmatrix}\end{aligned}\]
+
+\[\begin{aligned}S\,D^{-1}\,S^{-1} &= \begin{pmatrix}\frac{1}{2} & 0 \\ \frac{1}{4} & \frac{1}{2}\end{pmatrix}\,\begin{pmatrix}\frac{1}{2} & 0 \\ -\frac{1}{2} & 1\end{pmatrix} \\
+&= \begin{pmatrix}\frac{1}{4} & 0 \\ -\frac{1}{8} & \frac{1}{2}\end{pmatrix}\end{aligned}\]
+
+Therefore every matrix \(S'\) described above also diagonalizes \(A^{-1}\), with diagonal matrix \(\operatorname{diag}(1/4,1/2)\) (or the swapped ordering).
+
+\newpage
+\section*{Problem 22.2}
+\textbf{Problem.} Diagonalize the Markov matrix \(B=\begin{pmatrix}0.6&0.9\\0.4&0.1\end{pmatrix}\). Then find \(\lim_{k\to\infty}\Lambda^k\) and \(\lim_{k\to\infty}B^k\).
+
+We use the exact fractions \(3/5,9/10,2/5,1/10\) in place of the printed decimals.
+
+\subsection*{Solution}
+Compute the characteristic data:
+
+\begin{align*}\begin{aligned}\operatorname{tr}\left(B\right) &= \frac{3}{5} + \frac{1}{10} \\ &= \frac{7}{10}\end{aligned} \\
+\begin{aligned}B &= \begin{pmatrix}\frac{3}{5} & \frac{9}{10} \\ \frac{2}{5} & \frac{1}{10}\end{pmatrix} \\
+&\sim \begin{pmatrix}\frac{3}{5} & \frac{9}{10} \\ 0 & -\frac{1}{2}\end{pmatrix} && \left(R_{2}\leftarrow R_{2}-\left(\frac{2}{3}\right)R_{1}\right) \\
+\det\left(B\right) &= \frac{3}{5}\cdot \left(-\frac{1}{2}\right) \\
+&= -\frac{3}{10}\end{aligned}\end{align*}
+
+\[\begin{aligned}p_{B}\left(\lambda\right) &= \lambda^{2} - \frac{7}{10} \cdot \lambda - \frac{3}{10}\end{aligned}\]
+
+\[\begin{aligned}p_{B}\left(\lambda\right) &= 0 \\ &\implies \lambda = -\frac{3}{10},\quad \lambda = 1\end{aligned}\]
+
+Eigenvalues \(1\) and \(-3/10\) have eigenvectors \((9,4)^{\mathsf T}\) and \((1,-1)^{\mathsf T}\):
+
+\begin{align*}Q &= \begin{pmatrix}9 & 1 \\ 4 & -1\end{pmatrix} \\
+\Lambda &= \begin{pmatrix}1 & 0 \\ 0 & -\frac{3}{10}\end{pmatrix}\end{align*}
+
+Reduce \(Q\), then verify \(B=Q\Lambda Q^{-1}\):
+
+\[\begin{aligned}\left[Q\mid I\right] &= \begin{pmatrix}9 & 1 & 1 & 0 \\ 4 & -1 & 0 & 1\end{pmatrix} \\
+&\sim \begin{pmatrix}1 & \frac{1}{9} & \frac{1}{9} & 0 \\ 4 & -1 & 0 & 1\end{pmatrix} && \left(R_{1}\leftarrow \frac{1}{9}R_{1}\right) \\
+&\sim \begin{pmatrix}1 & \frac{1}{9} & \frac{1}{9} & 0 \\ 0 & -\frac{13}{9} & -\frac{4}{9} & 1\end{pmatrix} && \left(R_{2}\leftarrow R_{2}-\left(4\right)R_{1}\right) \\
+&\sim \begin{pmatrix}1 & \frac{1}{9} & \frac{1}{9} & 0 \\ 0 & 1 & \frac{4}{13} & -\frac{9}{13}\end{pmatrix} && \left(R_{2}\leftarrow \frac{1}{-\frac{13}{9}}R_{2}\right) \\
+&\sim \begin{pmatrix}1 & 0 & \frac{1}{13} & \frac{1}{13} \\ 0 & 1 & \frac{4}{13} & -\frac{9}{13}\end{pmatrix} && \left(R_{1}\leftarrow R_{1}-\left(\frac{1}{9}\right)R_{2}\right) \\
+Q^{-1} &= \begin{pmatrix}\frac{1}{13} & \frac{1}{13} \\ \frac{4}{13} & -\frac{9}{13}\end{pmatrix}\end{aligned}\]
+
+\[\begin{aligned}Q\,\Lambda &= \begin{pmatrix}9 & 1 \\ 4 & -1\end{pmatrix}\,\begin{pmatrix}1 & 0 \\ 0 & -\frac{3}{10}\end{pmatrix} \\
+&= \begin{pmatrix}9 & -\frac{3}{10} \\ 4 & \frac{3}{10}\end{pmatrix}\end{aligned}\]
+
+\[\begin{aligned}Q\,\Lambda\,Q^{-1} &= \begin{pmatrix}9 & -\frac{3}{10} \\ 4 & \frac{3}{10}\end{pmatrix}\,\begin{pmatrix}\frac{1}{13} & \frac{1}{13} \\ \frac{4}{13} & -\frac{9}{13}\end{pmatrix} \\
+&= \begin{pmatrix}\frac{3}{5} & \frac{9}{10} \\ \frac{2}{5} & \frac{1}{10}\end{pmatrix}\end{aligned}\]
+
+Since \(B^k=Q\Lambda^kQ^{-1}\), the powers are controlled by
+\[\Lambda^k=\begin{pmatrix}1&0\\0&(-3/10)^k\end{pmatrix}.\]
+The second diagonal entry tends to zero. Therefore
+\[\lim_{k\to\infty}\Lambda^k=\begin{pmatrix}1&0\\0&0\end{pmatrix}.\]
+
+Substitution gives the limiting projection
+
+\[\lim_{k\to\infty}B^k=Q\begin{pmatrix}1&0\\0&0\end{pmatrix}Q^{-1}=P=\begin{pmatrix}\frac{9}{13}&\frac{9}{13}\\[2pt]\frac{4}{13}&\frac{4}{13}\end{pmatrix}.\]
+
+Row reduction shows that \(P\) has rank one:
+
+\[\begin{aligned}P &= \begin{pmatrix}\frac{9}{13} & \frac{9}{13} \\ \frac{4}{13} & \frac{4}{13}\end{pmatrix} \\
+&\sim \begin{pmatrix}1 & 1 \\ \frac{4}{13} & \frac{4}{13}\end{pmatrix} && \left(R_{1}\leftarrow \frac{1}{\frac{9}{13}}R_{1}\right) \\
+&\sim \begin{pmatrix}1 & 1 \\ 0 & 0\end{pmatrix} && \left(R_{2}\leftarrow R_{2}-\left(\frac{4}{13}\right)R_{1}\right) \\
+\operatorname{rref}\left(P\right) &= \begin{pmatrix}1 & 1 \\ 0 & 0\end{pmatrix}\end{aligned}\]
+
+Finally, \(P\) is stationary and idempotent:
+
+\begin{align*}\begin{aligned}B\,P &= \begin{pmatrix}\frac{3}{5} & \frac{9}{10} \\ \frac{2}{5} & \frac{1}{10}\end{pmatrix}\,\begin{pmatrix}\frac{9}{13} & \frac{9}{13} \\ \frac{4}{13} & \frac{4}{13}\end{pmatrix} \\
+&= \begin{pmatrix}\frac{9}{13} & \frac{9}{13} \\ \frac{4}{13} & \frac{4}{13}\end{pmatrix}\end{aligned} \\
+\begin{aligned}P^{2} &= \begin{pmatrix}\frac{9}{13} & \frac{9}{13} \\ \frac{4}{13} & \frac{4}{13}\end{pmatrix}\,\begin{pmatrix}\frac{9}{13} & \frac{9}{13} \\ \frac{4}{13} & \frac{4}{13}\end{pmatrix} \\
+&= \begin{pmatrix}\frac{9}{13} & \frac{9}{13} \\ \frac{4}{13} & \frac{4}{13}\end{pmatrix}\end{aligned}\end{align*}
+
+Thus every initial probability vector converges to the steady-state vector \((9/13,4/13)^{\mathsf T}\).
+\end{document}

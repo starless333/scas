@@ -269,6 +269,9 @@ These affect the documenter directly because users now write math inside render 
 
 ## 12. Open decisions summary
 
+Reviewed 2026-10-08: all decisions below remain implemented. The still-open
+golden, TeX compile, and round-trip tests are tracked in `CAS_IDE.md`.
+
 - [x] Delimiter syntax: `\{ \}` / `\[ \]`
 - [x] Render block scope: shared
 - [x] `/// ` lines inside render blocks: `\intertext`

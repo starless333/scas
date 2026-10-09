@@ -2,12 +2,16 @@
 
 use crate::ast::statement::FunctionBody;
 use crate::ast::{AssignOp, Expr, ExprKind, SourceSpan, Statement, StatementKind};
+use crate::interpreter::value::Value;
 use crate::interpreter::Interpreter;
 use crate::latex::LatexRenderer;
 use crate::lexer::Scanner;
+use crate::number::Number;
 use crate::parser::Parser;
 use crate::plot::{self, PlotBounds};
 use crate::{ExecutionError, Limits, RuntimeError};
+use num_rational::BigRational;
+use num_traits::{One, Zero};
 use std::io;
 use std::num::NonZeroU64;
 use std::ops::Range;
@@ -133,7 +137,7 @@ fn build_with_options_and_limits(
     let statements = Parser::new(tokens).parse().map_err(ExecutionError::Parse)?;
     let mut interpreter = Interpreter::with_limits(symbols, io::sink(), limits);
     if latency_sensitive {
-        let precision = limits.max_decimal_precision.min(34).max(1);
+        let precision = limits.max_decimal_precision.clamp(1, 34);
         interpreter
             .set_decimal_precision(NonZeroU64::new(precision).expect("precision is at least one"))
             .map_err(ExecutionError::Runtime)?;
@@ -392,7 +396,14 @@ fn render_block(
             }
         };
         if let Some(row) = row {
-            rows.push(row);
+            // A result may contain its own aligned derivation. In a render
+            // block the outer align* already supplies that environment.
+            rows.push(
+                row.strip_prefix(r"\begin{aligned}")
+                    .and_then(|body| body.strip_suffix(r"\end{aligned}"))
+                    .unwrap_or(&row)
+                    .to_owned(),
+            );
         }
     }
     if !rows.is_empty() {
@@ -621,10 +632,22 @@ fn render_derivation(
                 last_rendered_value = Some(&step.value);
             }
             StepOperation::ScaleRow { row, divisor } => {
+                let multiplier = match divisor {
+                    Value::Number(number) => number
+                        .as_rational()
+                        .filter(|number| !number.is_zero())
+                        .map(|number| {
+                            renderer.value(&Value::Number(Number::from_rational(
+                                BigRational::one() / number,
+                            )))
+                        })
+                        .unwrap_or_else(|| format!(r"\frac{{1}}{{{}}}", renderer.value(divisor))),
+                    _ => format!(r"\frac{{1}}{{{}}}", renderer.value(divisor)),
+                };
                 rows.push(format!(
-                    r"&\sim {value} && \left(R_{{{}}}\leftarrow \frac{{1}}{{{}}}R_{{{}}}\right)",
+                    r"&\sim {value} && \left(R_{{{}}}\leftarrow {}R_{{{}}}\right)",
                     row + 1,
-                    renderer.value(divisor),
+                    multiplier,
                     row + 1
                 ));
                 last_rendered_value = Some(&step.value);
@@ -634,16 +657,45 @@ fn render_derivation(
                 source,
                 factor,
             } => {
+                let operation = if matches!(factor, Value::Number(number) if number.is_one()) {
+                    format!(r"R_{{{}}}-R_{{{}}}", target + 1, source + 1)
+                } else {
+                    format!(
+                        r"R_{{{}}}-\left({}\right)R_{{{}}}",
+                        target + 1,
+                        renderer.value(factor),
+                        source + 1
+                    )
+                };
                 rows.push(format!(
-                    r"&\sim {value} && \left(R_{{{}}}\leftarrow R_{{{}}}-\left({}\right)R_{{{}}}\right)",
+                    r"&\sim {value} && \left(R_{{{}}}\leftarrow {}\right)",
                     target + 1,
-                    target + 1,
-                    renderer.value(factor),
-                    source + 1
+                    operation,
                 ));
                 last_rendered_value = Some(&step.value);
             }
-            StepOperation::Explanation(explanation) => {
+            StepOperation::DiagonalProduct { factors, negated } => {
+                let mut terms = Vec::with_capacity(factors.len() + usize::from(*negated));
+                if *negated {
+                    terms.push(r"\left(-1\right)".to_owned());
+                }
+                terms.extend(factors.iter().map(|factor| {
+                    let value = renderer.value(factor);
+                    if value.starts_with('-') {
+                        format!(r"\left({value}\right)")
+                    } else {
+                        value
+                    }
+                }));
+                rows.push(format!(
+                    r"{} &= {}",
+                    semantic_result_name(base_name, args, renderer),
+                    terms.join(r"\cdot ")
+                ));
+                rows.push(format!(r"&= {value}"));
+                last_rendered_value = Some(&step.value);
+            }
+            StepOperation::Explanation(_) => {
                 let left = if rows.is_empty() {
                     source.to_owned()
                 } else if matches!(base_name, "det" | "rank") {
@@ -653,10 +705,8 @@ fn render_derivation(
                 };
                 if base_name == "matmul" {
                     rows.push(format!(r"&= {value}"));
-                } else if base_name == "characteristic_polynomial" {
-                    rows.push(format!(r"{left} &= {value}"));
                 } else {
-                    rows.push(format!(r"{left} &= {value} && \left({explanation}\right)"));
+                    rows.push(format!(r"{left} &= {value}"));
                 }
                 last_rendered_value = Some(&step.value);
             }
@@ -1007,7 +1057,8 @@ det_steps([1, 2; 3, 4]) =>;
         assert!(latex.contains(r"&\implies z = 0"), "{latex}");
         assert!(latex.contains(r"z = 0"));
         assert!(latex.contains(r"z = 1"));
-        assert!(latex.contains(r"\begin{aligned}"));
+        assert!(latex.contains(r"\begin{align*}"));
+        assert!(!latex.contains(r"\begin{aligned}"));
         assert!(latex.matches("\\\\\n").count() >= 3, "{latex}");
     }
 
@@ -1024,10 +1075,11 @@ det_steps([1, 2; 3, 4]) =>;
         assert_eq!(live.body().matches(r"\sim").count(), 4, "{}", live.body());
         assert!(
             live.body()
-                .contains(r"\text{product of pivots, adjusted for row swaps}"),
+                .contains(r"\det\left(\begin{pmatrix}1 & 2 \\ 3 & 4\end{pmatrix}\right) &= 1\cdot \left(-2\right)"),
             "{}",
             live.body()
         );
+        assert!(!live.body().contains(r"\text{product of pivots}"));
         assert!(
             live.body()
                 .contains(r"R_{2}\leftarrow R_{2}-\left(3\right)R_{1}"),
@@ -1035,10 +1087,21 @@ det_steps([1, 2; 3, 4]) =>;
             live.body()
         );
         assert!(
-            live.body().contains(r"R_{2}\leftarrow \frac{1}{-2}R_{2}"),
+            live.body().contains(r"R_{2}\leftarrow -\frac{1}{2}R_{2}"),
             "{}",
             live.body()
         );
+    }
+
+    #[test]
+    fn determinant_row_swaps_show_the_sign_in_the_diagonal_product() {
+        let document = build(r#"\[ det([0, 1; 2, 3]) => \]"#).unwrap();
+        assert!(
+            document.body().contains(r"\left(-1\right)\cdot 2\cdot 1"),
+            "{}",
+            document.body()
+        );
+        assert!(document.body().contains(r"&= -2"), "{}", document.body());
     }
 
     #[test]
@@ -1051,7 +1114,7 @@ det_steps([1, 2; 3, 4]) =>;
             "{latex}"
         );
         assert!(
-            latex.contains(r"R_{2}\leftarrow \frac{1}{-2}R_{2}"),
+            latex.contains(r"R_{2}\leftarrow -\frac{1}{2}R_{2}"),
             "{latex}"
         );
         assert!(latex.contains(r"\operatorname{rref}"), "{latex}");
@@ -1059,5 +1122,25 @@ det_steps([1, 2; 3, 4]) =>;
             latex.contains(r"\end{pmatrix} && \left(R_"),
             "row-operation annotations should sit beside their matrices: {latex}"
         );
+    }
+
+    #[test]
+    fn grouped_derivations_use_one_alignment_environment() {
+        let document =
+            build(r"\{ trace_steps([1, 2; 3, 4]) =>; det_steps([1, 2; 3, 4]) =>; \}").unwrap();
+        let latex = &document.fragments[0].latex;
+        assert!(latex.starts_with(r"\begin{align*}"), "{latex}");
+        assert!(!latex.contains(r"\begin{aligned}"), "{latex}");
+        assert!(latex.contains(r"\operatorname{tr}"), "{latex}");
+        assert!(latex.contains(r"\det"), "{latex}");
+    }
+
+    #[test]
+    fn inverse_row_labels_simplify_nested_reciprocals_and_unit_factors() {
+        let q = build(r"\[ inverse_steps([9, 1; 4, -1]) => \]").unwrap();
+        assert!(q.body().contains(r"-\frac{9}{13}R_{2}"), "{}", q.body());
+        let s = build(r"\[ inverse_steps([2, 0; 1, 1]) => \]").unwrap();
+        assert!(s.body().contains(r"R_{2}-R_{1}"), "{}", s.body());
+        assert!(!s.body().contains(r"\left(1\right)R_{1}"), "{}", s.body());
     }
 }

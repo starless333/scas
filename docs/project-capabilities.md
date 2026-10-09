@@ -4,7 +4,7 @@ SCAS is a from-scratch, dynamically typed programming language and symbolic
 computer algebra system written in Rust. It combines an exact and
 arbitrary-precision math engine, a scanner/parser/interpreter toolchain, a
 self-documenting mathematical source format, a command-line workflow, and a
-native desktop IDE.
+  native desktop IDE and a locally buildable browser IDE.
 
 This document is both a current capability inventory and a portfolio-oriented
 overview. It describes implemented behavior; future ideas are intentionally
@@ -22,12 +22,16 @@ approximation only when the program requests it. The symbolic layer performs
 safe simplification, polynomial algorithms, equation solving, calculus, and
 exact linear algebra.
 
-The same core powers three product surfaces:
+The same core powers four product surfaces:
 
 - a batch CLI for files and pipelines;
 - a persistent interactive REPL;
+- an LSP server for external editors (diagnostics, completion, hover,
+  signature help, definition/references, and rename);
 - a native `eframe`/`egui` IDE with editing, diagnostics, execution, and live
-  mathematical preview in one workspace.
+  mathematical preview in one workspace;
+- a Wasm/egui browser IDE with a Web Worker, structured math preview, and
+  static-site packaging (not yet verified at a public URL).
 
 ## Language and runtime
 
@@ -99,7 +103,8 @@ precision detail also available in [`math-functions.md`](math-functions.md).
   reciprocals, roots, exponential/trigonometric/hyperbolic families,
   logarithms, inverse functions, and error functions.
 - Explicit unevaluated integrals when no safe rule is known.
-- Gradients, Jacobians, Hessians, and definite integrals.
+- Gradients, Jacobians, Hessians, definite and multiple integrals, plus
+  implemented limit, series, sum, and product builtins.
 - Exact and symbolic matrix transpose, trace, determinant, rank, RREF,
   inverse, matrix × matrix multiplication, matrix × vector multiplication,
   and unique linear-system solving.
@@ -109,6 +114,8 @@ precision detail also available in [`math-functions.md`](math-functions.md).
   multiplication syntax with dimension validation.
 - Square-matrix integer powers computed by exponentiation by squaring,
   including identity matrices for exponent zero and exact inverse powers.
+- Exact 1×1/2×2 eigenvalues and eigenvectors, characteristic polynomials,
+  LU/QR/Cholesky decompositions, Jordan form, and vector-space operations.
 - Structured derivation variants that preserve row operations and explanatory
   steps for rendered mathematical work.
 
@@ -145,14 +152,29 @@ precision detail also available in [`math-functions.md`](math-functions.md).
 - Background execution and bounded, debounced preview analysis so stale work
   cannot accumulate.
 - Workspace tabs for source documents, a persistent interactive REPL, and a
-  reserved graphing-calculator canvas.
+  graphing-calculator canvas with adaptive sampling, pan/zoom, probes, and SVG export.
 - Notebook-style REPL history with session-persistent definitions, live
   AST-to-LaTeX rendering while expressions are entered, and typeset results.
 - System LaTeX/Computer Modern rendering through serialized `latex` and
   `dvipng` workers, with a native structured renderer as a fast fallback.
 - TeX/PDF export, saving, project browsing, configurable fonts and font size,
   line-number modes, and keyboard shortcuts.
+- An embedded PTY terminal alongside the Output and Problems dock.
 - Twelve bundled light and dark developer themes plus user-loaded TOML themes.
+
+## Browser IDE (local build)
+
+- Real `eframe`/`egui` canvas with a source editor, Run action, output and
+  source-located clickable problems, structured mathematical preview, and
+  graphing workspace.
+- Shared Rust language, document, plotting, and structured-preview code
+  compiled to WebAssembly; evaluation and graph sampling run in a Web Worker
+  with deterministic resource limits and stale-result generation IDs.
+- `.scas` import and download, `.tex`/`.svg` download, Starter and MIT 18.06
+  examples, URL-hash source sharing, and localStorage draft recovery.
+- Static HTML/JavaScript/Wasm output and a GitHub Pages Actions workflow.
+  Public deployment, browser REPL, terminal, PDF export, and full reuse of the
+  native GUI code are not yet complete.
 
 ## Reliability, security, and engineering quality
 
@@ -239,5 +261,5 @@ Use or adapt these bullets to fit the role and available space:
   distinct rational linear factors.
 - Symbolic integration is rule-based and returns an unevaluated integral when
   no safe rule is available.
-- The native IDE is described as an early preview, while the language and
-  evaluator remain usable independently through the CLI and Rust API.
+- The browser IDE is buildable and tested locally, but its Pages deployment is
+  not yet verified and it has fewer platform features than the native IDE.

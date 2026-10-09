@@ -1,4 +1,7 @@
+#[cfg(target_arch = "wasm32")]
+use crate::document::{Document, FragmentKind};
 use eframe::egui::{self, Align, Color32, FontFamily, FontId, Layout, RichText, Stroke};
+#[cfg(not(target_arch = "wasm32"))]
 use scas::document::{Document, FragmentKind};
 
 #[derive(Debug, Clone)]
@@ -18,35 +21,59 @@ pub fn show_document(
     accent: Color32,
     muted: Color32,
     scale: f32,
-) {
-    for fragment in &document.fragments {
-        match fragment.kind {
-            FragmentKind::Prose => {
-                ui.add_space(8.0);
-                show_prose(ui, &fragment.latex, accent, scale);
-                ui.add_space(8.0);
-            }
-            FragmentKind::DisplayMath => {
-                let body = fragment
-                    .latex
-                    .strip_prefix(r"\[")
-                    .and_then(|text| text.strip_suffix(r"\]"))
-                    .unwrap_or(&fragment.latex);
-                formula_card(ui, &[body], accent, muted, scale);
-            }
-            FragmentKind::AlignedMath => {
-                let body = fragment
-                    .latex
-                    .strip_prefix(r"\begin{align*}")
-                    .and_then(|text| text.strip_suffix(r"\end{align*}"))
-                    .unwrap_or(&fragment.latex);
-                let rows = body.split("\\\\\n").collect::<Vec<_>>();
-                formula_card(ui, &rows, accent, muted, scale);
-            }
+    scroll_target: Option<usize>,
+) -> Option<usize> {
+    let mut selected = None;
+    for (index, fragment) in document.fragments.iter().enumerate() {
+        let response = ui
+            .scope(|ui| match fragment.kind {
+                FragmentKind::Prose => {
+                    ui.add_space(8.0);
+                    show_prose(ui, &fragment.latex, accent, scale);
+                    ui.add_space(8.0);
+                }
+                FragmentKind::DisplayMath => {
+                    let body = fragment
+                        .latex
+                        .strip_prefix(r"\[")
+                        .and_then(|text| text.strip_suffix(r"\]"))
+                        .unwrap_or(&fragment.latex);
+                    let body = body
+                        .strip_prefix(r"\begin{aligned}")
+                        .and_then(|text| text.strip_suffix(r"\end{aligned}"))
+                        .unwrap_or(body);
+                    let rows = body.split("\\\\\n").collect::<Vec<_>>();
+                    formula_card(ui, &rows, accent, muted, scale);
+                }
+                FragmentKind::AlignedMath => {
+                    let body = fragment
+                        .latex
+                        .strip_prefix(r"\begin{align*}")
+                        .and_then(|text| text.strip_suffix(r"\end{align*}"))
+                        .unwrap_or(&fragment.latex);
+                    let rows = body.split("\\\\\n").collect::<Vec<_>>();
+                    formula_card(ui, &rows, accent, muted, scale);
+                }
+            })
+            .response;
+        let response = ui
+            .interact(
+                response.rect,
+                ui.id().with(("preview-fragment", index)),
+                egui::Sense::click(),
+            )
+            .on_hover_text(format!("Go to source line {}", fragment.span.line));
+        if scroll_target == Some(index) {
+            ui.scroll_to_rect(response.rect, Some(Align::Center));
+        }
+        if response.clicked() {
+            selected = Some(index);
         }
     }
+    selected
 }
 
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub fn show_expression(ui: &mut egui::Ui, latex: &str, color: Color32, size: f32) {
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 1.5;

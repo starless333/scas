@@ -1,9 +1,9 @@
 use scas::ast::StatementKind;
-use scas::{execute, execute_with_options, ExecutionOptions, Limits};
 use scas::interpreter::Interpreter;
 use scas::latex::LatexRenderer;
 use scas::lexer::{Scanner, SymbolTable};
 use scas::parser::Parser;
+use scas::{execute, execute_with_options, ExecutionOptions, Limits};
 use std::hint::black_box;
 use std::num::NonZeroU64;
 use std::time::{Duration, Instant};
@@ -122,8 +122,7 @@ fn main() {
             black_box(scas::document::build(black_box(&matrix_plain)).unwrap());
         }),
     );
-    let matrix_results =
-        "\\[ rref([1,2,3,4;5,6,7,8;2,3,5,7;11,13,17,19]) => \\]\n".repeat(25);
+    let matrix_results = "\\[ rref([1,2,3,4;5,6,7,8;2,3,5,7;11,13,17,19]) => \\]\n".repeat(25);
     report(
         "document 25 rref steps",
         measure(20, || {

@@ -312,6 +312,11 @@ impl<W: Write> Interpreter<W> {
         Environment::get(&self.globals, symbol)
     }
 
+    /// Format an evaluated value for lightweight editor hovers.
+    pub fn display_value(&self, value: &Value) -> String {
+        self.stringify(value)
+    }
+
     pub fn definition_names(&self) -> Vec<&str> {
         let mut names = Environment::local_names(&self.globals)
             .into_iter()
@@ -2295,6 +2300,7 @@ impl<W: Write> Interpreter<W> {
     ) -> ExecResult<(Value, Vec<DerivationStep>)> {
         let size = matrix.len();
         let mut determinant = Self::integer_value(1);
+        let mut negated = false;
         let mut history = vec![DerivationStep {
             value: Self::matrix_value(matrix.clone()),
             operation: StepOperation::Start,
@@ -2306,14 +2312,13 @@ impl<W: Write> Interpreter<W> {
                 let zero = Self::integer_value(0);
                 history.push(DerivationStep {
                     value: zero.clone(),
-                    operation: StepOperation::Explanation(
-                        r"\text{a pivot column is zero, so the matrix is singular}".to_owned(),
-                    ),
+                    operation: StepOperation::Explanation(String::new()),
                 });
                 return Ok((zero, history));
             };
             if found != column {
                 matrix.swap(found, column);
+                negated = !negated;
                 determinant = self.apply_unary(UnaryOp::Neg, determinant)?;
                 history.push(DerivationStep {
                     value: Self::matrix_value(matrix.clone()),
@@ -2352,9 +2357,12 @@ impl<W: Write> Interpreter<W> {
         }
         history.push(DerivationStep {
             value: determinant.clone(),
-            operation: StepOperation::Explanation(
-                r"\text{product of pivots, adjusted for row swaps}".to_owned(),
-            ),
+            operation: StepOperation::DiagonalProduct {
+                factors: (0..size)
+                    .map(|index| matrix[index][index].clone())
+                    .collect(),
+                negated,
+            },
         });
         Ok((determinant, history))
     }

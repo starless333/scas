@@ -1,3 +1,4 @@
+use scas::intelligence::SourceIndex;
 use scas::interpreter::value::Builtin;
 
 pub const MAX_MATCHES: usize = 6;
@@ -232,6 +233,41 @@ pub fn completions(source: &str, cursor_char: usize) -> Matches {
     matches
 }
 
+pub fn user_function_completions(
+    source: &str,
+    cursor_char: usize,
+) -> (usize, Vec<(String, String)>) {
+    let (cursor_byte, cursor_char) = char_position(source, cursor_char);
+    let mut start_byte = cursor_byte;
+    while let Some((index, character)) = source[..start_byte].char_indices().next_back() {
+        if character.is_alphanumeric() || character == '_' {
+            start_byte = index;
+        } else {
+            break;
+        }
+    }
+    let prefix = &source[start_byte..cursor_byte];
+    let start_char = cursor_char.saturating_sub(prefix.chars().count());
+    if prefix.chars().count() < 2 {
+        return (start_char, Vec::new());
+    }
+    let mut functions = Vec::new();
+    for function in SourceIndex::new(source).user_functions() {
+        if function.name.starts_with(prefix)
+            && !functions
+                .iter()
+                .any(|(name, _): &(String, String)| name == &function.name)
+        {
+            functions.push((
+                function.name.clone(),
+                format!("fn {}({})", function.name, function.parameters.join(", ")),
+            ));
+        }
+    }
+    functions.truncate(MAX_MATCHES);
+    (start_char, functions)
+}
+
 fn char_position(source: &str, requested: usize) -> (usize, usize) {
     let mut count = 0;
     for (byte, _) in source.char_indices() {
@@ -262,5 +298,16 @@ mod tests {
         let matches = completions("let y = sol", 11);
         assert_eq!(matches.start_char, 8);
         assert_eq!(matches.first().unwrap().label, "solve");
+    }
+
+    #[test]
+    fn user_function_completion_includes_signature() {
+        let source = "fn blend(left, right) = left + right; ble";
+        let (start, matches) = user_function_completions(source, source.chars().count());
+        assert_eq!(&source[char_position(source, start).0..], "ble");
+        assert_eq!(
+            matches,
+            [("blend".to_owned(), "fn blend(left, right)".to_owned())]
+        );
     }
 }

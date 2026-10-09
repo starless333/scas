@@ -45,15 +45,18 @@ const SERIES_COLORS: &[&str] = &[
 
 const ASCII_GLYPHS: &[char] = &['*', 'o', '#', '@', '%', '&', 'X', 'W'];
 
-const PLOT_USAGE: &str = "usage: :plot EXPRESSION[, EXPRESSION…] [from A to B] [> FILE]
+const PLOT_USAGE: &str =
+    "usage: :plot [terminal|svg] EXPRESSION[, EXPRESSION…] [from A to B] [> FILE]
 
-  The independent variable is x. FILE ending in .svg receives a vector
-  image; any other file receives the ASCII drawing.
+  The independent variable is x. The default is terminal output. The svg
+  mode writes SVG to the terminal, or to FILE when redirected. A FILE ending
+  in .svg also receives SVG in the default mode.
 
 examples:
   :plot sin(x)
+  :plot svg sin(x)
   :plot x^2 - 2x from -5 to 5
-  :plot sin(x), cos(x) from -2*pi to 2*pi > graph.svg";
+  :plot sin(x), cos(x) from -6 to 6 > graph.svg";
 
 /// One sampled curve. `samples` pairs each x with `Some(y)` for finite real
 /// values and `None` where the expression is undefined, complex, or errored.
@@ -108,6 +111,7 @@ pub struct PlotOutcome {
     pub bounds: PlotBounds,
     /// The terminal-resolution ASCII drawing (also used for text files).
     pub ascii: String,
+    pub svg: Option<String>,
     pub wrote_file: Option<PathBuf>,
 }
 
@@ -1430,15 +1434,13 @@ pub fn detect_critical_points(samples: &[(f64, Option<f64>)]) -> Vec<CriticalPoi
         if hole_y.is_some() {
             continue;
         }
-        let [(x0, Some(y0)), (x1, Some(y1)), (x2, None), (x3, Some(y3)), (x4, Some(y4))] =
-            [
-                samples[index - 2],
-                samples[index - 1],
-                samples[index],
-                samples[index + 1],
-                samples[index + 2],
-            ]
-        else {
+        let [(x0, Some(y0)), (x1, Some(y1)), (x2, None), (x3, Some(y3)), (x4, Some(y4))] = [
+            samples[index - 2],
+            samples[index - 1],
+            samples[index],
+            samples[index + 1],
+            samples[index + 2],
+        ] else {
             continue;
         };
         if x2 != hole_x || x1 == x0 || x4 == x3 {
@@ -1518,6 +1520,17 @@ pub fn execute_plot_command<W: Write>(
     ascii_height: usize,
     base_directory: &Path,
 ) -> Result<PlotOutcome, String> {
+    let (svg_mode, terminal_mode, rest) = if rest == "svg" {
+        (true, false, "")
+    } else if let Some(expression) = rest.strip_prefix("svg ") {
+        (true, false, expression.trim_start())
+    } else if rest == "terminal" {
+        (false, true, "")
+    } else if let Some(expression) = rest.strip_prefix("terminal ") {
+        (false, true, expression.trim_start())
+    } else {
+        (false, false, rest)
+    };
     let command = parse_plot_command(rest)?;
     let (x_min, x_max) = match (&command.from, &command.to) {
         (Some(from), Some(to)) => {
@@ -1550,14 +1563,18 @@ pub fn execute_plot_command<W: Write>(
 
     let bounds = auto_y_bounds(&series, x_min, x_max);
     let ascii = render_ascii(&series, &bounds, ascii_width, ascii_height);
+    let wants_svg_file = command.redirect.as_ref().is_some_and(|target| {
+        Path::new(target)
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("svg"))
+    });
+    let svg = (svg_mode || (!terminal_mode && wants_svg_file))
+        .then(|| render_svg(&series, &bounds, SVG_WIDTH, SVG_HEIGHT));
     let mut wrote_file = None;
     if let Some(target) = &command.redirect {
         let path = resolve_path(base_directory, target);
-        let content = if path
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("svg"))
-        {
-            render_svg(&series, &bounds, SVG_WIDTH, SVG_HEIGHT)
+        let content = if let Some(svg) = &svg {
+            svg.clone()
         } else {
             format!("{ascii}\n")
         };
@@ -1570,6 +1587,7 @@ pub fn execute_plot_command<W: Write>(
         series,
         bounds,
         ascii,
+        svg: if svg_mode { svg } else { None },
         wrote_file,
     })
 }

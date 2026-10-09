@@ -1,6 +1,6 @@
 /// \begin{center}{\Large\bfseries Diagonalization and Powers of a Matrix}\\[0.4em]{\large MIT 18.06SC, Session 22 --- Worked Solutions}\\[0.6em]\textit{Problems 22.1 and 22.2}\end{center}
 /// \vspace{0.25em}\hrule\vspace{1em}
-/// All arithmetic below is exact. Row operations shown in the solution are produced by SCAS.
+/// All arithmetic is exact; SCAS displays the row operations used below.
 
 /// \section*{Problem 22.1}
 /// \textbf{Problem.} Let \(A=\begin{pmatrix}4&0\\1&2\end{pmatrix}\). Diagonalize \(A\), describe every possible diagonalizing matrix, and determine which matrices diagonalize \(A^{-1}\).
@@ -8,7 +8,7 @@
 let A = [4, 0; 1, 2];
 
 /// \subsection*{Solution}
-/// Because \(A\) is triangular, its eigenvalues are visible on the diagonal. The characteristic polynomial confirms them:
+/// The triangular matrix has eigenvalues \(4\) and \(2\):
 \[
     characteristic_polynomial(A, lambda) =>
 \]
@@ -16,36 +16,40 @@ let A = [4, 0; 1, 2];
     solve(characteristic_polynomial(A, lambda), lambda) =>
 \]
 
-/// For \(\lambda=4\), solving \((A-4I)v=0\) gives \(v_1=(2,1)^{\mathsf T}\). For \(\lambda=2\), solving \((A-2I)v=0\) gives \(v_2=(0,1)^{\mathsf T}\). SCAS obtains the same eigenbasis, listed by rows:
+/// An eigenbasis, listed by rows, is
 \[
     eigenvectors(A) =>
 \]
 
-/// Put the eigenvectors in the columns of \(S\), and put the corresponding eigenvalues on the diagonal of \(D\):
+/// Use these eigenvectors as columns of \(S\):
 \{
     let S = [2, 0; 1, 1];
     let D = [4, 0; 0, 2];
 \}
 
-/// To verify \(A=SDS^{-1}\), first compute \(S^{-1}\) by Gauss--Jordan elimination, then multiply:
+/// Gauss--Jordan elimination finds the inverse:
 \[
-    inverse(S) =>
+    inverse_steps(S) =>
+\]
+/// Now multiply \(SD\) and then \(SDS^{-1}\):
+\[
+    matmul_steps(S, D) =>
 \]
 \[
-    matmul(matmul(S, D), inverse(S)) =>
+    matmul_steps(matmul(S, D), inverse(S)) =>
 \]
 
 /// Hence \(A=SDS^{-1}\). Since the eigenspaces are one-dimensional, every diagonalizing matrix is obtained by independently rescaling the two eigenvectors, with an optional swap of the columns. Equivalently,
 /// \[S'=\begin{pmatrix}2a&0\\a&b\end{pmatrix},\qquad a,b\ne0,\]
 /// or the same matrix with its two columns exchanged.
 
-/// The inverse has the same eigenvectors and reciprocal eigenvalues. Thus
+/// The inverse has the same eigenvectors and reciprocal eigenvalues:
 let D_inverse = [1/4, 0; 0, 1/2];
 \[
-    inverse(A) =>
+    inverse_steps(A) =>
 \]
 \[
-    matmul(matmul(S, D_inverse), inverse(S)) =>
+    matmul_steps(matmul(S, D_inverse), inverse(S)) =>
 \]
 /// Therefore every matrix \(S'\) described above also diagonalizes \(A^{-1}\), with diagonal matrix \(\operatorname{diag}(1/4,1/2)\) (or the swapped ordering).
 
@@ -57,10 +61,10 @@ let D_inverse = [1/4, 0; 0, 1/2];
 let B = [3/5, 9/10; 2/5, 1/10];
 
 /// \subsection*{Solution}
-/// The trace and determinant provide a quick check on the characteristic polynomial:
+/// Compute the characteristic data:
 \{
     trace(B) =>;
-    det(B) =>;
+    det_steps(B) =>;
 \}
 \[
     characteristic_polynomial(B, lambda) =>
@@ -69,18 +73,21 @@ let B = [3/5, 9/10; 2/5, 1/10];
     solve(characteristic_polynomial(B, lambda), lambda) =>
 \]
 
-/// The eigenvalues are \(1\) and \(-3/10\). Corresponding eigenvectors are \((9,4)^{\mathsf T}\) and \((1,-1)^{\mathsf T}\), so choose
+/// Eigenvalues \(1\) and \(-3/10\) have eigenvectors \((9,4)^{\mathsf T}\) and \((1,-1)^{\mathsf T}\):
 \{
     let Q = [9, 1; 4, -1];
     let Lambda = [1, 0; 0, -3/10];
 \}
 
-/// A row reduction gives \(Q^{-1}\), and direct multiplication verifies the diagonalization \(B=Q\Lambda Q^{-1}\):
+/// Reduce \(Q\), then verify \(B=Q\Lambda Q^{-1}\):
 \[
-    inverse(Q) =>
+    inverse_steps(Q) =>
 \]
 \[
-    matmul(matmul(Q, Lambda), inverse(Q)) =>
+    matmul_steps(Q, Lambda) =>
+\]
+\[
+    matmul_steps(matmul(Q, Lambda), inverse(Q)) =>
 \]
 
 /// Since \(B^k=Q\Lambda^kQ^{-1}\), the powers are controlled by
@@ -92,14 +99,14 @@ let B = [3/5, 9/10; 2/5, 1/10];
 let P = [9/13, 9/13; 4/13, 4/13];
 /// \[\lim_{k\to\infty}B^k=Q\begin{pmatrix}1&0\\0&0\end{pmatrix}Q^{-1}=P=\begin{pmatrix}\frac{9}{13}&\frac{9}{13}\\[2pt]\frac{4}{13}&\frac{4}{13}\end{pmatrix}.\]
 
-/// As an exact check, the reduced row-echelon form has one pivot, so \(P\) has rank one:
+/// Row reduction shows that \(P\) has rank one:
 \[
-    rref(P) =>
+    rref_steps(P) =>
 \]
 /// Finally, \(P\) is stationary and idempotent:
 \{
-    matmul(B, P) =>;
-    matmul(P, P) =>;
+    matmul_steps(B, P) =>;
+    matmul_steps(P, P) =>;
 \}
 
 /// Thus every initial probability vector converges to the steady-state vector \((9/13,4/13)^{\mathsf T}\).

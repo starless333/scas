@@ -131,11 +131,11 @@ tests or acceptance criteria are also complete.
 - [x] Generate API documentation for the library and publish it once the public
   API has stability expectations.
 
-## Current verification snapshot
+## Current verification snapshot (2026-10-08)
 
-- [x] `cargo test --all-targets --all-features` passes (60 tests).
+- [x] `cargo test --all-targets --all-features --offline` passes (159 tests; benchmark harness also ran).
 - [x] `cargo fmt --all -- --check` passes.
-- [x] `cargo clippy --all-targets --all-features -- -D warnings` passes.
+- [x] `cargo clippy --all-targets --all-features --offline -- -D warnings` passes.
 - [x] File-based pass/fail fixtures are exercised by `cargo test`.
 - [x] Invalid programs fail cleanly and consistently without panicking.
 - [x] Failures return a nonzero process exit status.

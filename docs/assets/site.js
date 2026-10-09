@@ -37,11 +37,15 @@
   document.querySelectorAll("code[data-source-file]").forEach(async code => {
     const sourcePath = code.dataset.sourceFile;
     const meta = document.querySelector("[data-source-meta]");
+    const embeddedSource = code.textContent;
     code.setAttribute("aria-busy", "true");
     try {
-      const response = await fetch(sourcePath);
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const source = await response.text();
+      let source = embeddedSource;
+      if (location.protocol !== "file:") {
+        const response = await fetch(sourcePath);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        source = await response.text();
+      }
       const sourceLines = source.replace(/\n$/, "").split("\n");
       const fragment = document.createDocumentFragment();
       sourceLines.forEach((line, index) => {
@@ -67,8 +71,8 @@
       code.dataset.sourceLoaded = "true";
       if (meta) meta.textContent = `exact source · ${sourceLines.length} lines`;
     } catch (_error) {
-      code.textContent = "The source preview could not be loaded. Use “Download .scas” above to open it directly.";
-      if (meta) meta.textContent = "source preview unavailable";
+      code.textContent = embeddedSource;
+      if (meta) meta.textContent = "bundled source preview";
     } finally {
       code.removeAttribute("aria-busy");
     }

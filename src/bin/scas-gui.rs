@@ -2,6 +2,8 @@
 mod editor_assist;
 #[path = "scas_gui/math_preview.rs"]
 mod math_preview;
+#[path = "scas_gui/terminal.rs"]
+mod terminal;
 #[path = "scas_gui/theme.rs"]
 mod theme;
 
@@ -11,8 +13,9 @@ use eframe::egui::{
 };
 use scas::ast::statement::FunctionBody;
 use scas::ast::StatementKind;
-use scas::document::Document;
+use scas::document::{DiagnosticSeverity, Document};
 use scas::execute;
+use scas::intelligence::{evaluate_hover, SourceIndex};
 use scas::interpreter::Interpreter;
 use scas::latex::LatexRenderer;
 use scas::lexer::{Scanner, SymbolTable, TokenType};
@@ -32,6 +35,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 static NEXT_LATEX_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+use terminal::TerminalSession;
 use theme::Theme;
 
 const STARTER: &str = "/// A live, typeset result\n\
@@ -42,6 +46,8 @@ const DEFAULT_AUTO_GREEK: bool = true;
 const DEFAULT_CODE_FONT_NAME: &str = "JetBrains Mono";
 const DEFAULT_CODE_FONT_BYTES: &[u8] =
     include_bytes!("../../assets/fonts/JetBrainsMono-Regular.ttf");
+const CODICON_FONT_NAME: &str = "VS Code Codicons";
+const CODICON_FONT_BYTES: &[u8] = include_bytes!("../../assets/icons/codicon.ttf");
 const INTERFACE_FONT_SIZE: f32 = 13.0;
 const EXPLORER_FOOTER_HEIGHT: f32 = 112.0;
 
@@ -58,7 +64,6 @@ const MAX_VIEW_SPAN: f64 = 1.0e12;
 /// dragging its splitter must never crush the primary work surface.
 const MIN_EDITOR_WORKSPACE_WIDTH: f32 = 420.0;
 const MIN_PREVIEW_WIDTH: f32 = 220.0;
-const MAX_PREVIEW_WIDTH: f32 = 900.0;
 /// Keeps a long document name from crowding the workspace tabs and tools.
 /// The complete name remains available from the tab tooltip.
 const MAX_DOCUMENT_TAB_CHARS: usize = 18;
@@ -67,12 +72,16 @@ const MAX_DOCUMENT_TAB_CHARS: usize = 18;
 const GRAPH_COLORS: &[u32] = &[
     0x4f9cf9, 0xf9777f, 0x53c489, 0xc48df9, 0xf9b959, 0x5bc8d9, 0xf97fb8, 0xa3cf5b,
 ];
+const SVG_GRAPH_COLORS: &[u32] = &[
+    0x1f6feb, 0xd73a49, 0x0a8f4d, 0x8250df, 0xd97706, 0x0e7490, 0xdb2777, 0x4d7c0f,
+];
 
-const GUI_PLOT_HELP: &str = "usage: :plot EXPRESSION[, EXPRESSION…] [from A to B] [> FILE]\n\n\
-  Draws the graph inline; FILE ending in .svg receives a vector image.\n\nexamples:\n\
+const GUI_PLOT_HELP: &str =
+    "usage: :plot [terminal|svg] EXPRESSION[, EXPRESSION…] [from A to B] [> FILE]\n\n\
+  Draws the graph inline; svg mode or FILE ending in .svg produces a vector image.\n\nexamples:\n\
   :plot sin(x)\n\
   :plot x^2 - 2x from -5 to 5\n\
-  :plot sin(x), cos(x) from -2*pi to 2*pi > graph.svg";
+  :plot svg sin(x), cos(x) from -6 to 6 > graph.svg";
 
 const GREEK: &[(&str, &str)] = &[
     ("\\Alpha", "Α"),
@@ -179,6 +188,7 @@ struct EditorDiagnostic {
     line: usize,
     column: usize,
     message: String,
+    severity: DiagnosticSeverity,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -187,6 +197,14 @@ enum LineNumberMode {
     Absolute,
     Relative,
     Hybrid,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BottomTab {
+    Problems,
+    Output,
+    Terminal,
+    References,
 }
 
 #[derive(Clone, Copy)]
@@ -279,7 +297,9 @@ struct GraphFunction {
 /// A plot drawn from the REPL input with `:plot`, kept for inline display.
 struct PlotOutcome {
     bounds: PlotBounds,
+    series: Vec<SampledSeries>,
     ascii: String,
+    svg: bool,
     wrote_file: Option<PathBuf>,
 }
 
@@ -373,7 +393,17 @@ struct ScasApp {
     quick_open: bool,
     quick_open_ready_to_dismiss: bool,
     quick_open_query: String,
-    diagnostics_open: bool,
+    bottom_tab: BottomTab,
+    terminal: Option<TerminalSession>,
+    terminal_error: Option<String>,
+    references_target: Option<String>,
+    rename_target: Option<String>,
+    rename_input: String,
+    hover_key: Option<(u64, usize)>,
+    hover_since: Instant,
+    hover_value: Option<String>,
+    preview_scroll_target: Option<usize>,
+    preview_last_cursor: usize,
     diagnostics: Vec<EditorDiagnostic>,
     analysis_due: Option<Instant>,
     analysis_result: Option<Receiver<AnalysisResult>>,
@@ -504,6 +534,14 @@ fn platform_ui_font_spec(
 fn default_font_definitions() -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
     fonts.font_data.insert(
+        CODICON_FONT_NAME.to_owned(),
+        FontData::from_static(CODICON_FONT_BYTES),
+    );
+    fonts.families.insert(
+        FontFamily::Name(CODICON_FONT_NAME.into()),
+        vec![CODICON_FONT_NAME.to_owned()],
+    );
+    fonts.font_data.insert(
         DEFAULT_CODE_FONT_NAME.to_owned(),
         FontData::from_static(DEFAULT_CODE_FONT_BYTES),
     );
@@ -544,8 +582,7 @@ fn install_default_fonts(context: &egui::Context) {
 
 fn preview_widths(screen_width: f32, explorer_width: f32) -> (f32, f32) {
     let usable_width = (screen_width - 48.0 - explorer_width).max(0.0);
-    let max_width =
-        (usable_width - MIN_EDITOR_WORKSPACE_WIDTH).clamp(MIN_PREVIEW_WIDTH, MAX_PREVIEW_WIDTH);
+    let max_width = (usable_width - MIN_EDITOR_WORKSPACE_WIDTH).max(MIN_PREVIEW_WIDTH);
     let default_width = (usable_width * 0.46).clamp(MIN_PREVIEW_WIDTH, max_width);
     (default_width, max_width)
 }
@@ -599,7 +636,17 @@ impl ScasApp {
             quick_open: false,
             quick_open_ready_to_dismiss: false,
             quick_open_query: String::new(),
-            diagnostics_open: false,
+            bottom_tab: BottomTab::Output,
+            terminal: None,
+            terminal_error: None,
+            references_target: None,
+            rename_target: None,
+            rename_input: String::new(),
+            hover_key: None,
+            hover_since: Instant::now(),
+            hover_value: None,
+            preview_scroll_target: None,
+            preview_last_cursor: 0,
             diagnostics: Vec::new(),
             analysis_due: None,
             analysis_result: None,
@@ -1124,8 +1171,8 @@ impl ScasApp {
         self.submit_repl_with_execution_source(Some(&numerical_source));
     }
 
-    /// Evaluates a `:plot …` line inside the GUI REPL: samples the series,
-    /// shows the ASCII drawing inline, and offers a live plotted preview.
+    /// Evaluates a `:plot …` line inside the GUI REPL and keeps its samples
+    /// for an inline text or vector graph.
     fn submit_repl_plot(&mut self, rest: &str) {
         if rest.is_empty() {
             self.repl_entries.push(ReplEntry {
@@ -1177,7 +1224,14 @@ impl ScasApp {
                             error: None,
                             plot: Some(PlotOutcome {
                                 bounds: outcome.bounds,
+                                series: outcome.series,
                                 ascii: outcome.ascii,
+                                svg: outcome.svg.is_some()
+                                    || outcome.wrote_file.as_ref().is_some_and(|path| {
+                                        path.extension().is_some_and(|extension| {
+                                            extension.eq_ignore_ascii_case("svg")
+                                        })
+                                    }),
                                 wrote_file: outcome.wrote_file,
                             }),
                         },
@@ -1210,7 +1264,7 @@ impl ScasApp {
             return;
         }
         self.output_open = true;
-        self.diagnostics_open = false;
+        self.bottom_tab = BottomTab::Output;
         let source = self.source.clone();
         let source_name = self
             .current_file
@@ -1268,6 +1322,121 @@ impl ScasApp {
                 self.set_status("Run failed");
                 self.run_result = None;
             }
+        }
+    }
+
+    fn show_terminal_tab(&mut self, context: &egui::Context) {
+        self.workspace_tab = WorkspaceTab::Document;
+        self.output_open = true;
+        self.bottom_tab = BottomTab::Terminal;
+        if self.terminal.is_none() {
+            match TerminalSession::start(&self.project_root) {
+                Ok(session) => {
+                    self.terminal = Some(session);
+                    self.terminal_error = None;
+                }
+                Err(error) => self.terminal_error = Some(format!("Could not start shell: {error}")),
+            }
+        }
+        context.memory_mut(|memory| memory.request_focus(egui::Id::new(terminal::TERMINAL_ID)));
+    }
+
+    fn jump_to_diagnostic(&mut self, context: &egui::Context, diagnostic: &EditorDiagnostic) {
+        self.jump_to_byte(context, diagnostic.byte_start);
+    }
+
+    fn jump_to_byte(&mut self, context: &egui::Context, byte: usize) {
+        self.workspace_tab = WorkspaceTab::Document;
+        let editor_id = egui::Id::new(("source-editor", self.buffer_generation));
+        let char_index = self.source[..previous_char_boundary(&self.source, byte)]
+            .chars()
+            .count();
+        let mut state = TextEdit::load_state(context, editor_id).unwrap_or_default();
+        state
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::one(
+                egui::text::CCursor::new(char_index),
+            )));
+        TextEdit::store_state(context, editor_id, state);
+        context.memory_mut(|memory| memory.request_focus(editor_id));
+        self.cursor_char_index = char_index;
+        self.current_line = self.source[..previous_char_boundary(&self.source, byte)]
+            .bytes()
+            .filter(|character| *character == b'\n')
+            .count();
+    }
+
+    fn symbol_at_cursor(&self) -> Option<String> {
+        let index = SourceIndex::new(&self.source);
+        let byte = char_to_byte(&self.source, self.cursor_char_index);
+        index
+            .at(byte)
+            .or_else(|| byte.checked_sub(1).and_then(|before| index.at(before)))
+            .map(|item| item.name.clone())
+    }
+
+    fn apply_symbol_rename(&mut self, context: &egui::Context) {
+        let Some(target) = self.rename_target.take() else {
+            return;
+        };
+        let replacement = self.rename_input.trim().to_owned();
+        let index = SourceIndex::new(&self.source);
+        let Some(spans) = index.rename(&target, &replacement) else {
+            self.set_status("Rename unavailable: choose a unique symbol and a valid new name");
+            return;
+        };
+        if spans.is_empty() || target == replacement {
+            return;
+        }
+        let before = self.source.clone();
+        let editor_id = egui::Id::new(("source-editor", self.buffer_generation));
+        let mut state = TextEdit::load_state(context, editor_id).unwrap_or_default();
+        let old_range = state.cursor.char_range().unwrap_or_else(|| {
+            egui::text::CCursorRange::one(egui::text::CCursor::new(self.cursor_char_index))
+        });
+        let mut undoer = state.undoer();
+        undoer.add_undo(&(old_range, before));
+        state.set_undoer(undoer);
+        for span in spans.iter().rev() {
+            self.source.replace_range(span.clone(), &replacement);
+        }
+        TextEdit::store_state(context, editor_id, state);
+        self.highlight_cache = None;
+        self.dirty = true;
+        self.schedule_analysis(context);
+        self.set_status(&format!(
+            "Renamed {target} to {replacement} ({} locations)",
+            spans.len()
+        ));
+    }
+
+    fn show_rename(&mut self, context: &egui::Context) {
+        if self.rename_target.is_none() {
+            return;
+        }
+        let mut open = true;
+        let mut apply = false;
+        egui::Window::new("Rename symbol")
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(context, |ui| {
+                ui.label(format!(
+                    "Rename {} across this document",
+                    self.rename_target.as_deref().unwrap_or("")
+                ));
+                let response = ui.text_edit_singleline(&mut self.rename_input);
+                response.request_focus();
+                apply = ui.button("Rename").clicked()
+                    || (response.lost_focus()
+                        && ui.input(|input| input.key_pressed(egui::Key::Enter)));
+                ui.label("Only unambiguous document-level symbols can be renamed.");
+            });
+        if !open {
+            self.rename_target = None;
+        }
+        if apply {
+            self.apply_symbol_rename(context);
         }
     }
 
@@ -1625,8 +1794,13 @@ impl ScasApp {
                         line: diagnostic.span.line,
                         column: diagnostic.span.column,
                         message: diagnostic.message.clone(),
+                        severity: diagnostic.severity,
                     });
                 }
+                diagnostics.sort_by_key(|diagnostic| {
+                    (diagnostic.line, diagnostic.column, diagnostic.byte_start)
+                });
+                diagnostics.dedup_by(|a, b| a.byte_start == b.byte_start && a.message == b.message);
                 self.diagnostics = diagnostics;
                 self.diagnostics_revision = self.diagnostics_revision.wrapping_add(1);
                 self.highlight_cache = None;
@@ -1634,6 +1808,9 @@ impl ScasApp {
                 self.preview_error = None;
             }
             Err(error) => {
+                diagnostics.sort_by_key(|diagnostic| {
+                    (diagnostic.line, diagnostic.column, diagnostic.byte_start)
+                });
                 self.diagnostics = diagnostics;
                 self.diagnostics_revision = self.diagnostics_revision.wrapping_add(1);
                 self.highlight_cache = None;
@@ -1999,8 +2176,12 @@ impl ScasApp {
                                 ui.checkbox(&mut self.preview_open, "Document Preview");
                                 ui.checkbox(&mut self.output_open, "Output Panel  Ctrl+J");
                                 if ui.button("Problems").clicked() {
-                                    self.diagnostics_open = true;
+                                    self.bottom_tab = BottomTab::Problems;
                                     self.output_open = true;
+                                    ui.close_menu();
+                                }
+                                if ui.button("Terminal").clicked() {
+                                    self.show_terminal_tab(context);
                                     ui.close_menu();
                                 }
                             });
@@ -2028,6 +2209,10 @@ impl ScasApp {
                             });
                             if wide {
                                 ui.menu_button("Terminal", |ui| {
+                                    if ui.button("New Terminal").clicked() {
+                                        self.show_terminal_tab(context);
+                                        ui.close_menu();
+                                    }
                                     if ui.button("Interactive REPL").clicked() {
                                         self.workspace_tab = WorkspaceTab::Repl;
                                         ui.close_menu();
@@ -3532,7 +3717,7 @@ fn show_inline_plot(ui: &mut egui::Ui, outcome: &PlotOutcome, theme: &Theme) {
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(
-                    RichText::new("PLOT")
+                    RichText::new(if outcome.svg { "SVG PLOT" } else { "PLOT" })
                         .strong()
                         .size(10.0)
                         .color(theme.ui.accent.0),
@@ -3557,14 +3742,149 @@ fn show_inline_plot(ui: &mut egui::Ui, outcome: &PlotOutcome, theme: &Theme) {
                 }
             });
             ui.add_space(4.0);
-            ui.label(
-                RichText::new(&outcome.ascii)
-                    .monospace()
-                    .size(11.0)
-                    .color(theme.ui.text.0),
-            );
+            if outcome.svg {
+                show_inline_svg_plot(ui, outcome);
+            } else {
+                ui.label(
+                    RichText::new(&outcome.ascii)
+                        .monospace()
+                        .size(11.0)
+                        .color(theme.ui.text.0),
+                );
+            }
         });
     ui.add_space(4.0);
+}
+
+/// Paints the SVG plot's axes and samples directly in egui so the REPL keeps
+/// a crisp vector preview without depending on an external SVG converter.
+fn show_inline_svg_plot(ui: &mut egui::Ui, outcome: &PlotOutcome) {
+    let width = ui.available_width().clamp(240.0, 800.0);
+    let height = (width * 0.65).clamp(180.0, 520.0);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+    let painter = ui.painter().with_clip_rect(rect);
+    painter.rect_filled(rect, 0.0, egui::Color32::WHITE);
+
+    let plot_rect = egui::Rect::from_min_max(
+        rect.min + egui::vec2(46.0, 14.0),
+        rect.max - egui::vec2(14.0, 32.0),
+    );
+    let bounds = outcome.bounds;
+    let x_span = bounds.x_span();
+    let y_span = bounds.y_span();
+    if x_span <= 0.0 || y_span <= 0.0 {
+        return;
+    }
+    let screen_x =
+        |x: f64| plot_rect.left() + ((x - bounds.x_min) / x_span) as f32 * plot_rect.width();
+    let screen_y =
+        |y: f64| plot_rect.top() + ((bounds.y_max - y) / y_span) as f32 * plot_rect.height();
+    let grid = egui::Color32::from_rgb(228, 231, 235);
+    let axis = egui::Color32::from_rgb(87, 96, 106);
+    let step_x = plot::nice_step(x_span, 9.0);
+    let step_y = plot::nice_step(y_span, 7.0);
+    let mut tick = (bounds.x_min / step_x).ceil() * step_x;
+    while tick <= bounds.x_max + step_x * 0.001 {
+        let x = screen_x(tick);
+        painter.line_segment(
+            [
+                egui::pos2(x, plot_rect.top()),
+                egui::pos2(x, plot_rect.bottom()),
+            ],
+            egui::Stroke::new(1.0, grid),
+        );
+        painter.text(
+            egui::pos2(x, plot_rect.bottom() + 4.0),
+            egui::Align2::CENTER_TOP,
+            plot::format_number(tick),
+            FontId::monospace(10.0),
+            axis,
+        );
+        tick += step_x;
+    }
+    tick = (bounds.y_min / step_y).ceil() * step_y;
+    while tick <= bounds.y_max + step_y * 0.001 {
+        let y = screen_y(tick);
+        painter.line_segment(
+            [
+                egui::pos2(plot_rect.left(), y),
+                egui::pos2(plot_rect.right(), y),
+            ],
+            egui::Stroke::new(1.0, grid),
+        );
+        painter.text(
+            egui::pos2(plot_rect.left() - 6.0, y),
+            egui::Align2::RIGHT_CENTER,
+            plot::format_number(tick),
+            FontId::monospace(10.0),
+            axis,
+        );
+        tick += step_y;
+    }
+    if bounds.contains_x(0.0) {
+        let x = screen_x(0.0);
+        painter.line_segment(
+            [
+                egui::pos2(x, plot_rect.top()),
+                egui::pos2(x, plot_rect.bottom()),
+            ],
+            egui::Stroke::new(1.5, axis),
+        );
+    }
+    if bounds.contains_y(0.0) {
+        let y = screen_y(0.0);
+        painter.line_segment(
+            [
+                egui::pos2(plot_rect.left(), y),
+                egui::pos2(plot_rect.right(), y),
+            ],
+            egui::Stroke::new(1.5, axis),
+        );
+    }
+    let curves = painter.with_clip_rect(plot_rect);
+    for (index, series) in outcome.series.iter().enumerate() {
+        let raw = SVG_GRAPH_COLORS[index % SVG_GRAPH_COLORS.len()];
+        let color = egui::Color32::from_rgb(
+            ((raw >> 16) & 0xff) as u8,
+            ((raw >> 8) & 0xff) as u8,
+            (raw & 0xff) as u8,
+        );
+        let stroke = egui::Stroke::new(2.0, color);
+        let mut path = Vec::new();
+        let mut previous_y: Option<f64> = None;
+        for (x, y) in &series.samples {
+            let Some(y) = y.filter(|y| y.is_finite()) else {
+                if path.len() > 1 {
+                    curves.add(egui::Shape::line(std::mem::take(&mut path), stroke));
+                }
+                path.clear();
+                previous_y = None;
+                continue;
+            };
+            if previous_y.is_some_and(|previous| (y - previous).abs() > y_span * 2.0) {
+                if path.len() > 1 {
+                    curves.add(egui::Shape::line(std::mem::take(&mut path), stroke));
+                }
+                path.clear();
+            }
+            path.push(egui::pos2(screen_x(*x), screen_y(y)));
+            previous_y = Some(y);
+        }
+        if path.len() > 1 {
+            curves.add(egui::Shape::line(path, stroke));
+        }
+    }
+    ui.horizontal_wrapped(|ui| {
+        for (index, series) in outcome.series.iter().enumerate() {
+            let raw = SVG_GRAPH_COLORS[index % SVG_GRAPH_COLORS.len()];
+            let color = egui::Color32::from_rgb(
+                ((raw >> 16) & 0xff) as u8,
+                ((raw >> 8) & 0xff) as u8,
+                (raw & 0xff) as u8,
+            );
+            ui.label(RichText::new(&series.label).color(color).size(11.0));
+        }
+    });
 }
 
 fn terminate_repl_source(source: &str) -> String {
@@ -3637,33 +3957,92 @@ impl eframe::App for ScasApp {
             }
         }
         self.poll_run(context);
+        if self.terminal.as_mut().is_some_and(TerminalSession::poll) {
+            context.request_repaint();
+        }
+        if self.terminal.is_some()
+            && self.output_open
+            && self.workspace_tab == WorkspaceTab::Document
+            && self.bottom_tab == BottomTab::Terminal
+        {
+            context.request_repaint_after(Duration::from_millis(50));
+        }
         self.poll_analysis(context);
         self.poll_latex_render(context);
         self.poll_graph_sampling(context);
         self.poll_repl_math(context);
         self.settings(context);
 
-        if context.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::S)) {
+        let terminal_focused =
+            context.memory(|memory| memory.has_focus(egui::Id::new(terminal::TERMINAL_ID)));
+        if !terminal_focused
+            && context.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::S))
+        {
             self.save();
         }
-        if context.input_mut(|input| {
-            input.consume_key(
-                egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
-                egui::Key::S,
-            )
-        }) {
+        if !terminal_focused
+            && context.input_mut(|input| {
+                input.consume_key(
+                    egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+                    egui::Key::S,
+                )
+            })
+        {
             self.open_save_as();
         }
-        if context.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::P)) {
+        if !terminal_focused
+            && context.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::P))
+        {
             self.quick_open = true;
         }
-        if context.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::B)) {
+        if !terminal_focused
+            && context.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::B))
+        {
             self.files_open = !self.files_open;
         }
-        if context.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::J)) {
+        let editor_id = egui::Id::new(("source-editor", self.buffer_generation));
+        let editor_focused = context.memory(|memory| memory.has_focus(editor_id));
+        if editor_focused
+            && context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::F12))
+        {
+            if let Some(name) = self.symbol_at_cursor() {
+                let index = SourceIndex::new(&self.source);
+                if let Some(definition) = index.definition(&name) {
+                    self.jump_to_byte(context, definition.span.start);
+                } else {
+                    self.set_status("No unambiguous definition in this document");
+                }
+            }
+        }
+        if editor_focused
+            && context.input_mut(|input| input.consume_key(egui::Modifiers::SHIFT, egui::Key::F12))
+        {
+            if let Some(name) = self.symbol_at_cursor() {
+                if SourceIndex::new(&self.source).definition(&name).is_some() {
+                    self.references_target = Some(name);
+                    self.bottom_tab = BottomTab::References;
+                    self.output_open = true;
+                } else {
+                    self.set_status("No unambiguous references in this document");
+                }
+            }
+        }
+        if editor_focused
+            && context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::F2))
+        {
+            if let Some(name) = self.symbol_at_cursor() {
+                self.rename_input.clone_from(&name);
+                self.rename_target = Some(name);
+            }
+        }
+        if !terminal_focused
+            && context.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::J))
+        {
             self.output_open = !self.output_open;
         }
-        if context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::Enter)) {
+        if !terminal_focused
+            && context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::Enter))
+        {
             match self.workspace_tab {
                 WorkspaceTab::Document => self.run(),
                 WorkspaceTab::Repl => self.submit_repl_numerically(),
@@ -3680,6 +4059,7 @@ impl eframe::App for ScasApp {
         let theme = self.themes[self.selected_theme].clone();
         self.show_title_bar(context, &theme);
         self.show_save_and_close_dialogs(context);
+        self.show_rename(context);
 
         egui::SidePanel::left("activity-bar")
             .exact_width(46.0)
@@ -3765,25 +4145,28 @@ impl eframe::App for ScasApp {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let button_frame = ui.visuals().button_frame;
                             ui.visuals_mut().button_frame = false;
-                            ui.menu_button("···", |ui| {
-                                if ui.button("New File").clicked() {
-                                    self.new_file();
-                                    ui.close_menu();
-                                }
-                                if ui.button("Refresh Files").clicked() {
-                                    self.files = collect_tree(&self.project_root);
-                                    ui.close_menu();
-                                }
-                                if ui.button("Collapse Folders").clicked() {
-                                    self.collapsed_dirs.extend(
-                                        self.files
-                                            .iter()
-                                            .filter(|entry| entry.is_dir)
-                                            .map(|entry| entry.path.clone()),
-                                    );
-                                    ui.close_menu();
-                                }
-                            });
+                            ui.menu_button(
+                                RichText::new('\u{ea7c}').font(codicon_font(16.0)),
+                                |ui| {
+                                    if ui.button("New File").clicked() {
+                                        self.new_file();
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("Refresh Files").clicked() {
+                                        self.files = collect_tree(&self.project_root);
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("Collapse Folders").clicked() {
+                                        self.collapsed_dirs.extend(
+                                            self.files
+                                                .iter()
+                                                .filter(|entry| entry.is_dir)
+                                                .map(|entry| entry.path.clone()),
+                                        );
+                                        ui.close_menu();
+                                    }
+                                },
+                            );
                             ui.visuals_mut().button_frame = button_frame;
                         });
                     });
@@ -3974,14 +4357,29 @@ impl eframe::App for ScasApp {
                         || self.analysis_result.is_some()
                         || self.analysis_due.is_some();
                     let status_color = theme.contrast_on_accent();
-                    status_badge(ui, false, status_color);
+                    let error_count = self
+                        .diagnostics
+                        .iter()
+                        .filter(|diagnostic| diagnostic.severity == DiagnosticSeverity::Error)
+                        .count();
+                    let info_count = self.diagnostics.len() - error_count;
+                    let error_badge = status_badge(ui, '\u{ea87}', status_color);
                     ui.label(
-                        RichText::new(self.diagnostics.len().to_string())
+                        RichText::new(error_count.to_string())
                             .size(11.0)
                             .color(status_color),
                     );
-                    status_badge(ui, true, status_color);
-                    ui.label(RichText::new("0").size(11.0).color(status_color));
+                    let info_badge = status_badge(ui, '\u{ea74}', status_color);
+                    ui.label(
+                        RichText::new(info_count.to_string())
+                            .size(11.0)
+                            .color(status_color),
+                    );
+                    if error_badge.clicked() || info_badge.clicked() {
+                        self.workspace_tab = WorkspaceTab::Document;
+                        self.output_open = true;
+                        self.bottom_tab = BottomTab::Problems;
+                    }
                     if ui.available_width() > 760.0 {
                         ui.add_space(10.0);
                         ui.label(
@@ -4029,8 +4427,8 @@ impl eframe::App for ScasApp {
 
         if self.workspace_tab == WorkspaceTab::Document && self.output_open {
             egui::TopBottomPanel::bottom("output")
-                .default_height(170.0)
-                .height_range(80.0..=420.0)
+                .default_height(260.0)
+                .height_range(120.0..=650.0)
                 .resizable(true)
                 .frame(
                     egui::Frame::none()
@@ -4045,28 +4443,66 @@ impl eframe::App for ScasApp {
                     ui.horizontal(|ui| {
                         if ui
                             .selectable_label(
-                                !self.diagnostics_open,
+                                self.bottom_tab == BottomTab::Output,
                                 RichText::new("OUTPUT")
                                     .strong()
                                     .font(FontId::proportional(11.0)),
                             )
                             .clicked()
                         {
-                            self.diagnostics_open = false;
+                            self.bottom_tab = BottomTab::Output;
                         }
                         if ui
                             .selectable_label(
-                                self.diagnostics_open,
+                                self.bottom_tab == BottomTab::Problems,
                                 RichText::new(format!("PROBLEMS {}", self.diagnostics.len()))
                                     .strong()
                                     .font(FontId::proportional(11.0)),
                             )
                             .clicked()
                         {
-                            self.diagnostics_open = true;
+                            self.bottom_tab = BottomTab::Problems;
+                        }
+                        if ui
+                            .selectable_label(
+                                self.bottom_tab == BottomTab::Terminal,
+                                RichText::new("TERMINAL")
+                                    .strong()
+                                    .font(FontId::proportional(11.0)),
+                            )
+                            .clicked()
+                        {
+                            self.show_terminal_tab(context);
+                        }
+                        if self.references_target.is_some()
+                            && ui
+                                .selectable_label(
+                                    self.bottom_tab == BottomTab::References,
+                                    RichText::new("REFERENCES")
+                                        .strong()
+                                        .font(FontId::proportional(11.0)),
+                                )
+                                .clicked()
+                        {
+                            self.bottom_tab = BottomTab::References;
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if !self.diagnostics_open
+                            if self.bottom_tab == BottomTab::Terminal {
+                                if ui
+                                    .small_button("New")
+                                    .on_hover_text("Restart shell")
+                                    .clicked()
+                                {
+                                    self.terminal = None;
+                                    self.show_terminal_tab(context);
+                                }
+                                if ui.small_button("Clear").clicked() {
+                                    if let Some(terminal) = &mut self.terminal {
+                                        terminal.clear();
+                                    }
+                                }
+                            }
+                            if self.bottom_tab == BottomTab::Output
                                 && ui
                                     .small_button(
                                         RichText::new("Copy")
@@ -4082,7 +4518,7 @@ impl eframe::App for ScasApp {
                         });
                     });
                     ui.separator();
-                    if self.diagnostics_open {
+                    if self.bottom_tab == BottomTab::Problems {
                         egui::ScrollArea::vertical().show(ui, |ui| {
                             if self.diagnostics.is_empty() {
                                 ui.label(
@@ -4095,22 +4531,112 @@ impl eframe::App for ScasApp {
                                     .color(theme.ui.muted.0),
                                 );
                             } else {
-                                for diagnostic in &self.diagnostics {
+                                let file_name = self
+                                    .current_file
+                                    .as_ref()
+                                    .and_then(|path| path.file_name())
+                                    .and_then(|name| name.to_str())
+                                    .unwrap_or("Untitled.scas");
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{file_name}  ({})",
+                                        self.diagnostics.len()
+                                    ))
+                                    .strong()
+                                    .size(12.0),
+                                );
+                                let mut selected = None;
+                                for (index, diagnostic) in self.diagnostics.iter().enumerate() {
                                     ui.horizontal(|ui| {
+                                        let color = diagnostic_color(diagnostic.severity, &theme);
                                         ui.label(
-                                            RichText::new("ERROR")
-                                                .strong()
-                                                .font(FontId::proportional(10.5))
-                                                .color(theme.syntax.operator.0),
+                                            RichText::new(
+                                                if diagnostic.severity == DiagnosticSeverity::Error
+                                                {
+                                                    '\u{ea87}'
+                                                } else {
+                                                    '\u{ea74}'
+                                                },
+                                            )
+                                            .font(codicon_font(13.0))
+                                            .color(color),
                                         );
-                                        ui.monospace(format!(
-                                            "{}:{}  {}",
-                                            diagnostic.line, diagnostic.column, diagnostic.message
-                                        ));
+                                        let location =
+                                            format!("[{}:{}]", diagnostic.line, diagnostic.column);
+                                        if ui
+                                            .add(
+                                                egui::Label::new(
+                                                    RichText::new(format!(
+                                                        "{}  {location}",
+                                                        diagnostic.message
+                                                    ))
+                                                    .size(12.0)
+                                                    .color(theme.ui.text.0),
+                                                )
+                                                .sense(egui::Sense::click()),
+                                            )
+                                            .on_hover_text("Go to problem in source")
+                                            .clicked()
+                                        {
+                                            selected = Some(index);
+                                        }
                                     });
+                                }
+                                if let Some(index) = selected {
+                                    let diagnostic = self.diagnostics[index].clone();
+                                    self.jump_to_diagnostic(context, &diagnostic);
                                 }
                             }
                         });
+                    } else if self.bottom_tab == BottomTab::References {
+                        let mut selected = None;
+                        if let Some(name) = &self.references_target {
+                            let index = SourceIndex::new(&self.source);
+                            let references = index.references(name);
+                            egui::ScrollArea::vertical().show(ui, |ui| {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{} — {} locations",
+                                        name,
+                                        references.len()
+                                    ))
+                                    .strong(),
+                                );
+                                for occurrence in references {
+                                    let line = self
+                                        .source
+                                        .lines()
+                                        .nth(occurrence.line.saturating_sub(1))
+                                        .unwrap_or("");
+                                    let label = format!(
+                                        "{}:{}  {}",
+                                        occurrence.line,
+                                        occurrence.column,
+                                        line.trim()
+                                    );
+                                    if ui
+                                        .selectable_label(false, label)
+                                        .on_hover_text("Go to source")
+                                        .clicked()
+                                    {
+                                        selected = Some(occurrence.span.start);
+                                    }
+                                }
+                            });
+                        }
+                        if let Some(byte) = selected {
+                            self.jump_to_byte(context, byte);
+                        }
+                    } else if self.bottom_tab == BottomTab::Terminal {
+                        if let Some(error) = &self.terminal_error {
+                            ui.colored_label(theme.syntax.operator.0, error);
+                        } else if let Some(terminal) = &mut self.terminal {
+                            if let Err(error) = terminal.ui(ui, theme.ui.text.0, theme.ui.editor.0)
+                            {
+                                self.terminal_error =
+                                    Some(format!("Terminal disconnected: {error}"));
+                            }
+                        }
                     } else {
                         egui::ScrollArea::both()
                             .auto_shrink([false, false])
@@ -4127,6 +4653,8 @@ impl eframe::App for ScasApp {
         }
 
         if self.workspace_tab == WorkspaceTab::Document && self.preview_open {
+            let mut selected_preview_byte = None;
+            let mut preview_scroll_target = self.preview_scroll_target.take();
             let explorer_width = if self.files_open {
                 egui::containers::panel::PanelState::load(context, egui::Id::new("files"))
                     .map_or(240.0, |state| state.size().x)
@@ -4238,27 +4766,43 @@ impl eframe::App for ScasApp {
                                                     .fill(theme.ui.editor.0)
                                                     .inner_margin(egui::Margin::same(18.0))
                                                     .show(ui, |ui| {
-                                                        for texture in &self.latex_textures {
+                                                        let chunks = document_preview_chunks(document);
+                                                        for (index, texture) in self.latex_textures.iter().enumerate() {
                                                             let display_size =
                                                                 texture.size_vec2() * image_scale;
-                                                            ui.add(
+                                                            let response = ui.add(
                                                                 egui::Image::from_texture(texture)
                                                                     .fit_to_exact_size(
                                                                         display_size,
-                                                                    ),
+                                                                    )
+                                                                    .sense(egui::Sense::click()),
                                                             );
+                                                            if let Some((_, range)) = chunks.get(index) {
+                                                                if let Some(fragment) = document.fragments.get(range.start) {
+                                                                    let response = response.on_hover_text(format!("Go to source near line {}", fragment.span.line));
+                                                                    if response.clicked() { selected_preview_byte = Some(fragment.span.byte_start); }
+                                                                    if preview_scroll_target.is_some_and(|target| range.contains(&target)) {
+                                                                        ui.scroll_to_rect(response.rect, Some(egui::Align::Center));
+                                                                        preview_scroll_target = None;
+                                                                    }
+                                                                }
+                                                            }
                                                         }
                                                     });
                                             },
                                         );
                                     } else {
-                                        math_preview::show_document(
+                                        let selected = math_preview::show_document(
                                             ui,
                                             document,
                                             self.themes[self.selected_theme].ui.text.0,
                                             self.themes[self.selected_theme].ui.muted.0,
                                             preview_scale,
+                                            preview_scroll_target.take(),
                                         );
+                                        if let Some(index) = selected {
+                                            selected_preview_byte = document.fragments.get(index).map(|fragment| fragment.span.byte_start);
+                                        }
                                     }
                                     if self.latex_render.is_some() {
                                         ui.horizontal(|ui| {
@@ -4313,6 +4857,10 @@ impl eframe::App for ScasApp {
                             });
                     }
                 });
+            self.preview_scroll_target = preview_scroll_target;
+            if let Some(byte) = selected_preview_byte {
+                self.jump_to_byte(context, byte);
+            }
         }
 
         let editor_background = self.themes[self.selected_theme].ui.editor.0;
@@ -4397,20 +4945,23 @@ impl eframe::App for ScasApp {
                                 });
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.menu_button("···", |ui| {
-                                if ui.button("Show Explorer").clicked() {
-                                    self.files_open = true;
-                                    ui.close_menu();
-                                }
-                                if ui.button("Show Preview").clicked() {
-                                    self.preview_open = true;
-                                    ui.close_menu();
-                                }
-                                if ui.button("Show Output").clicked() {
-                                    self.output_open = true;
-                                    ui.close_menu();
-                                }
-                            });
+                            ui.menu_button(
+                                RichText::new('\u{ea7c}').font(codicon_font(16.0)),
+                                |ui| {
+                                    if ui.button("Show Explorer").clicked() {
+                                        self.files_open = true;
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("Show Preview").clicked() {
+                                        self.preview_open = true;
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("Show Output").clicked() {
+                                        self.output_open = true;
+                                        ui.close_menu();
+                                    }
+                                },
+                            );
                             if chrome_button(ui, ChromeIcon::Preview, &theme)
                                 .on_hover_text("Toggle mathematical preview")
                                 .clicked()
@@ -4509,8 +5060,13 @@ impl eframe::App for ScasApp {
                 } else {
                     editor_assist::Matches::empty(self.cursor_char_index)
                 };
+                let (user_start, user_matches) = if editor_focused && matches.len == 0 {
+                    editor_assist::user_function_completions(&self.source, self.cursor_char_index)
+                } else {
+                    (self.cursor_char_index, Vec::new())
+                };
                 let tab_accept = editor_focused
-                    && matches.len > 0
+                    && (matches.len > 0 || !user_matches.is_empty())
                     && context.input_mut(|input| {
                         input.consume_key(egui::Modifiers::NONE, egui::Key::Tab)
                     });
@@ -4523,6 +5079,16 @@ impl eframe::App for ScasApp {
                         self.cursor_char_index,
                         &insertion,
                     );
+                } else if tab_accept {
+                    if let Some((name, _)) = user_matches.first() {
+                        self.insert_editor_template(
+                            context,
+                            editor_id,
+                            user_start,
+                            self.cursor_char_index,
+                            &format!("{name}($0)"),
+                        );
+                    }
                 }
                 let font_id = FontId::monospace(self.editor_font_size);
                 let cache_is_current = self.highlight_cache.as_ref().is_some_and(|cache| {
@@ -4569,12 +5135,8 @@ impl eframe::App for ScasApp {
                     ui.fonts(|fonts| fonts.layout_job(job))
                 };
                 let total_lines = self.source.split('\n').count().max(1);
-                let digits = total_lines.to_string().len() as f32;
-                let gutter_width = if self.line_numbers == LineNumberMode::Off {
-                    52.0
-                } else {
-                    92.0 + digits * self.editor_font_size * 0.62
-                };
+                let gutter_width =
+                    editor_gutter_width(total_lines, self.editor_font_size, self.line_numbers);
                 if TextEdit::load_state(context, editor_id).is_none() {
                     let mut state = egui::text_edit::TextEditState::default();
                     state.set_undoer(editor_undoer(&self.source));
@@ -4605,6 +5167,19 @@ impl eframe::App for ScasApp {
                     .inner;
                 if let Some(cursor) = output.cursor_range {
                     self.cursor_char_index = cursor.primary.ccursor.index;
+                    if output.response.has_focus()
+                        && self.cursor_char_index != self.preview_last_cursor
+                    {
+                        self.preview_last_cursor = self.cursor_char_index;
+                        let byte = char_to_byte(&self.source, self.cursor_char_index);
+                        if let Some(document) = &self.preview_document {
+                            self.preview_scroll_target =
+                                document.fragments.iter().position(|fragment| {
+                                    fragment.span.byte_start <= byte
+                                        && byte < fragment.span.byte_end
+                                });
+                        }
+                    }
                     self.current_line = self
                         .source
                         .chars()
@@ -4618,8 +5193,18 @@ impl eframe::App for ScasApp {
                 } else {
                     matches
                 };
+                let (user_popup_start, user_popup_matches) = if output.response.has_focus()
+                    && popup_matches.len == 0
+                {
+                    editor_assist::user_function_completions(&self.source, self.cursor_char_index)
+                } else {
+                    (self.cursor_char_index, Vec::new())
+                };
                 let mut popup_completion = None;
-                if output.response.has_focus() && popup_matches.len > 0 {
+                let mut popup_user_completion = None;
+                if output.response.has_focus()
+                    && (popup_matches.len > 0 || !user_popup_matches.is_empty())
+                {
                     if let Some(cursor) = output.cursor_range {
                         let caret = output.galley.pos_from_cursor(&cursor.primary);
                         let anchor =
@@ -4659,8 +5244,65 @@ impl eframe::App for ScasApp {
                                             );
                                         });
                                     }
+                                    for (index, (name, detail)) in
+                                        user_popup_matches.iter().enumerate()
+                                    {
+                                        ui.horizontal(|ui| {
+                                            let label = if index == 0 {
+                                                format!("{name}   Tab")
+                                            } else {
+                                                name.clone()
+                                            };
+                                            if ui.selectable_label(false, label).clicked() {
+                                                popup_user_completion = Some(name.clone());
+                                            }
+                                            ui.label(RichText::new(detail).size(11.0).color(
+                                                self.themes[self.selected_theme].ui.muted.0,
+                                            ));
+                                        });
+                                    }
                                 });
                             });
+                    }
+                }
+                if output.response.has_focus()
+                    && popup_matches.len == 0
+                    && user_popup_matches.is_empty()
+                {
+                    let byte = char_to_byte(&self.source, self.cursor_char_index);
+                    if let Some(call) = SourceIndex::new(&self.source).call_at(&self.source, byte) {
+                        if !call.parameters.is_empty() {
+                            if let Some(cursor) = output.cursor_range {
+                                let caret = output.galley.pos_from_cursor(&cursor.primary);
+                                let anchor = output.galley_pos
+                                    + egui::vec2(caret.left(), caret.bottom() + 4.0);
+                                egui::Area::new(egui::Id::new("editor-signature-popup"))
+                                    .order(egui::Order::Foreground)
+                                    .fixed_pos(anchor)
+                                    .constrain(true)
+                                    .show(context, |ui| {
+                                        egui::Frame::popup(ui.style()).show(ui, |ui| {
+                                            ui.horizontal(|ui| {
+                                                ui.monospace(format!("{}(", call.name));
+                                                for (index, parameter) in
+                                                    call.parameters.iter().enumerate()
+                                                {
+                                                    if index > 0 {
+                                                        ui.monospace(", ");
+                                                    }
+                                                    let text = RichText::new(parameter).monospace();
+                                                    ui.label(if index == call.active_parameter {
+                                                        text.strong().color(theme.ui.accent.0)
+                                                    } else {
+                                                        text
+                                                    });
+                                                }
+                                                ui.monospace(")");
+                                            });
+                                        });
+                                    });
+                            }
+                        }
                     }
                 }
                 if self.line_numbers != LineNumberMode::Off {
@@ -4674,6 +5316,13 @@ impl eframe::App for ScasApp {
                         gutter_width,
                     );
                 }
+                paint_inline_diagnostics(
+                    ui,
+                    &output,
+                    &self.diagnostics,
+                    &self.themes[self.selected_theme],
+                    gutter_width,
+                );
                 if let Some(pointer) = output.response.hover_pos() {
                     let cursor = output.galley.cursor_from_pos(pointer - output.galley_pos);
                     let byte = char_to_byte(&self.source, cursor.ccursor.index);
@@ -4683,6 +5332,28 @@ impl eframe::App for ScasApp {
                         .find(|item| item.byte_start <= byte && byte < item.byte_end)
                     {
                         output.response.clone().on_hover_text(&diagnostic.message);
+                    } else {
+                        let key = (self.analysis_generation, byte);
+                        if self.hover_key != Some(key) {
+                            self.hover_key = Some(key);
+                            self.hover_since = Instant::now();
+                            self.hover_value = None;
+                        } else if self.hover_since.elapsed() >= Duration::from_millis(450) {
+                            if self.hover_value.is_none() {
+                                self.hover_value = Some(
+                                    evaluate_hover(&self.source, byte)
+                                        .map(|(_, value)| value)
+                                        .unwrap_or_default(),
+                                );
+                            }
+                            if let Some(value) = &self.hover_value {
+                                if !value.is_empty() {
+                                    output.response.clone().on_hover_text(format!("= {value}"));
+                                }
+                            }
+                        } else {
+                            context.request_repaint_after(Duration::from_millis(460));
+                        }
                     }
                 }
                 if output.response.changed() {
@@ -4711,6 +5382,15 @@ impl eframe::App for ScasApp {
                         popup_matches.start_char,
                         self.cursor_char_index,
                         &insertion,
+                    );
+                }
+                if let Some(name) = popup_user_completion {
+                    self.insert_editor_template(
+                        context,
+                        editor_id,
+                        user_popup_start,
+                        self.cursor_char_index,
+                        &format!("{name}($0)"),
                     );
                 }
             });
@@ -4903,33 +5583,48 @@ fn paint_scas_logo(ui: &mut egui::Ui, theme: &Theme) -> egui::Response {
     response
 }
 
-fn status_badge(ui: &mut egui::Ui, warning: bool, color: egui::Color32) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
-    let c = rect.center();
-    let stroke = egui::Stroke::new(1.2, color);
-    if warning {
-        ui.painter().add(egui::Shape::closed_line(
-            vec![
-                c + egui::vec2(0.0, -6.0),
-                c + egui::vec2(-6.0, 5.0),
-                c + egui::vec2(6.0, 5.0),
-            ],
-            stroke,
-        ));
-        ui.painter().line_segment(
-            [c + egui::vec2(0.0, -2.0), c + egui::vec2(0.0, 2.0)],
-            stroke,
-        );
-    } else {
-        ui.painter().circle_stroke(c, 6.0, stroke);
-        ui.painter().line_segment(
-            [c + egui::vec2(-2.0, -2.0), c + egui::vec2(2.0, 2.0)],
-            stroke,
-        );
-        ui.painter().line_segment(
-            [c + egui::vec2(-2.0, 2.0), c + egui::vec2(2.0, -2.0)],
-            stroke,
-        );
+fn status_badge(ui: &mut egui::Ui, glyph: char, color: egui::Color32) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::click());
+    paint_codicon(ui, rect.center(), glyph, 14.0, color);
+    response.on_hover_text("Show Problems")
+}
+fn codicon_font(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name(CODICON_FONT_NAME.into()))
+}
+
+fn paint_codicon(ui: &egui::Ui, center: egui::Pos2, glyph: char, size: f32, color: egui::Color32) {
+    ui.painter().text(
+        center,
+        egui::Align2::CENTER_CENTER,
+        glyph,
+        codicon_font(size),
+        color,
+    );
+}
+
+fn chrome_icon_glyph(icon: ChromeIcon) -> char {
+    match icon {
+        ChromeIcon::Sidebar => '\u{ebf3}',  // layout-sidebar-left
+        ChromeIcon::Panel => '\u{ebf2}',    // layout-panel
+        ChromeIcon::Preview => '\u{ebf4}',  // layout-sidebar-right
+        ChromeIcon::Minimize => '\u{eaba}', // chrome-minimize
+        ChromeIcon::Maximize => '\u{eab9}', // chrome-maximize
+        ChromeIcon::Close => '\u{eab8}',    // chrome-close
+        ChromeIcon::Run => '\u{eb2c}',      // play
+        ChromeIcon::NewFile => '\u{ea7f}',  // file-add
+        ChromeIcon::Refresh => '\u{eb37}',  // refresh
+        ChromeIcon::Collapse => '\u{eac5}', // collapse-all
+        ChromeIcon::TabClose => '\u{ea76}', // close
+    }
+}
+
+fn activity_icon_glyph(icon: ActivityIcon) -> char {
+    match icon {
+        ActivityIcon::Explorer => '\u{eaf0}', // files
+        ActivityIcon::Search => '\u{ea6d}',   // search
+        ActivityIcon::Repl => '\u{ea85}',     // terminal
+        ActivityIcon::Graphing => '\u{ebe2}', // graph-line
+        ActivityIcon::Settings => '\u{eb51}', // settings-gear
     }
 }
 
@@ -4958,104 +5653,12 @@ fn chrome_button(ui: &mut egui::Ui, icon: ChromeIcon, theme: &Theme) -> egui::Re
             egui::Stroke::new(1.0, theme.ui.accent.0),
         );
     }
-    let c = rect.center();
-    let color = theme.ui.text.0;
-    let stroke = egui::Stroke::new(1.4, color);
-    match icon {
-        ChromeIcon::Sidebar | ChromeIcon::Panel | ChromeIcon::Preview => {
-            let shell = egui::Rect::from_center_size(c, egui::vec2(16.0, 14.0));
-            ui.painter().rect_stroke(shell, 2.0, stroke);
-            match icon {
-                ChromeIcon::Sidebar => ui.painter().line_segment(
-                    [
-                        egui::pos2(shell.left() + 6.0, shell.top()),
-                        egui::pos2(shell.left() + 6.0, shell.bottom()),
-                    ],
-                    stroke,
-                ),
-                ChromeIcon::Panel => ui.painter().line_segment(
-                    [
-                        egui::pos2(shell.left(), shell.bottom() - 5.0),
-                        egui::pos2(shell.right(), shell.bottom() - 5.0),
-                    ],
-                    stroke,
-                ),
-                _ => ui.painter().line_segment(
-                    [
-                        egui::pos2(shell.right() - 6.0, shell.top()),
-                        egui::pos2(shell.right() - 6.0, shell.bottom()),
-                    ],
-                    stroke,
-                ),
-            };
-        }
-        ChromeIcon::Minimize => {
-            ui.painter().line_segment(
-                [c + egui::vec2(-6.0, 4.0), c + egui::vec2(6.0, 4.0)],
-                stroke,
-            );
-        }
-        ChromeIcon::Maximize => {
-            ui.painter().rect_stroke(
-                egui::Rect::from_center_size(c, egui::vec2(11.0, 10.0)),
-                0.0,
-                stroke,
-            );
-        }
-        ChromeIcon::Close | ChromeIcon::TabClose => {
-            ui.painter().line_segment(
-                [c + egui::vec2(-5.0, -5.0), c + egui::vec2(5.0, 5.0)],
-                stroke,
-            );
-            ui.painter().line_segment(
-                [c + egui::vec2(-5.0, 5.0), c + egui::vec2(5.0, -5.0)],
-                stroke,
-            );
-        }
-        ChromeIcon::Run => {
-            let points = vec![
-                c + egui::vec2(-5.0, -7.0),
-                c + egui::vec2(7.0, 0.0),
-                c + egui::vec2(-5.0, 7.0),
-            ];
-            ui.painter().add(egui::Shape::closed_line(points, stroke));
-        }
-        ChromeIcon::NewFile => {
-            let page =
-                egui::Rect::from_center_size(c + egui::vec2(-2.0, 0.0), egui::vec2(11.0, 15.0));
-            ui.painter().rect_stroke(page, 1.0, stroke);
-            ui.painter().line_segment(
-                [c + egui::vec2(4.0, 2.0), c + egui::vec2(10.0, 2.0)],
-                stroke,
-            );
-            ui.painter().line_segment(
-                [c + egui::vec2(7.0, -1.0), c + egui::vec2(7.0, 5.0)],
-                stroke,
-            );
-        }
-        ChromeIcon::Refresh => {
-            ui.painter().circle_stroke(c, 6.0, stroke);
-            ui.painter().line_segment(
-                [c + egui::vec2(5.5, -4.0), c + egui::vec2(8.0, -4.0)],
-                stroke,
-            );
-            ui.painter().line_segment(
-                [c + egui::vec2(8.0, -4.0), c + egui::vec2(8.0, -7.0)],
-                stroke,
-            );
-        }
-        ChromeIcon::Collapse => {
-            ui.painter().rect_stroke(
-                egui::Rect::from_center_size(c, egui::vec2(15.0, 14.0)),
-                1.0,
-                stroke,
-            );
-            ui.painter().line_segment(
-                [c + egui::vec2(-4.0, 1.0), c + egui::vec2(4.0, 1.0)],
-                stroke,
-            );
-        }
-    }
+    let color = if matches!(icon, ChromeIcon::Close) && response.hovered() {
+        egui::Color32::WHITE
+    } else {
+        theme.ui.text.0
+    };
+    paint_codicon(ui, rect.center(), chrome_icon_glyph(icon), 16.0, color);
     response
 }
 
@@ -5086,80 +5689,7 @@ fn activity_button(
     } else {
         theme.ui.muted.0
     };
-    let stroke = egui::Stroke::new(1.6, color);
-    let center = rect.center();
-    let icon_rect = egui::Rect::from_center_size(center, egui::vec2(20.0, 20.0));
-    match icon {
-        ActivityIcon::Explorer => {
-            let back = icon_rect.translate(egui::vec2(-2.0, -1.5)).shrink(2.0);
-            let front = icon_rect.translate(egui::vec2(2.0, 1.5)).shrink(2.0);
-            ui.painter().rect_stroke(back, 2.0, stroke);
-            ui.painter().rect_stroke(front, 2.0, stroke);
-        }
-        ActivityIcon::Search => {
-            let lens = center + egui::vec2(-2.0, -2.0);
-            ui.painter().circle_stroke(lens, 6.0, stroke);
-            ui.painter().line_segment(
-                [lens + egui::vec2(4.2, 4.2), lens + egui::vec2(10.0, 10.0)],
-                stroke,
-            );
-        }
-        ActivityIcon::Repl => {
-            let box_rect = icon_rect.shrink(1.5);
-            ui.painter().rect_stroke(box_rect, 2.0, stroke);
-            ui.painter().line_segment(
-                [
-                    center + egui::vec2(-6.0, -3.5),
-                    center + egui::vec2(-2.0, 0.0),
-                ],
-                stroke,
-            );
-            ui.painter().line_segment(
-                [
-                    center + egui::vec2(-2.0, 0.0),
-                    center + egui::vec2(-6.0, 3.5),
-                ],
-                stroke,
-            );
-            ui.painter().line_segment(
-                [center + egui::vec2(0.0, 4.0), center + egui::vec2(6.0, 4.0)],
-                stroke,
-            );
-        }
-        ActivityIcon::Graphing => {
-            ui.painter().line_segment(
-                [
-                    center + egui::vec2(-9.0, 8.0),
-                    center + egui::vec2(9.0, 8.0),
-                ],
-                stroke,
-            );
-            ui.painter().line_segment(
-                [
-                    center + egui::vec2(-8.0, 9.0),
-                    center + egui::vec2(-8.0, -8.0),
-                ],
-                stroke,
-            );
-            let points = vec![
-                center + egui::vec2(-7.0, 4.0),
-                center + egui::vec2(-2.0, -4.0),
-                center + egui::vec2(3.0, 0.0),
-                center + egui::vec2(8.0, -7.0),
-            ];
-            ui.painter().add(egui::Shape::line(points, stroke));
-        }
-        ActivityIcon::Settings => {
-            ui.painter().circle_stroke(center, 6.0, stroke);
-            ui.painter().circle_stroke(center, 2.2, stroke);
-            for step in 0..8 {
-                let angle = step as f32 * std::f32::consts::TAU / 8.0;
-                let direction = egui::vec2(angle.cos(), angle.sin());
-                ui.painter()
-                    .line_segment([center + direction * 7.0, center + direction * 9.5], stroke);
-            }
-        }
-    }
+    paint_codicon(ui, rect.center(), activity_icon_glyph(icon), 22.0, color);
     response
 }
 
@@ -5172,60 +5702,37 @@ fn tree_disclosure(ui: &mut egui::Ui, collapsed: bool, theme: &Theme) -> egui::R
             egui::Stroke::new(1.0, theme.ui.accent.0),
         );
     }
-    let center = rect.center();
-    let points = if collapsed {
-        vec![
-            center + egui::vec2(-2.0, -4.0),
-            center + egui::vec2(3.0, 0.0),
-            center + egui::vec2(-2.0, 4.0),
-        ]
+    let glyph = if collapsed {
+        '\u{eab6}' // chevron-right
     } else {
-        vec![
-            center + egui::vec2(-4.0, -2.0),
-            center + egui::vec2(4.0, -2.0),
-            center + egui::vec2(0.0, 3.0),
-        ]
+        '\u{eab4}' // chevron-down
     };
-    ui.painter().add(egui::Shape::convex_polygon(
-        points,
+    paint_codicon(
+        ui,
+        rect.center(),
+        glyph,
+        14.0,
         if response.hovered() {
             theme.ui.text.0
         } else {
             theme.ui.muted.0
         },
-        egui::Stroke::NONE,
-    ));
+    );
     response
 }
 
 fn paint_tree_icon(ui: &mut egui::Ui, directory: bool, theme: &Theme) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 18.0), egui::Sense::hover());
-    let color = theme.ui.muted.0;
-    if directory {
-        let body = egui::Rect::from_min_max(
-            rect.left_top() + egui::vec2(1.0, 6.0),
-            rect.right_bottom() - egui::vec2(1.0, 2.0),
-        );
-        ui.painter()
-            .rect_stroke(body, 1.0, egui::Stroke::new(1.2, color));
-        ui.painter().line_segment(
-            [
-                egui::pos2(body.left() + 1.0, body.top()),
-                egui::pos2(body.left() + 6.0, body.top() - 3.0),
-            ],
-            egui::Stroke::new(1.2, color),
-        );
+    let glyph = if directory { '\u{ea83}' } else { '\u{ea7b}' };
+    paint_codicon(ui, rect.center(), glyph, 15.0, theme.ui.muted.0);
+}
+
+fn editor_gutter_width(total_lines: usize, font_size: f32, mode: LineNumberMode) -> f32 {
+    if mode == LineNumberMode::Off {
+        20.0
     } else {
-        let page = rect.shrink2(egui::vec2(3.0, 2.5));
-        ui.painter()
-            .rect_stroke(page, 1.0, egui::Stroke::new(1.1, color));
-        ui.painter().line_segment(
-            [
-                egui::pos2(page.left() + 2.0, page.top() + 5.0),
-                egui::pos2(page.right() - 2.0, page.top() + 5.0),
-            ],
-            egui::Stroke::new(1.0, color),
-        );
+        let digits = total_lines.max(1).to_string().len() as f32;
+        34.0 + digits * font_size * 0.48
     }
 }
 
@@ -5279,7 +5786,7 @@ fn paint_line_numbers(
             .flatten();
         if let Some(value) = value {
             let position = egui::pos2(
-                separator_x - 20.0,
+                separator_x - 12.0,
                 output.galley_pos.y + galley_row.rect.center().y,
             );
             painter.text(
@@ -5296,6 +5803,112 @@ fn paint_line_numbers(
         }
         first_visual_row = galley_row.ends_with_newline;
         if galley_row.ends_with_newline {
+            source_line += 1;
+        }
+    }
+}
+
+fn diagnostic_color(severity: DiagnosticSeverity, theme: &Theme) -> egui::Color32 {
+    match severity {
+        DiagnosticSeverity::Error => {
+            if theme.dark {
+                egui::Color32::from_rgb(244, 77, 81)
+            } else {
+                egui::Color32::from_rgb(180, 38, 43)
+            }
+        }
+        DiagnosticSeverity::Info => theme.ui.accent.0,
+    }
+}
+
+fn paint_inline_diagnostics(
+    ui: &egui::Ui,
+    output: &egui::text_edit::TextEditOutput,
+    diagnostics: &[EditorDiagnostic],
+    theme: &Theme,
+    gutter_width: f32,
+) {
+    if diagnostics.is_empty() {
+        return;
+    }
+    let clip = egui::Rect::from_min_max(
+        egui::pos2(
+            output.galley_pos.x - gutter_width,
+            output.response.rect.top(),
+        ),
+        output.response.rect.right_bottom(),
+    )
+    .intersect(ui.clip_rect());
+    let painter = ui.painter().with_clip_rect(clip);
+    let mut source_line = 1usize;
+    let mut first_visual_row = true;
+    for row in &output.galley.rows {
+        let diagnostic = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.line == source_line);
+        if let Some(diagnostic) = diagnostic {
+            let color = diagnostic_color(diagnostic.severity, theme);
+            let row_rect = egui::Rect::from_min_max(
+                egui::pos2(
+                    output.galley_pos.x - 2.0,
+                    output.galley_pos.y + row.rect.top(),
+                ),
+                egui::pos2(
+                    output.text_clip_rect.right(),
+                    output.galley_pos.y + row.rect.bottom(),
+                ),
+            );
+            painter.rect_filled(row_rect, 0.0, color.gamma_multiply(0.07));
+        }
+        if first_visual_row {
+            if let Some(diagnostic) = diagnostic {
+                let color = diagnostic_color(diagnostic.severity, theme);
+                let y = output.galley_pos.y + row.rect.center().y;
+                let x = output.galley_pos.x - gutter_width + 8.0;
+                paint_codicon(
+                    ui,
+                    egui::pos2(x, y),
+                    if diagnostic.severity == DiagnosticSeverity::Error {
+                        '\u{ea87}'
+                    } else {
+                        '\u{ea74}'
+                    },
+                    12.0,
+                    color,
+                );
+                let text_x = output.galley_pos.x + row.rect.right() + 16.0;
+                let right = output.text_clip_rect.right() - 8.0;
+                if right - text_x >= 90.0 {
+                    let message = diagnostic.message.lines().next().unwrap_or("");
+                    let max_chars = ((right - text_x) / 7.2).floor().max(1.0) as usize;
+                    let display = if message.chars().count() > max_chars {
+                        format!(
+                            "{}…",
+                            message
+                                .chars()
+                                .take(max_chars.saturating_sub(1))
+                                .collect::<String>()
+                        )
+                    } else {
+                        message.to_owned()
+                    };
+                    let rect = egui::Rect::from_min_max(
+                        egui::pos2(text_x - 5.0, output.galley_pos.y + row.rect.top() + 1.0),
+                        egui::pos2(right, output.galley_pos.y + row.rect.bottom() - 1.0),
+                    );
+                    painter.rect_filled(rect, 1.0, color.gamma_multiply(0.13));
+                    painter.text(
+                        egui::pos2(text_x, y),
+                        egui::Align2::LEFT_CENTER,
+                        display,
+                        FontId::proportional(12.0),
+                        color,
+                    );
+                }
+            }
+        }
+        first_visual_row = row.ends_with_newline;
+        if row.ends_with_newline {
             source_line += 1;
         }
     }
@@ -5420,14 +6033,13 @@ fn highlight(
         .filter_map(|diagnostic| {
             let start = previous_char_boundary(source, diagnostic.byte_start);
             let end = next_char_boundary(source, diagnostic.byte_end);
-            (start < end).then_some(start..end)
+            (start < end).then_some((start..end, diagnostic.severity))
         })
         .collect::<Vec<_>>();
-    let diagnostic_color = theme.syntax.operator.0;
     let original_sections = std::mem::take(&mut job.sections);
     for section in original_sections {
         let mut boundaries = vec![section.byte_range.start, section.byte_range.end];
-        for diagnostic in &diagnostic_ranges {
+        for (diagnostic, _) in &diagnostic_ranges {
             if section.byte_range.start < diagnostic.start
                 && diagnostic.start < section.byte_range.end
             {
@@ -5443,10 +6055,12 @@ fn highlight(
         for range in boundaries.windows(2) {
             let mut part = section.clone();
             part.byte_range = range[0]..range[1];
-            if diagnostic_ranges.iter().any(|diagnostic| {
+            if let Some((_, severity)) = diagnostic_ranges.iter().find(|(diagnostic, _)| {
                 part.byte_range.start < diagnostic.end && diagnostic.start < part.byte_range.end
             }) {
-                part.format.underline = egui::Stroke::new(1.5, diagnostic_color);
+                let color = diagnostic_color(*severity, theme);
+                part.format.underline = egui::Stroke::new(1.5, color);
+                part.format.background = color.gamma_multiply(0.13);
             }
             job.sections.push(part);
         }
@@ -5483,6 +6097,7 @@ fn source_diagnostics(source: &str) -> Vec<EditorDiagnostic> {
             line: error.line,
             column: error.column,
             message: error.message.clone(),
+            severity: DiagnosticSeverity::Error,
         });
     }
     if diagnostics.is_empty() {
@@ -5495,6 +6110,7 @@ fn source_diagnostics(source: &str) -> Vec<EditorDiagnostic> {
                 line: error.line,
                 column: error.column,
                 message: error.message,
+                severity: DiagnosticSeverity::Error,
             });
         }
     }
@@ -5797,11 +6413,40 @@ fn live_preview_limits() -> Limits {
 /// Result-heavy `=>` blocks can be far larger than their source; bounded,
 /// stable chunks avoid pathological TeX pages and are reusable after edits.
 fn latex_preview_chunks(body: &str) -> Vec<String> {
+    latex_preview_chunks_tagged(body, &[])
+        .into_iter()
+        .map(|(chunk, _)| chunk)
+        .collect()
+}
+
+fn document_preview_chunks(document: &Document) -> Vec<(String, std::ops::Range<usize>)> {
+    let mut starts = Vec::with_capacity(document.fragments.len());
+    let mut offset = 0;
+    for fragment in &document.fragments {
+        starts.push(offset);
+        offset += fragment.latex.len() + 2;
+    }
+    latex_preview_chunks_tagged(&document.body(), &starts)
+}
+
+fn latex_preview_chunks_tagged(
+    body: &str,
+    fragment_starts: &[usize],
+) -> Vec<(String, std::ops::Range<usize>)> {
     const MAX_ROWS: usize = 32;
     const MAX_BYTES: usize = 12_000;
 
-    let mut fragments: Vec<(String, bool)> = Vec::new();
-    for fragment in body.split("\n\n").filter(|part| !part.trim().is_empty()) {
+    let mut fragments: Vec<(String, bool, usize)> = Vec::new();
+    let mut offset = 0;
+    for raw in body.split("\n\n") {
+        let fragment_index = fragment_starts
+            .partition_point(|start| *start <= offset)
+            .saturating_sub(1);
+        offset += raw.len() + 2;
+        if raw.trim().is_empty() {
+            continue;
+        }
+        let fragment = raw;
         let fragment = fragment.trim();
         let parts = [
             (r"\begin{align*}", r"\end{align*}"),
@@ -5843,18 +6488,22 @@ fn latex_preview_chunks(body: &str) -> Vec<String> {
             },
         );
 
-        fragments.extend(parts);
+        fragments.extend(
+            parts
+                .into_iter()
+                .map(|(text, isolated)| (text, isolated, fragment_index)),
+        );
     }
     if fragments.is_empty() {
-        return vec![body.to_owned()];
+        return vec![(body.to_owned(), 0..fragment_starts.len().max(1))];
     }
     // Count-based grouping stays stable when one result changes length, which
     // is what makes unchanged chunks reusable. The largest fragment selects a
     // safe group size for the whole revision.
     let largest = fragments
         .iter()
-        .filter(|(_, isolated)| !isolated)
-        .map(|(fragment, _)| fragment.len())
+        .filter(|(_, isolated, _)| !isolated)
+        .map(|(fragment, _, _)| fragment.len())
         .max()
         .unwrap_or(1);
     let fragments_per_chunk = match largest {
@@ -5865,25 +6514,38 @@ fn latex_preview_chunks(body: &str) -> Vec<String> {
     };
     let mut chunks = Vec::new();
     let mut grouped = Vec::new();
-    for (fragment, isolated) in fragments {
+    for (fragment, isolated, index) in fragments {
         if isolated {
             if !grouped.is_empty() {
-                chunks.push(grouped.join("\n\n"));
+                chunks.push(group_preview_fragments(&grouped));
                 grouped.clear();
             }
-            chunks.push(fragment);
+            chunks.push((fragment, index..index + 1));
         } else {
-            grouped.push(fragment);
+            grouped.push((fragment, index));
             if grouped.len() >= fragments_per_chunk {
-                chunks.push(grouped.join("\n\n"));
+                chunks.push(group_preview_fragments(&grouped));
                 grouped.clear();
             }
         }
     }
     if !grouped.is_empty() {
-        chunks.push(grouped.join("\n\n"));
+        chunks.push(group_preview_fragments(&grouped));
     }
     chunks
+}
+
+fn group_preview_fragments(parts: &[(String, usize)]) -> (String, std::ops::Range<usize>) {
+    let start = parts.first().map_or(0, |(_, index)| *index);
+    let end = parts.last().map_or(start, |(_, index)| index + 1);
+    (
+        parts
+            .iter()
+            .map(|(text, _)| text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+        start..end,
+    )
 }
 
 /// Split an alignment at row separators belonging to its outer environment.
@@ -6008,6 +6670,7 @@ fn render_latex_png(body: &str, color: [u8; 3]) -> Result<LatexRender, String> {
          \\usepackage{{upgreek}}\n\
          \\usepackage{{booktabs}}\n\
          \\usepackage{{xcolor}}\n\
+         \\DeclareUnicodeCharacter{{039B}}{{\\ensuremath{{\\Lambda}}}}\n\
          \\begin{{document}}\n\\color[rgb]{{{:.4},{:.4},{:.4}}}\n{body}\n\\end{{document}}\n",
         f32::from(color[0]) / 255.0,
         f32::from(color[1]) / 255.0,
@@ -6022,7 +6685,14 @@ fn render_latex_png(body: &str, color: [u8; 3]) -> Result<LatexRender, String> {
             .output()
             .map_err(|error| format!("could not start LaTeX: {error}"))?;
         if !latex.status.success() {
-            return Err("LaTeX could not typeset the current document".to_owned());
+            let log = String::from_utf8_lossy(&latex.stdout);
+            let detail = log
+                .lines()
+                .find(|line| line.starts_with('!'))
+                .unwrap_or("unknown TeX error");
+            return Err(format!(
+                "LaTeX could not typeset the current document: {detail}"
+            ));
         }
         let dvipng = Command::new("dvipng")
             .args([
@@ -6112,12 +6782,12 @@ mod tests {
     #[test]
     fn preview_resize_preserves_the_editor_workspace() {
         let (default_width, max_width) = preview_widths(2048.0, 480.0);
-        assert_eq!(max_width, MAX_PREVIEW_WIDTH);
+        assert_eq!(max_width, 1100.0);
         assert!(default_width <= max_width);
         assert!(2048.0 - 48.0 - 480.0 - max_width >= MIN_EDITOR_WORKSPACE_WIDTH);
 
         let (_, max_without_explorer) = preview_widths(2048.0, 0.0);
-        assert_eq!(max_without_explorer, MAX_PREVIEW_WIDTH);
+        assert_eq!(max_without_explorer, 1580.0);
 
         let (narrow_default, narrow_max) = preview_widths(1024.0, 240.0);
         assert_eq!(narrow_default, narrow_max);
@@ -6160,6 +6830,41 @@ mod tests {
             readable_latex(&preview),
             "Quadratic formula\n\n((x + 1))⁄((2x²))"
         );
+    }
+
+    #[test]
+    fn mit_session_document_renders_in_gui_preview() {
+        if Command::new("latex").arg("--version").output().is_err()
+            || Command::new("dvipng").arg("--version").output().is_err()
+        {
+            return;
+        }
+        let source = include_str!("../../examples/mit-18-06-session-22.scas");
+        let document = scas::document::build_live_with_limits(source, live_preview_limits())
+            .expect("MIT source should build in the live preview");
+        let renders = render_latex_document_pngs(&document.body(), [220, 220, 220])
+            .expect("MIT document should typeset in the GUI preview");
+        assert!(!renders.is_empty());
+        assert!(renders
+            .iter()
+            .all(|render| render.size[0] > 0 && render.size[1] > 0));
+    }
+
+    #[test]
+    fn latex_preview_chunks_map_back_to_source_fragments() {
+        let source = "/// First section\n\\[ 2 + 3 => \\]\n/// Second section\n\\[ 4 + 5 => \\]";
+        let document = scas::document::build(source).unwrap();
+        let chunks = document_preview_chunks(&document);
+        assert_eq!(
+            chunks
+                .iter()
+                .map(|(body, _)| body)
+                .cloned()
+                .collect::<Vec<_>>(),
+            latex_preview_chunks(&document.body())
+        );
+        assert_eq!(chunks.first().unwrap().1.start, 0);
+        assert_eq!(chunks.last().unwrap().1.end, document.fragments.len());
     }
 
     #[test]
@@ -6389,7 +7094,7 @@ mod tests {
     fn unsaved_document_survives_new_and_open_until_decided() {
         let context = egui::Context::default();
         let mut app = ScasApp::new(&context);
-        app.source = "let edited = 1;".to_owned();
+        "let edited = 1;".clone_into(&mut app.source);
         app.dirty = true;
         app.new_file();
         assert_eq!(app.source, "let edited = 1;");
@@ -6412,7 +7117,7 @@ mod tests {
         let mut app = ScasApp::new(&context);
         let path = std::env::temp_dir().join(format!("scas-save-as-{}.scas", std::process::id()));
         let _ = fs::remove_file(&path);
-        app.source = "let saved = 3;".to_owned();
+        "let saved = 3;".clone_into(&mut app.source);
         app.dirty = true;
         app.save_as_path = path.display().to_string();
         assert!(app.save_as());
@@ -6420,7 +7125,7 @@ mod tests {
         assert!(!app.dirty);
 
         app.current_file = None;
-        app.source = "let replacement = 4;".to_owned();
+        "let replacement = 4;".clone_into(&mut app.source);
         app.save_as_path = path.display().to_string();
         assert!(!app.save_as());
         assert_eq!(fs::read_to_string(&path).unwrap(), "let saved = 3;");
@@ -6438,34 +7143,77 @@ mod tests {
         assert!(app.repl_entries[0].error.is_none());
         assert!(app.repl_input.is_empty());
 
+        ":plot svg sin(x) from -3 to 3".clone_into(&mut app.repl_input);
+        app.submit_repl();
+        let vector_plot = app.repl_entries[1].plot.as_ref().unwrap();
+        assert!(vector_plot.svg);
+        assert_eq!(vector_plot.series.len(), 1);
+        assert!(vector_plot.series[0]
+            .samples
+            .iter()
+            .any(|(_, y)| y.is_some()));
+
         app.repl_input = ":plot".to_string();
         app.submit_repl();
-        assert!(app.repl_entries[1].printed.contains("usage:"));
+        assert!(app.repl_entries[2].printed.contains("usage:"));
         assert!(app.repl_input.is_empty());
 
         app.repl_history_step(-1);
         assert_eq!(app.repl_input, ":plot");
         app.repl_history_step(-1);
+        assert_eq!(app.repl_input, ":plot svg sin(x) from -3 to 3");
+        app.repl_history_step(-1);
         assert_eq!(app.repl_input, ":plot x^2 from -2 to 2");
         app.repl_history_step(1);
-        assert_eq!(app.repl_input, ":plot");
+        assert_eq!(app.repl_input, ":plot svg sin(x) from -3 to 3");
+    }
+
+    #[test]
+    fn svg_repl_plot_paints_curves_in_the_history_buffer() {
+        let context = egui::Context::default();
+        let mut app = ScasApp::new(&context);
+        ":plot svg sin(x) from -3 to 3".clone_into(&mut app.repl_input);
+        app.submit_repl();
+        let plot = app.repl_entries[0].plot.as_ref().unwrap();
+        let theme = &app.themes[app.selected_theme];
+        let output = context.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(900.0, 700.0),
+                )),
+                ..Default::default()
+            },
+            |context| {
+                egui::CentralPanel::default().show(context, |ui| {
+                    show_inline_plot(ui, plot, theme);
+                });
+            },
+        );
+        assert!(
+            output
+                .shapes
+                .iter()
+                .any(|shape| matches!(shape.shape, egui::Shape::Path(_))),
+            "SVG mode should paint a vector curve"
+        );
     }
 
     #[test]
     fn editor_repl_help_and_precision_commands() {
         let context = egui::Context::default();
         let mut app = ScasApp::new(&context);
-        app.repl_input = ":help".to_owned();
+        ":help".clone_into(&mut app.repl_input);
         app.submit_repl();
         assert!(app.repl_entries[0].printed.contains(":precision N"));
         assert!(app.repl_entries[0].printed.contains("Ctrl+Enter"));
 
-        app.repl_input = ":precision 12".to_owned();
+        ":precision 12".clone_into(&mut app.repl_input);
         app.submit_repl();
         assert_eq!(app.repl_interpreter.decimal_precision(), 12);
         assert!(app.repl_entries[1].printed.contains("12 digits"));
 
-        app.repl_input = ":precision 0".to_owned();
+        ":precision 0".clone_into(&mut app.repl_input);
         app.submit_repl();
         assert_eq!(app.repl_interpreter.decimal_precision(), 12);
         assert!(app.repl_entries[2]
@@ -6563,7 +7311,7 @@ mod tests {
     fn ctrl_enter_wraps_repl_expressions_in_evalf() {
         let context = egui::Context::default();
         let mut app = ScasApp::new(&context);
-        app.repl_input = "pi / 6".to_owned();
+        "pi / 6".clone_into(&mut app.repl_input);
         app.refresh_repl_latex();
         app.submit_repl_numerically();
         assert_eq!(app.repl_entries.len(), 1);
@@ -6578,7 +7326,7 @@ mod tests {
         assert!(app.repl_entries[0].error.is_none());
         assert!(app.repl_input.is_empty());
 
-        app.repl_input = ":plot sin(x)".to_owned();
+        ":plot sin(x)".clone_into(&mut app.repl_input);
         app.submit_repl_numerically();
         assert_eq!(app.repl_entries.len(), 1);
         assert_eq!(app.repl_input, ":plot sin(x)");
@@ -6655,6 +7403,7 @@ mod tests {
             line: 1,
             column: 9,
             message: "expected expression".to_owned(),
+            severity: DiagnosticSeverity::Error,
         };
         let job = highlight(
             source,
@@ -6666,6 +7415,27 @@ mod tests {
         assert!(job.sections.iter().any(|section| {
             section.byte_range.contains(&semicolon) && section.format.underline.width > 0.0
         }));
+    }
+
+    #[test]
+    fn problems_navigation_selects_the_utf8_source_position() {
+        let context = egui::Context::default();
+        let mut app = ScasApp::new(&context);
+        "let π = ;".clone_into(&mut app.source);
+        let byte_start = app.source.find(';').unwrap();
+        let diagnostic = EditorDiagnostic {
+            byte_start,
+            byte_end: byte_start + 1,
+            line: 1,
+            column: 9,
+            message: "Expected expression".to_owned(),
+            severity: DiagnosticSeverity::Error,
+        };
+        app.jump_to_diagnostic(&context, &diagnostic);
+        let editor_id = egui::Id::new(("source-editor", app.buffer_generation));
+        let state = TextEdit::load_state(&context, editor_id).unwrap();
+        assert_eq!(state.cursor.char_range().unwrap().primary.index, 8);
+        assert_eq!(app.current_line, 0);
     }
 
     #[test]
@@ -6690,6 +7460,7 @@ mod tests {
                 line: diagnostic.span.line,
                 column: diagnostic.span.column,
                 message: diagnostic.message,
+                severity: diagnostic.severity,
             }
         }));
         diagnostics.push(EditorDiagnostic {
@@ -6698,6 +7469,7 @@ mod tests {
             line: 6,
             column: 3,
             message: "stale diagnostic from the previous buffer revision".to_owned(),
+            severity: DiagnosticSeverity::Error,
         });
         let job = highlight(
             source,
@@ -6724,6 +7496,16 @@ mod tests {
         assert_eq!(displayed_line_number(LineNumberMode::Hybrid, 2, 2), Some(3));
         assert_eq!(displayed_line_number(LineNumberMode::Hybrid, 4, 2), Some(2));
         assert_eq!(displayed_line_number(LineNumberMode::Off, 4, 2), None);
+    }
+
+    #[test]
+    fn editor_gutter_fits_line_numbers_without_a_wide_empty_strip() {
+        let single = editor_gutter_width(9, 27.0, LineNumberMode::Absolute);
+        let triple = editor_gutter_width(999, 27.0, LineNumberMode::Absolute);
+        assert!(single < 50.0);
+        assert!(triple < 80.0);
+        assert!(triple > single);
+        assert_eq!(editor_gutter_width(999, 27.0, LineNumberMode::Off), 20.0);
     }
 
     #[test]

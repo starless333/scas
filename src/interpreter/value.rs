@@ -287,6 +287,10 @@ pub enum StepOperation {
         source: usize,
         factor: Value,
     },
+    DiagonalProduct {
+        factors: Vec<Value>,
+        negated: bool,
+    },
     Explanation(String),
 }
 

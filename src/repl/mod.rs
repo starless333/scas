@@ -5,7 +5,7 @@ use std::fs;
 use std::io::{self, BufRead, Write};
 use std::num::NonZeroU64;
 
-const HELP: &str = "Commands:\n  :help              show this help\n  :precision N       set decimal division precision\n  :load PATH         execute a source file\n  :definitions       list current names\n  :history           show session inputs\n  :reset             clear session definitions\n  :quit, :exit       leave the REPL\n  :clear             clear the screen\n  :plot EXPR         draw a graph; see :plot with no arguments\n\nTry:\n  f(x) = x^3 - 3x + 1\n  derivative(f(x), x)\n  solve(x^2 - 5x + 6, x)\n  factor(x^3 - y^3)\n  let A = [1, 2; 3, 4];\n  A[1, 0]";
+const HELP: &str = "Commands:\n  :help              show this help\n  :precision N       set decimal division precision\n  :load PATH         execute a source file\n  :definitions       list current names\n  :history           show session inputs\n  :reset             clear session definitions\n  :quit, :exit       leave the REPL\n  :clear             clear the screen\n  :plot EXPR         draw a terminal graph\n  :plot svg EXPR     emit SVG; see :plot with no arguments\n\nTry:\n  f(x) = x^3 - 3x + 1\n  derivative(f(x), x)\n  solve(x^2 - 5x + 6, x)\n  factor(x^3 - y^3)\n  let A = [1, 2; 3, 4];\n  A[1, 0]";
 
 /// Width (columns) and height (rows) of the terminal plot drawing. Sized for
 /// an 80×24 terminal; the drawing plus its labels fits inside 24 rows.
@@ -14,16 +14,18 @@ const PLOT_ASCII_WIDTH: usize = 64;
 #[allow(dead_code)]
 const PLOT_ASCII_HEIGHT: usize = 17;
 
-const PLOT_HELP: &str = "usage: :plot EXPRESSION[, EXPRESSION…] [from A to B] [> FILE]\n\n\
+const PLOT_HELP: &str =
+    "usage: :plot [terminal|svg] EXPRESSION[, EXPRESSION…] [from A to B] [> FILE]\n\n\
   The independent variable is x. Multiple expressions draw together in\n\
   distinct characters. With no range the window is -10 to 10.\n\
-  Without a redirect the graph is drawn in the terminal; a file ending\n\
-  in .svg receives a vector image, and any other file receives the\n\
-  same drawing shown here.\n\n\
+  Terminal output is the default. The svg mode emits vector markup to\n\
+  stdout or to FILE when redirected. A file ending in .svg also receives\n\
+  a vector image in the default mode.\n\n\
 examples:\n\
   :plot sin(x)\n\
+  :plot svg sin(x) > graph.svg\n\
   :plot x^2 - 2x from -5 to 5\n\
-  :plot sin(x), cos(x) from -2*pi to 2*pi\n\
+  :plot sin(x), cos(x) from -6 to 6\n\
   :plot sin(x), cos(x) > graph.svg\n\
   :plot f(t) = 2t + 1 from 0 to 10\n\n\
   Plots use the session's definitions and restore any existing value\n\
@@ -96,7 +98,11 @@ where
                         if let Some(path) = &outcome.wrote_file {
                             writeln!(output, "wrote {}", path.display())?;
                         } else {
-                            writeln!(output, "{}", outcome.ascii)?;
+                            writeln!(
+                                output,
+                                "{}",
+                                outcome.svg.as_deref().unwrap_or(&outcome.ascii)
+                            )?;
                         }
                     }
                     Err(message) => writeln!(output, "error: {message}")?,
@@ -351,6 +357,18 @@ mod tests {
         // The unbound-function case reports a clean error.
         assert!(output.contains("error:"), "{output}");
         assert!(output.contains("nope"), "{output}");
+    }
+
+    #[test]
+    fn repl_emits_svg_when_requested() {
+        let input = Cursor::new(":plot svg sin(x) from -3 to 3\n:quit\n");
+        let mut output = Vec::new();
+        run_with_io(input, &mut output, 40, 10).unwrap();
+        let output = String::from_utf8(output).unwrap();
+
+        assert!(output.contains("<svg"), "{output}");
+        assert!(output.contains("sin(x)"), "{output}");
+        assert!(output.contains("</svg>"), "{output}");
     }
 
     #[test]
