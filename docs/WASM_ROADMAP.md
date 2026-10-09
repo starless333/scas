@@ -10,7 +10,7 @@ available.
 
 Current status (2026-10-09): a local static browser build runs the shared SCAS
 core in a Web Worker and provides an egui source editor, clickable diagnostics,
-output, structured mathematical preview, graphing, examples, import/download,
+output, MathJax mathematical preview, graphing, examples, import/download,
 draft recovery through localStorage, and URL-hash sharing. Build with
 `bash scripts/build-web.sh`, then serve `web/` over HTTP. The Pages workflow
 builds and uploads this directory, but public deployment has not been verified.
@@ -29,7 +29,7 @@ boundaries determine the port.
 | Editor files | Workspace paths and std::fs | In-memory document, browser import/download, localStorage draft |
 | Execution | Shared SCAS library | Same library compiled to Wasm with the existing resource limits |
 | Live analysis and graph sampling | std::thread and channels | Web Worker messages with generation IDs; in-flight cancellation is pending |
-| Math preview | External LaTeX tools, then native fallback | Native structured renderer first; TeX download remains available |
+| Math preview | External LaTeX tools, then native fallback | MathJax 4 typesets document fragments in the browser; TeX download remains available |
 | PDF export | pdflatex process | Defer until a browser compiler or optional service is evaluated |
 | Themes and fonts | Bundled files plus host file loading | Embedded dark defaults; theme import is future work |
 | Window chrome | Native viewport actions | Browser-safe controls; no minimize/maximize/OS drag actions |
@@ -86,7 +86,7 @@ native-only commands absent from the web interface.
   IndexedDB. Add project-folder import only after single-file workflows are
   sound.
 - Keep local Computer Modern bitmap rendering on desktop. The browser's
-  structured preview is the initial rendering path; a browser PDF compiler
+  MathJax preview is the rendering path; a browser PDF compiler
   needs its own size, startup-time, and licensing review.
 - Move expensive analysis and graph sampling into a Web Worker. Preserve the
   GUI's generation IDs so stale results cannot replace newer edits, and use
