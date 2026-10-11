@@ -511,6 +511,70 @@ fn calculus_handles_general_derivatives_and_linear_substitution() {
 }
 
 #[test]
+fn integrals_of_constant_base_exponentials_and_rational_powers() {
+    assert_eq!(
+        output(
+            r#"
+            print(integral(2^x, x));
+            print(integral(2^(3x + 1), x));
+            print(integral(10^(-x), x));
+            print(integral((1/2)^x, x));
+            print(integral(1^x, x));
+            print(integral(1^(x^2), x));
+            print(integral(x^(1/2), x));
+            print(integral((2x + 1)^(1/2), x));
+            print(integral(x^(-1/2), x));
+            print(integral(0^x, x));
+            print(integral((-2)^x, x));
+            print(integral(2^(x^2), x));
+            "#,
+        ),
+        concat!(
+            "2 ^ x / ln(2)\n",
+            "2 ^ (3 * x + 1) / (3 * ln(2))\n",
+            "10 ^ -x / (-1 * ln(10))\n",
+            "1/2 ^ x / ln(1/2)\n",
+            "x\n",
+            "x\n",
+            "x ^ 3/2 / 3/2\n",
+            "(2 * x + 1) ^ 3/2 / 3/2 / 2\n",
+            "x ^ 1/2 / 1/2\n",
+            "integral(0 ^ x, x)\n",
+            "integral(-2 ^ x, x)\n",
+            "integral(2 ^ x ^ 2, x)\n",
+        ),
+    );
+}
+
+#[test]
+fn polynomial_times_constant_base_exponential_integrates_by_parts() {
+    let result = output(
+        r#"
+        print(integral(x * 2^x, x));
+        print(definite_integral(2^x, x, 0, 1));
+        "#,
+    );
+    assert_eq!(
+        result,
+        "-1 * (2 ^ x / ln(2) / ln(2)) + 2 ^ x / ln(2) * x\nln(2) ^ -1\n"
+    );
+}
+
+#[test]
+fn new_integral_rules_differentiate_back_to_the_integrand() {
+    assert_eq!(
+        output(
+            r#"
+            print(assert(abs(evalf(subs(derivative(integral(2^x, x), x) - 2^x, x, 2))) < 1/1000000000));
+            print(assert(abs(evalf(subs(derivative(integral(2^(3x + 1), x), x) - 2^(3x + 1), x, 1))) < 1/1000000000));
+            print(assert(abs(evalf(subs(derivative(integral(x^(1/2), x), x) - x^(1/2), x, 4))) < 1/1000000000));
+            "#,
+        ),
+        "true\ntrue\ntrue\n",
+    );
+}
+
+#[test]
 fn integration_by_parts_and_definite_symmetry() {
     assert_eq!(
         output(

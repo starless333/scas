@@ -7178,51 +7178,67 @@ impl<W: Write> Interpreter<W> {
                 Div,
                 Rc::clone(right),
             ),
-            // `e^u` is the operator form of `exp(u)`. Keep the user's
-            // notation in the primitive while applying the same affine
-            // substitution rule as the `exp` builtin.
+            // For a positive constant base, d(a^u)/dx = a^u ln(a) u'.
+            // The base 1 is constant even when the exponent is not affine.
+            // Do not divide by ln(a) for unknown symbolic bases (which may
+            // equal 1), zero, or negative bases with branch-dependent powers.
             SymbolicExpr::Binary {
                 left,
                 op: Pow,
                 right,
-            } if matches!(left.as_ref(), SymbolicExpr::Constant(MathConstant::E)) => {
-                if let Some(coefficient) = Self::linear_coefficient(right, variable) {
-                    Self::symbolic_binary_raw(Rc::clone(expression), Div, coefficient)
-                } else {
-                    self.unevaluated_calculus(Builtin::Integral, expression, variable)
+            } if !Self::contains_variable(left, variable) => {
+                if Self::symbolic_is_one(left) {
+                    return Rc::new(SymbolicExpr::Variable(variable));
                 }
+                if self.supported_exponential_base(left) {
+                    if let Some(coefficient) = Self::linear_coefficient(right, variable) {
+                        let logarithm =
+                            if matches!(left.as_ref(), SymbolicExpr::Constant(MathConstant::E)) {
+                                Self::symbolic_integer(1)
+                            } else {
+                                Self::symbolic_call(Builtin::Ln, Rc::clone(left))
+                            };
+                        return Self::symbolic_binary_raw(
+                            Rc::clone(expression),
+                            Div,
+                            Self::symbolic_binary_raw(coefficient, Mul, logarithm),
+                        );
+                    }
+                }
+                self.unevaluated_calculus(Builtin::Integral, expression, variable)
             }
             SymbolicExpr::Binary {
                 left,
                 op: Pow,
                 right,
             } if Self::linear_coefficient(left, variable).is_some() => {
-                if let SymbolicExpr::Number(Number::Integer(exponent)) = right.as_ref() {
+                if let SymbolicExpr::Number(exponent) = right.as_ref() {
+                    let Some(exponent) = exponent.try_to_rational() else {
+                        return self.unevaluated_calculus(Builtin::Integral, expression, variable);
+                    };
                     let coefficient =
                         Self::linear_coefficient(left, variable).expect("guarded above");
-                    if exponent == &BigInt::from(-1) {
+                    if exponent == BigRational::from_integer(BigInt::from(-1)) {
                         return Self::symbolic_binary_raw(
                             Self::symbolic_call(Builtin::Ln, Rc::clone(left)),
                             Div,
                             coefficient,
                         );
                     }
-                    let next = exponent + BigInt::from(1);
+                    let next = exponent + BigRational::one();
+                    let next = Rc::new(SymbolicExpr::Number(Number::from_rational(next)));
                     return Self::symbolic_binary_raw(
                         Self::symbolic_binary_raw(
-                            Self::symbolic_binary_raw(
-                                Rc::clone(left),
-                                Pow,
-                                Rc::new(SymbolicExpr::Number(Number::Integer(next.clone()))),
-                            ),
+                            Self::symbolic_binary_raw(Rc::clone(left), Pow, Rc::clone(&next)),
                             Div,
-                            Rc::new(SymbolicExpr::Number(Number::Integer(next))),
+                            next,
                         ),
                         Div,
                         coefficient,
                     );
+                } else {
+                    self.unevaluated_calculus(Builtin::Integral, expression, variable)
                 }
-                self.unevaluated_calculus(Builtin::Integral, expression, variable)
             }
             SymbolicExpr::Binary {
                 left,
@@ -7490,11 +7506,21 @@ impl<W: Write> Interpreter<W> {
         }
     }
 
+    fn supported_exponential_base(&self, base: &SymbolicExpr) -> bool {
+        match base {
+            SymbolicExpr::Number(number) => !number.is_one() && self.symbolic_positive(base),
+            SymbolicExpr::Constant(
+                MathConstant::E | MathConstant::Pi | MathConstant::Tau | MathConstant::Phi,
+            ) => true,
+            _ => false,
+        }
+    }
+
     /// Integrates `polynomial * kernel(linear)` products with the tabular
     /// by-parts rule: `∫ p·g = Σ_j (−1)^j · p^(j) · V_j` where `V_j` is the
     /// `j`-th antiderivative of `g`. Kernels are restricted to `exp`, `sin`,
-    /// `cos`, `sinh`, and `cosh` of a linear argument — the families closed
-    /// under repeated integration — so every `V_j` stays inside the rule set
+    /// `cos`, `sinh`, `cosh`, and positive-base powers of a linear argument —
+    /// families closed under repeated integration — so every `V_j` stays inside the rule set
     /// and the expansion terminates after one step per polynomial degree.
     /// Returns `None` (leaving the integral unevaluated) for any other shape.
     fn integrate_by_parts(
@@ -7525,6 +7551,18 @@ impl<W: Write> Interpreter<W> {
                                 | Builtin::Cosh
                         )
                         && Self::linear_coefficient(&args[0], variable).is_some() =>
+                {
+                    if kernel.is_some() {
+                        return None;
+                    }
+                    kernel = Some(Rc::clone(&factor));
+                }
+                SymbolicExpr::Binary {
+                    left,
+                    op: BinaryOp::Pow,
+                    right,
+                } if self.supported_exponential_base(left)
+                    && Self::linear_coefficient(right, variable).is_some() =>
                 {
                     if kernel.is_some() {
                         return None;
@@ -9512,6 +9550,10 @@ impl<W: Write> Interpreter<W> {
                 function: Builtin::Exp,
                 ..
             } => true,
+            SymbolicExpr::Call {
+                function: Builtin::Ln | Builtin::Log,
+                args,
+            } => args.len() == 1 && self.supported_exponential_base(&args[0]),
             SymbolicExpr::Call {
                 function: Builtin::Sqrt,
                 args,
