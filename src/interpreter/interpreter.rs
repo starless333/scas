@@ -7,18 +7,20 @@ use crate::ast::statement::{Statement, StatementKind};
 use crate::ast::unary_op::UnaryOp;
 use crate::interpreter::environment::{Env, Environment};
 use crate::interpreter::flow::{ExecResult, Flow};
+use crate::interpreter::numeric_linear::{self, C64};
 use crate::interpreter::polynomial::Polynomial;
 use crate::interpreter::value::{
     Builtin, ConstraintFact, DerivationStep, StepOperation, SymbolicExpr, UserFunction, Value,
 };
 use crate::lexer::symbol::{Symbol, SymbolTable};
 use crate::number::{BinaryMathFunction, ComplexNumber, MathConstant, Number, UnaryMathFunction};
+use crate::runtime_io::{self, RuntimeIo};
 use crate::{Limits, RuntimeError};
 use bigdecimal::{BigDecimal, Context};
 use num_bigint::BigInt;
 use num_integer::Integer;
 use num_rational::BigRational;
-use num_traits::{One, Signed, ToPrimitive, Zero};
+use num_traits::{FromPrimitive, One, Signed, ToPrimitive, Zero};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::io::Write;
@@ -111,6 +113,9 @@ pub struct Interpreter<W: Write> {
     /// assumption sets: equality facts substitute directly, inequality
     /// facts sharpen the range predicates the simplifier already consults.
     constraints: RefCell<Vec<ConstraintFact>>,
+    io: Rc<dyn RuntimeIo>,
+    importing: RefCell<HashSet<String>>,
+    imported: RefCell<HashSet<String>>,
 }
 
 impl<W: Write> Interpreter<W> {
@@ -119,6 +124,15 @@ impl<W: Write> Interpreter<W> {
     }
 
     pub fn with_limits(symbols: SymbolTable, output: W, limits: Limits) -> Self {
+        Self::with_limits_and_io(symbols, output, limits, runtime_io::default_io())
+    }
+
+    pub fn with_limits_and_io(
+        symbols: SymbolTable,
+        output: W,
+        limits: Limits,
+        io: Rc<dyn RuntimeIo>,
+    ) -> Self {
         let mut interpreter = Interpreter {
             globals: Environment::new(),
             symbols,
@@ -135,6 +149,9 @@ impl<W: Write> Interpreter<W> {
             integer_symbols: RefCell::new(HashSet::new()),
             real_symbols: RefCell::new(HashSet::new()),
             constraints: RefCell::new(Vec::new()),
+            io,
+            importing: RefCell::new(HashSet::new()),
+            imported: RefCell::new(HashSet::new()),
         };
         interpreter.install_standard_library();
         interpreter
@@ -416,9 +433,9 @@ impl<W: Write> Interpreter<W> {
             }
             if matches!(
                 builtin,
-                Builtin::Solve | Builtin::Derivative | Builtin::Integral
+                Builtin::Solve | Builtin::Derivative | Builtin::Integral | Builtin::Limit
             ) {
-                return Ok(result);
+                return self.documented_calculus_steps(builtin, &values, result);
             }
             let mut steps = Vec::with_capacity(2);
             if !values.is_empty() {
@@ -436,6 +453,178 @@ impl<W: Write> Interpreter<W> {
             Ok(Self::derivation(result, steps))
         });
         value.map_err(|flow| self.describe_top_level(flow))
+    }
+
+    fn documented_calculus_steps(
+        &self,
+        builtin: Builtin,
+        args: &[Value],
+        result: Value,
+    ) -> ExecResult<Value> {
+        let expression = self.value_to_symbolic(args[0].clone())?;
+        let mut steps = vec![DerivationStep {
+            value: args[0].clone(),
+            operation: StepOperation::Start,
+        }];
+        match builtin {
+            Builtin::Derivative => {
+                let variable = self.calculus_variable(&args[1], "derivative")?;
+                let raw = self.derivative_symbolic(&expression, variable);
+                let rule = match expression.as_ref() {
+                    SymbolicExpr::Binary {
+                        op: BinaryOp::Add | BinaryOp::Sub,
+                        ..
+                    } => "sum rule",
+                    SymbolicExpr::Binary {
+                        op: BinaryOp::Mul, ..
+                    } => "product rule",
+                    SymbolicExpr::Binary {
+                        op: BinaryOp::Div, ..
+                    } => "quotient rule",
+                    SymbolicExpr::Binary {
+                        op: BinaryOp::Pow, ..
+                    } => "power or chain rule",
+                    SymbolicExpr::Call { .. } => "chain rule",
+                    _ => "differentiate",
+                };
+                steps.push(DerivationStep {
+                    value: Self::symbolic_value(raw),
+                    operation: StepOperation::Explanation(rule.to_owned()),
+                });
+            }
+            Builtin::Integral => {
+                let variable = self.calculus_variable(&args[1], "integral")?;
+                if let Ok(antiderivative) = self.value_to_symbolic(result.clone()) {
+                    if Self::is_closed_antiderivative(&antiderivative) {
+                        if self.integrate_by_parts(&expression, variable).is_some() {
+                            let mut factors = Vec::new();
+                            Self::mul_factors(&expression, &mut factors);
+                            let u = factors.iter().find(|factor| {
+                                Self::contains_variable(factor, variable)
+                                    && !matches!(factor.as_ref(), SymbolicExpr::Call { .. })
+                            });
+                            let dv = factors.iter().find(|factor| {
+                                matches!(factor.as_ref(), SymbolicExpr::Call { .. })
+                            });
+                            if let (Some(u), Some(dv)) = (u, dv) {
+                                let du = self.simplify_symbolic_tree(
+                                    &self.derivative_symbolic(u, variable),
+                                )?;
+                                let v = self.simplify_symbolic_tree(
+                                    &self.integral_symbolic(dv, variable),
+                                )?;
+                                for (label, value) in [
+                                    ("by parts: u", Rc::clone(u)),
+                                    ("by parts: du", du),
+                                    ("by parts: v", v),
+                                ] {
+                                    steps.push(DerivationStep {
+                                        value: Self::symbolic_value(value),
+                                        operation: StepOperation::Explanation(label.to_owned()),
+                                    });
+                                }
+                            }
+                        } else if let SymbolicExpr::Call { args, .. } = expression.as_ref() {
+                            if let Some(inner) = args.first().filter(|inner| Self::contains_variable(inner, variable)
+                                && !matches!(inner.as_ref(), SymbolicExpr::Variable(found) if *found == variable)) {
+                                steps.push(DerivationStep {
+                                    value: Self::symbolic_value(Rc::clone(inner)),
+                                    operation: StepOperation::Explanation("substitution: u".to_owned()),
+                                });
+                                steps.push(DerivationStep {
+                                    value: Self::symbolic_value(self.simplify_symbolic_tree(&self.derivative_symbolic(inner, variable))?),
+                                    operation: StepOperation::Explanation("substitution: du".to_owned()),
+                                });
+                            }
+                        }
+                        let check = self.derivative_symbolic(&antiderivative, variable);
+                        let check = self.simplify_symbolic_tree(&check)?;
+                        steps.push(DerivationStep {
+                            value: Self::symbolic_value(check),
+                            operation: StepOperation::Explanation(
+                                "differentiate to check".to_owned(),
+                            ),
+                        });
+                    }
+                }
+            }
+            Builtin::Solve => {
+                if let Some(polynomial) = Polynomial::from_expression(&expression, &self.symbols) {
+                    let factored = polynomial.factored_expression();
+                    if !factored.equals(&expression) {
+                        steps.push(DerivationStep {
+                            value: Self::symbolic_value(factored),
+                            operation: StepOperation::Explanation("factor the equation".to_owned()),
+                        });
+                    }
+                }
+            }
+            Builtin::Limit => {
+                if let Ok(point) = self.value_to_symbolic(args[2].clone()) {
+                    let variable = self.calculus_variable(&args[1], "limit")?;
+                    let substituted = Self::substitute_symbolic(&expression, variable, &point);
+                    let indeterminate = if let SymbolicExpr::Binary {
+                        left,
+                        op: BinaryOp::Div,
+                        right,
+                    } = expression.as_ref()
+                    {
+                        let left_at_point = self.simplify_symbolic_tree(
+                            &Self::substitute_symbolic(left, variable, &point),
+                        )?;
+                        let right_at_point = self.simplify_symbolic_tree(
+                            &Self::substitute_symbolic(right, variable, &point),
+                        )?;
+                        if Self::symbolic_is_zero(&left_at_point)
+                            && Self::symbolic_is_zero(&right_at_point)
+                        {
+                            let derivative_quotient = Self::symbolic_binary_raw(
+                                self.derivative_symbolic(left, variable),
+                                BinaryOp::Div,
+                                self.derivative_symbolic(right, variable),
+                            );
+                            steps.push(DerivationStep {
+                                value: Self::symbolic_value(Self::symbolic_binary_raw(
+                                    left_at_point,
+                                    BinaryOp::Div,
+                                    right_at_point,
+                                )),
+                                operation: StepOperation::Explanation(
+                                    "direct substitution".to_owned(),
+                                ),
+                            });
+                            steps.push(DerivationStep {
+                                value: Self::symbolic_value(derivative_quotient),
+                                operation: StepOperation::Explanation("L'Hopital".to_owned()),
+                            });
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+                    if !indeterminate {
+                        if let Ok(simplified) = self.simplify_symbolic_tree(&substituted) {
+                            steps.push(DerivationStep {
+                                value: Self::symbolic_value(simplified),
+                                operation: StepOperation::Explanation(
+                                    "direct substitution".to_owned(),
+                                ),
+                            });
+                        }
+                    }
+                }
+            }
+            _ => unreachable!(),
+        }
+        steps.push(DerivationStep {
+            value: result.clone(),
+            operation: StepOperation::Explanation(
+                Self::builtin_derivation_explanation(builtin).to_owned(),
+            ),
+        });
+        Ok(Self::derivation(result, steps))
     }
 
     /// A concise mathematical description for the generic derivation step.
@@ -524,13 +713,17 @@ impl<W: Write> Interpreter<W> {
             Builtin::DefiniteIntegral => r"\text{evaluate an antiderivative at the bounds}",
             Builtin::Limit => r"\text{substitute, simplify, and resolve indeterminate forms}",
             Builtin::Series => r"\text{assemble Taylor coefficients from successive derivatives}",
+            Builtin::SeriesRemainder => r"\text{record the asymptotic remainder order}",
             Builtin::Sum => r"\text{evaluate and add the indexed terms}",
             Builtin::Product => r"\text{evaluate and multiply the indexed factors}",
             Builtin::MultipleIntegral => r"\text{integrate successively in the listed variables}",
             Builtin::Dsolve => r"\text{solve the characteristic or integrating-factor equation}",
+            Builtin::DsolveSeparable => r"\text{separate variables and integrate each side}",
             Builtin::CharacteristicPolynomial => r"\text{expand }\det(\lambda I-A)",
             Builtin::Eigenvalues => r"\text{solve the characteristic equation}",
             Builtin::Eigenvectors => r"\text{solve }(A-\lambda I)v=0",
+            Builtin::Eigenpairs => r"\text{pair each eigenvalue with its eigenvector}",
+            Builtin::Svd => r"\text{factor a real matrix into }U\Sigma V^{T}",
             Builtin::Lu | Builtin::LuSteps => r"\text{apply Doolittle elimination}",
             Builtin::Qr | Builtin::QrSteps => r"\text{apply modified Gram--Schmidt}",
             Builtin::Cholesky | Builtin::CholeskySteps => {
@@ -551,6 +744,23 @@ impl<W: Write> Interpreter<W> {
             Builtin::Discriminant => r"\text{compute the polynomial discriminant}",
             Builtin::PolynomialGcd => r"\text{apply the polynomial Euclidean algorithm}",
             Builtin::PolynomialDivRem => r"\text{perform polynomial long division}",
+            Builtin::TypeOf => r"\text{inspect the value type}",
+            Builtin::Help => r"\text{look up the builtin signature}",
+            Builtin::Assert => r"\text{verify the claim}",
+            Builtin::VerifyChain => r"\text{verify each adjacent equality}",
+            Builtin::Rewrite => r"\text{apply a user-defined expression pattern}",
+            Builtin::SolvePeriodic => r"\text{solve over integer-indexed trigonometric families}",
+            Builtin::Format => r"\text{interpolate values into the string}",
+            Builtin::Map => r"\text{construct the key--value map}",
+            Builtin::Put => r"\text{set a key in a new map value}",
+            Builtin::Keys => r"\text{list the map keys}",
+            Builtin::Values => r"\text{list the map values}",
+            Builtin::ReadText => r"\text{read a UTF-8 text file}",
+            Builtin::WriteText => r"\text{write a UTF-8 text file}",
+            Builtin::Input => r"\text{read a line of input}",
+            Builtin::Args => r"\text{list command-line arguments}",
+            Builtin::ReadJson => r"\text{parse a JSON file into SCAS values}",
+            Builtin::ReadCsv => r"\text{parse CSV rows into arrays}",
         }
     }
 
@@ -598,6 +808,47 @@ impl<W: Write> Interpreter<W> {
         }
     }
 
+    fn import_module(&mut self, path: &str) -> ExecResult<()> {
+        if self.imported.borrow().contains(path) {
+            return Ok(());
+        }
+        if !self.importing.borrow_mut().insert(path.to_owned()) {
+            return Err(self.error(format!("circular import of '{path}'")));
+        }
+        let result = (|| {
+            let source = self
+                .io
+                .read_text(path)
+                .map_err(|error| self.error(error.to_string()))?;
+            if source.chars().count() > self.limits.max_source_chars {
+                return Err(self.limit_error(format!("module '{path}' exceeds source size limit")));
+            }
+            let mut scanner =
+                crate::lexer::scanner::Scanner::with_symbols(&source, self.symbols.clone());
+            let tokens = scanner.scan_tokens().clone();
+            if let Some(error) = scanner.errors().first() {
+                return Err(self.error(format!("module '{path}': {error}")));
+            }
+            if tokens.len() > self.limits.max_tokens {
+                return Err(self.limit_error(format!("module '{path}' exceeds token limit")));
+            }
+            self.set_symbols(scanner.into_symbols());
+            let statements = crate::parser::Parser::new(tokens)
+                .parse()
+                .map_err(|error| self.error(format!("module '{path}': {error}")))?;
+            let globals = Rc::clone(&self.globals);
+            for statement in &statements {
+                self.execute(&globals, statement)?;
+            }
+            Ok(())
+        })();
+        self.importing.borrow_mut().remove(path);
+        if result.is_ok() {
+            self.imported.borrow_mut().insert(path.to_owned());
+        }
+        result
+    }
+
     fn undefined_variable(&self, name: Symbol) -> Flow {
         self.error(format!(
             "undefined variable '{}'",
@@ -611,6 +862,7 @@ impl<W: Write> Interpreter<W> {
         self.current_span = Some(stmt.span);
         self.tick()?;
         match &stmt.kind {
+            StatementKind::Import(path) => self.import_module(path),
             StatementKind::Let { name, value } => {
                 let v = match value {
                     Some(e) => self.evaluate(env, e)?,
@@ -804,6 +1056,18 @@ impl<W: Write> Interpreter<W> {
             ExprKind::Index { target, index } => {
                 let target = self.evaluate(env, target)?;
                 let index = self.evaluate(env, index)?;
+                if let Value::Map(entries) = target {
+                    return entries
+                        .iter()
+                        .find(|(key, _)| key.equals(&index))
+                        .map(|(_, value)| value.clone())
+                        .ok_or_else(|| {
+                            self.error(format!(
+                                "map key '{}' was not found",
+                                self.stringify(&index)
+                            ))
+                        });
+                }
                 let Value::Number(Number::Integer(index)) = index else {
                     return Err(self.error("array index must be an integer"));
                 };
@@ -927,6 +1191,84 @@ impl<W: Write> Interpreter<W> {
         Ok(Value::Nil)
     }
 
+    fn json_to_value(json: serde_json::Value) -> Result<Value, String> {
+        Ok(match json {
+            serde_json::Value::Null => Value::Nil,
+            serde_json::Value::Bool(value) => Value::Bool(value),
+            serde_json::Value::String(value) => Value::Str(value),
+            serde_json::Value::Number(value) => {
+                let raw = value.to_string();
+                if let Some(integer) = BigInt::parse_bytes(raw.as_bytes(), 10) {
+                    Value::Number(Number::Integer(integer))
+                } else {
+                    Value::Number(Number::Decimal(
+                        raw.parse::<BigDecimal>()
+                            .map_err(|error| error.to_string())?,
+                    ))
+                }
+            }
+            serde_json::Value::Array(items) => Value::Array(Rc::new(
+                items
+                    .into_iter()
+                    .map(Self::json_to_value)
+                    .collect::<Result<Vec<_>, _>>()?,
+            )),
+            serde_json::Value::Object(fields) => Value::Map(Rc::new(
+                fields
+                    .into_iter()
+                    .map(|(key, value)| Ok((Value::Str(key), Self::json_to_value(value)?)))
+                    .collect::<Result<Vec<_>, String>>()?,
+            )),
+        })
+    }
+
+    fn csv_to_value(source: &str) -> Result<Value, String> {
+        if source.is_empty() {
+            return Ok(Value::Array(Rc::new(Vec::new())));
+        }
+        let mut rows = Vec::new();
+        let mut row = Vec::new();
+        let mut field = String::new();
+        let mut chars = source.chars().peekable();
+        let mut quoted = false;
+        while let Some(ch) = chars.next() {
+            if quoted {
+                if ch == '"' {
+                    if chars.peek() == Some(&'"') {
+                        chars.next();
+                        field.push('"');
+                    } else {
+                        quoted = false;
+                    }
+                } else {
+                    field.push(ch);
+                }
+            } else {
+                match ch {
+                    '"' if field.is_empty() => quoted = true,
+                    ',' => {
+                        row.push(Value::Str(std::mem::take(&mut field)));
+                    }
+                    '\n' => {
+                        row.push(Value::Str(std::mem::take(&mut field)));
+                        rows.push(Value::Array(Rc::new(std::mem::take(&mut row))));
+                    }
+                    '\r' if chars.peek() == Some(&'\n') => {}
+                    '"' => return Err("unexpected quote in CSV field".to_owned()),
+                    _ => field.push(ch),
+                }
+            }
+        }
+        if quoted {
+            return Err("unterminated quoted CSV field".to_owned());
+        }
+        if !field.is_empty() || !row.is_empty() || !source.ends_with('\n') {
+            row.push(Value::Str(field));
+            rows.push(Value::Array(Rc::new(row)));
+        }
+        Ok(Value::Array(Rc::new(rows)))
+    }
+
     fn call_builtin(&self, builtin: Builtin, args: Vec<Value>) -> ExecResult<Value> {
         let (minimum, maximum) = match builtin {
             Builtin::Log => (1, 2),
@@ -955,15 +1297,26 @@ impl<W: Write> Interpreter<W> {
             | Builtin::DotSteps
             | Builtin::CrossSteps => (2, 2),
             Builtin::Subs
+            | Builtin::Rewrite
+            | Builtin::SolvePeriodic
             | Builtin::Resultant
             | Builtin::PolynomialGcd
             | Builtin::PolynomialDivRem => (3, 3),
             Builtin::Gradient | Builtin::Jacobian | Builtin::Hessian => (2, 2),
             Builtin::DefiniteIntegral | Builtin::Sum | Builtin::Product => (4, 4),
             Builtin::Limit => (3, 4),
-            Builtin::Series => (4, 4),
+            Builtin::Series => (4, 5),
             Builtin::MultipleIntegral => (2, 2),
             Builtin::Dsolve => (2, 4),
+            Builtin::DsolveSeparable => (5, 5),
+            Builtin::Assert => (1, 2),
+            Builtin::VerifyChain => (1, 1),
+            Builtin::Eigenvalues | Builtin::Eigenvectors | Builtin::Eigenpairs => (1, 2),
+            Builtin::Format => (1, 16),
+            Builtin::WriteText => (2, 2),
+            Builtin::Input => (0, 1),
+            Builtin::Args => (0, 0),
+            Builtin::Put => (3, 3),
             Builtin::Assume => (1, 1),
             Builtin::ForgetAssumptions => (0, 0),
             _ => (1, 1),
@@ -979,6 +1332,255 @@ impl<W: Write> Interpreter<W> {
                 builtin.name(),
                 args.len()
             )));
+        }
+
+        match builtin {
+            Builtin::ReadText => {
+                let Value::Str(path) = &args[0] else {
+                    return Err(self.error("read_text path must be a string"));
+                };
+                return self
+                    .io
+                    .read_text(path)
+                    .map(Value::Str)
+                    .map_err(|error| self.error(error.to_string()));
+            }
+            Builtin::WriteText => {
+                let (Value::Str(path), Value::Str(content)) = (&args[0], &args[1]) else {
+                    return Err(self.error("write_text expects a path and text strings"));
+                };
+                return self
+                    .io
+                    .write_text(path, content)
+                    .map(|()| Value::Nil)
+                    .map_err(|error| self.error(error.to_string()));
+            }
+            Builtin::Input => {
+                let prompt = match args.first() {
+                    None => "",
+                    Some(Value::Str(prompt)) => prompt.as_str(),
+                    _ => return Err(self.error("input prompt must be a string")),
+                };
+                return self
+                    .io
+                    .input(prompt)
+                    .map(Value::Str)
+                    .map_err(|error| self.error(error.to_string()));
+            }
+            Builtin::Args => {
+                return Ok(Value::Array(Rc::new(
+                    self.io.args().into_iter().map(Value::Str).collect(),
+                )))
+            }
+            Builtin::ReadJson => {
+                let Value::Str(path) = &args[0] else {
+                    return Err(self.error("read_json path must be a string"));
+                };
+                let source = self
+                    .io
+                    .read_text(path)
+                    .map_err(|error| self.error(error.to_string()))?;
+                if source.chars().count() > self.limits.max_source_chars {
+                    return Err(self.limit_error("JSON file exceeds source size limit"));
+                }
+                let parsed: serde_json::Value = serde_json::from_str(&source)
+                    .map_err(|error| self.error(format!("invalid JSON in '{path}': {error}")))?;
+                return Self::json_to_value(parsed).map_err(|error| self.error(error));
+            }
+            Builtin::ReadCsv => {
+                let Value::Str(path) = &args[0] else {
+                    return Err(self.error("read_csv path must be a string"));
+                };
+                let source = self
+                    .io
+                    .read_text(path)
+                    .map_err(|error| self.error(error.to_string()))?;
+                if source.chars().count() > self.limits.max_source_chars {
+                    return Err(self.limit_error("CSV file exceeds source size limit"));
+                }
+                return Self::csv_to_value(&source).map_err(|error| self.error(error));
+            }
+            Builtin::TypeOf => return Ok(Value::Str(args[0].type_name().to_owned())),
+            Builtin::Help => {
+                let name = match &args[0] {
+                    Value::Builtin(builtin) => builtin.name(),
+                    Value::Str(name) => name.as_str(),
+                    _ => return Err(self.error("help expects a builtin function or its name")),
+                };
+                let Some((_, found)) = Builtin::ALL
+                    .iter()
+                    .find(|(candidate, _)| *candidate == name)
+                else {
+                    return Err(self.error(format!("unknown builtin '{name}'")));
+                };
+                let signature = match found {
+                    Builtin::Limit => "limit(expression, variable, point[, side])",
+                    Builtin::Series => "series(expression, variable, point, order[, \"O\"])",
+                    Builtin::Eigenvalues | Builtin::Eigenvectors | Builtin::Eigenpairs => {
+                        "(matrix[, order])"
+                    }
+                    Builtin::Svd => "svd(matrix)",
+                    Builtin::Assert => "assert(condition[, message])",
+                    Builtin::VerifyChain => "verify_chain([step1, step2, ...])",
+                    Builtin::Rewrite => "rewrite(expression, pattern, replacement)",
+                    Builtin::SolvePeriodic => "solve_periodic(expression, variable, parameter)",
+                    Builtin::DsolveSeparable => "dsolve_separable(f, g, x, y, constant)",
+                    Builtin::TypeOf => "type_of(value)",
+                    Builtin::ReadText => "read_text(path)",
+                    Builtin::WriteText => "write_text(path, content)",
+                    Builtin::Input => "input([prompt])",
+                    Builtin::Args => "args()",
+                    Builtin::ReadJson => "read_json(path)",
+                    Builtin::ReadCsv => "read_csv(path)",
+                    _ => "see docs/builtins.html",
+                };
+                return Ok(Value::Str(format!("{name}: {signature}")));
+            }
+            Builtin::Assert => {
+                if args[0].equals(&Value::Bool(true)) {
+                    return Ok(Value::Bool(true));
+                }
+                let message = if args.len() == 2 {
+                    let Value::Str(message) = &args[1] else {
+                        return Err(self.error("assert message must be a string"));
+                    };
+                    message.as_str()
+                } else {
+                    "claim evaluated to false or could not be proved"
+                };
+                return Err(self.error(format!("assertion failed: {message}")));
+            }
+            Builtin::VerifyChain => {
+                let Value::Array(steps) = &args[0] else {
+                    return Err(self.error("verify_chain expects an array of expressions"));
+                };
+                if steps.len() < 2 {
+                    return Err(self.error("verify_chain requires at least two steps"));
+                }
+                for (index, pair) in steps.windows(2).enumerate() {
+                    if !self.chain_values_equivalent(&pair[0], &pair[1])? {
+                        return Err(self.error(format!(
+                            "equation chain fails at step {} -> {}",
+                            index + 1,
+                            index + 2
+                        )));
+                    }
+                }
+                return Ok(Value::Bool(true));
+            }
+            Builtin::Rewrite => {
+                let expression = self.value_to_symbolic(args[0].clone())?;
+                let pattern = self.value_to_symbolic(args[1].clone())?;
+                let replacement = self.value_to_symbolic(args[2].clone())?;
+                let rewritten = self.rewrite_symbolic(&expression, &pattern, &replacement)?;
+                return Ok(Self::symbolic_value(rewritten));
+            }
+            Builtin::SolvePeriodic => {
+                let expression = self.value_to_symbolic(args[0].clone())?;
+                let variable = self.calculus_variable(&args[1], "solve_periodic")?;
+                let parameter = self.calculus_variable(&args[2], "solve_periodic")?;
+                if variable == parameter {
+                    return Err(
+                        self.error("solve_periodic parameter must differ from the solved variable")
+                    );
+                }
+                return self.solve_periodic(&expression, variable, parameter);
+            }
+            Builtin::Format => {
+                let Value::Str(template) = &args[0] else {
+                    return Err(self.error("format template must be a string"));
+                };
+                let mut result = String::new();
+                let mut chars = template.chars().peekable();
+                let mut values = args[1..].iter();
+                while let Some(ch) = chars.next() {
+                    match (ch, chars.peek()) {
+                        ('{', Some('{')) => {
+                            chars.next();
+                            result.push('{');
+                        }
+                        ('}', Some('}')) => {
+                            chars.next();
+                            result.push('}');
+                        }
+                        ('{', Some('}')) => {
+                            chars.next();
+                            let Some(value) = values.next() else {
+                                return Err(self.error("format has more placeholders than values"));
+                            };
+                            result.push_str(&self.stringify(value));
+                        }
+                        ('{' | '}', _) => {
+                            return Err(
+                                self.error("format braces must be {} or escaped as {{ and }}")
+                            )
+                        }
+                        _ => result.push(ch),
+                    }
+                }
+                if values.next().is_some() {
+                    return Err(self.error("format has more values than placeholders"));
+                }
+                return Ok(Value::Str(result));
+            }
+            Builtin::Map => {
+                let Value::Array(pairs) = &args[0] else {
+                    return Err(self.error("map expects an array of [key, value] pairs"));
+                };
+                let mut entries: Vec<(Value, Value)> = Vec::new();
+                for pair in pairs.iter() {
+                    let Value::Array(items) = pair else {
+                        return Err(self.error("map entries must be [key, value] pairs"));
+                    };
+                    if items.len() != 2 {
+                        return Err(self.error("map entries must have exactly two values"));
+                    }
+                    if !matches!(&items[0], Value::Str(_) | Value::Number(_) | Value::Bool(_)) {
+                        return Err(self.error("map keys must be strings, numbers, or booleans"));
+                    }
+                    if let Some((_, value)) =
+                        entries.iter_mut().find(|(key, _)| key.equals(&items[0]))
+                    {
+                        *value = items[1].clone();
+                    } else {
+                        entries.push((items[0].clone(), items[1].clone()));
+                    }
+                }
+                return Ok(Value::Map(Rc::new(entries)));
+            }
+            Builtin::Put => {
+                let Value::Map(existing) = &args[0] else {
+                    return Err(self.error("put expects a map as its first argument"));
+                };
+                if !matches!(&args[1], Value::Str(_) | Value::Number(_) | Value::Bool(_)) {
+                    return Err(self.error("map keys must be strings, numbers, or booleans"));
+                }
+                let mut entries = existing.as_ref().clone();
+                if let Some((_, value)) = entries.iter_mut().find(|(key, _)| key.equals(&args[1])) {
+                    *value = args[2].clone();
+                } else {
+                    entries.push((args[1].clone(), args[2].clone()));
+                }
+                return Ok(Value::Map(Rc::new(entries)));
+            }
+            Builtin::Keys | Builtin::Values => {
+                let Value::Map(entries) = &args[0] else {
+                    return Err(self.error(format!("{} expects a map", builtin.name())));
+                };
+                return Ok(Value::Array(Rc::new(
+                    entries
+                        .iter()
+                        .map(|(key, value)| {
+                            if builtin == Builtin::Keys {
+                                key.clone()
+                            } else {
+                                value.clone()
+                            }
+                        })
+                        .collect(),
+                )));
+            }
+            _ => {}
         }
 
         if matches!(
@@ -1008,6 +1610,8 @@ impl<W: Write> Interpreter<W> {
                 | Builtin::CharacteristicPolynomial
                 | Builtin::Eigenvalues
                 | Builtin::Eigenvectors
+                | Builtin::Eigenpairs
+                | Builtin::Svd
                 | Builtin::Lu
                 | Builtin::Qr
                 | Builtin::Cholesky
@@ -1037,6 +1641,7 @@ impl<W: Write> Interpreter<W> {
                 | Builtin::Product
                 | Builtin::MultipleIntegral
                 | Builtin::Dsolve
+                | Builtin::DsolveSeparable
         ) {
             return self.call_calculus_tool(builtin, args);
         }
@@ -1701,8 +2306,10 @@ impl<W: Write> Interpreter<W> {
                     value => Ok(value),
                 }
             }
-            Builtin::Eigenvalues => self.eigenvalues_value(&args[0]),
-            Builtin::Eigenvectors => self.eigenvectors_value(&args[0]),
+            Builtin::Eigenvalues => self.ordered_eigenvalues_value(&args[0], args.get(1)),
+            Builtin::Eigenvectors => self.eigenvectors_value(&args[0], args.get(1)),
+            Builtin::Eigenpairs => self.eigenpairs_value(&args[0], args.get(1)),
+            Builtin::Svd => self.svd_value(&args[0]),
             Builtin::Lu | Builtin::LuSteps => {
                 let matrix = self.square_matrix(&args[0], builtin.name())?;
                 let (lower, upper) = self.lu_decomposition(matrix)?;
@@ -1854,6 +2461,138 @@ impl<W: Write> Interpreter<W> {
             result: Rc::new(result),
             steps: Rc::new(steps),
         }
+    }
+
+    /// Prove a chain link with exact polynomial arithmetic. Expressions outside
+    /// that domain must have the same symbolic tree; sampling would accept
+    /// false identities and cancellation can silently change a domain.
+    fn chain_values_equivalent(&self, left: &Value, right: &Value) -> ExecResult<bool> {
+        if left.equals(right) {
+            return Ok(true);
+        }
+        if let (Value::Array(left), Value::Array(right)) = (left, right) {
+            if left.len() != right.len() {
+                return Ok(false);
+            }
+            for (left, right) in left.iter().zip(right.iter()) {
+                if !self.chain_values_equivalent(left, right)? {
+                    return Ok(false);
+                }
+            }
+            return Ok(true);
+        }
+        let (Ok(left), Ok(right)) = (
+            self.value_to_symbolic(left.clone()),
+            self.value_to_symbolic(right.clone()),
+        ) else {
+            return Ok(false);
+        };
+        let (Some(left), Some(right)) = (
+            Polynomial::from_expression(&left, &self.symbols),
+            Polynomial::from_expression(&right, &self.symbols),
+        ) else {
+            return Ok(false);
+        };
+        Ok(left
+            .expanded_expression()
+            .equals(&right.expanded_expression()))
+    }
+
+    fn match_rewrite_pattern(
+        pattern: &SymbolicExpr,
+        expression: &SymbolicExpr,
+        bindings: &mut Vec<(Symbol, Rc<SymbolicExpr>)>,
+    ) -> bool {
+        match pattern {
+            SymbolicExpr::Variable(name) => {
+                if let Some((_, bound)) = bindings.iter().find(|(symbol, _)| symbol == name) {
+                    bound.equals(expression)
+                } else {
+                    bindings.push((*name, Rc::new(expression.clone())));
+                    true
+                }
+            }
+            SymbolicExpr::Unary { op, expr } => matches!(expression,
+                SymbolicExpr::Unary { op: other_op, expr: other }
+                    if op == other_op && Self::match_rewrite_pattern(expr, other, bindings)),
+            SymbolicExpr::Binary { left, op, right } => matches!(expression,
+                SymbolicExpr::Binary { left: other_left, op: other_op, right: other_right }
+                    if op == other_op
+                        && Self::match_rewrite_pattern(left, other_left, bindings)
+                        && Self::match_rewrite_pattern(right, other_right, bindings)),
+            SymbolicExpr::Call { function, args } => matches!(expression,
+                SymbolicExpr::Call { function: other_function, args: other_args }
+                    if function == other_function && args.len() == other_args.len()
+                        && args.iter().zip(other_args).all(|(a, b)| Self::match_rewrite_pattern(a, b, bindings))),
+            _ => pattern.equals(expression),
+        }
+    }
+
+    fn instantiate_rewrite(
+        &self,
+        template: &SymbolicExpr,
+        bindings: &[(Symbol, Rc<SymbolicExpr>)],
+    ) -> ExecResult<Rc<SymbolicExpr>> {
+        Ok(match template {
+            SymbolicExpr::Variable(name) => bindings
+                .iter()
+                .find(|(symbol, _)| symbol == name)
+                .map(|(_, value)| Rc::clone(value))
+                .ok_or_else(|| {
+                    self.error(format!(
+                        "rewrite replacement uses an unbound pattern variable '{}'",
+                        self.symbols.resolve(*name)
+                    ))
+                })?,
+            SymbolicExpr::Unary { op, expr } => Rc::new(SymbolicExpr::Unary {
+                op: *op,
+                expr: self.instantiate_rewrite(expr, bindings)?,
+            }),
+            SymbolicExpr::Binary { left, op, right } => Rc::new(SymbolicExpr::Binary {
+                left: self.instantiate_rewrite(left, bindings)?,
+                op: *op,
+                right: self.instantiate_rewrite(right, bindings)?,
+            }),
+            SymbolicExpr::Call { function, args } => Rc::new(SymbolicExpr::Call {
+                function: *function,
+                args: args
+                    .iter()
+                    .map(|arg| self.instantiate_rewrite(arg, bindings))
+                    .collect::<ExecResult<Vec<_>>>()?,
+            }),
+            _ => Rc::new(template.clone()),
+        })
+    }
+
+    fn rewrite_symbolic(
+        &self,
+        expression: &Rc<SymbolicExpr>,
+        pattern: &Rc<SymbolicExpr>,
+        replacement: &Rc<SymbolicExpr>,
+    ) -> ExecResult<Rc<SymbolicExpr>> {
+        let mut bindings = Vec::new();
+        if Self::match_rewrite_pattern(pattern, expression, &mut bindings) {
+            return self.instantiate_rewrite(replacement, &bindings);
+        }
+        Ok(match expression.as_ref() {
+            SymbolicExpr::Unary { op, expr } => Rc::new(SymbolicExpr::Unary {
+                op: *op,
+                expr: self.rewrite_symbolic(expr, pattern, replacement)?,
+            }),
+            SymbolicExpr::Binary { left, op, right } => Rc::new(SymbolicExpr::Binary {
+                left: self.rewrite_symbolic(left, pattern, replacement)?,
+                op: *op,
+                right: self.rewrite_symbolic(right, pattern, replacement)?,
+            }),
+            SymbolicExpr::Call { function, args } => Rc::new(SymbolicExpr::Call {
+                function: *function,
+                args: args
+                    .iter()
+                    .map(|arg| self.rewrite_symbolic(arg, pattern, replacement))
+                    .collect::<ExecResult<Vec<_>>>()?,
+            }),
+            _ => Rc::clone(expression),
+        })
     }
 
     fn matrix_value(rows: Vec<Vec<Value>>) -> Value {
@@ -2058,6 +2797,337 @@ impl<W: Write> Interpreter<W> {
         Ok(lower)
     }
 
+    fn real_number_f64(&self, value: &Value, operation: &str) -> ExecResult<f64> {
+        let Value::Number(number) = value else {
+            return Err(self.error(format!("{operation} requires real numeric entries")));
+        };
+        if matches!(number, Number::Complex(_)) {
+            return Err(self.error(format!("{operation} does not support complex entries")));
+        }
+        number
+            .as_decimal(&self.decimal_context)
+            .and_then(|number| number.to_f64())
+            .filter(|number| number.is_finite())
+            .ok_or_else(|| {
+                self.error(format!(
+                    "{operation} entry is outside the floating-point range"
+                ))
+            })
+    }
+
+    fn f64_value(value: f64) -> Value {
+        Value::Number(Number::Decimal(
+            BigDecimal::from_f64(value).unwrap_or_else(BigDecimal::zero),
+        ))
+    }
+
+    fn numeric_complex_entry(&self, value: &Value, operation: &str) -> ExecResult<C64> {
+        let Value::Number(number) = value else {
+            return Err(self.error(format!("{operation} requires numeric matrix entries")));
+        };
+        let result = match number {
+            Number::Complex(complex) => C64 {
+                re: complex.real.to_f64().unwrap_or(f64::NAN),
+                im: complex.imaginary.to_f64().unwrap_or(f64::NAN),
+            },
+            _ => C64::from(
+                number
+                    .as_decimal(&self.decimal_context)
+                    .and_then(|number| number.to_f64())
+                    .unwrap_or(f64::NAN),
+            ),
+        };
+        if !result.finite() {
+            return Err(self.error(format!(
+                "{operation} entry is outside the floating-point range"
+            )));
+        }
+        Ok(result)
+    }
+
+    fn c64_value(value: C64) -> Value {
+        if value.im.abs() <= 1e-14 * value.abs().max(1.0) {
+            return Self::f64_value(value.re);
+        }
+        let real = if value.re.abs() <= 1e-14 * value.abs().max(1.0) {
+            0.0
+        } else {
+            value.re
+        };
+        Value::Number(Number::Complex(ComplexNumber::new(
+            BigDecimal::from_f64(real).unwrap_or_else(BigDecimal::zero),
+            BigDecimal::from_f64(value.im).unwrap_or_else(BigDecimal::zero),
+        )))
+    }
+
+    fn jacobi_symmetric(mut matrix: Vec<Vec<f64>>) -> Option<(Vec<f64>, Vec<Vec<f64>>)> {
+        let n = matrix.len();
+        if n == 0 || matrix.iter().any(|row| row.len() != n) {
+            return None;
+        }
+        let mut vectors = vec![vec![0.0; n]; n];
+        for (index, row) in vectors.iter_mut().enumerate() {
+            row[index] = 1.0;
+        }
+        let scale = matrix
+            .iter()
+            .flatten()
+            .fold(1.0_f64, |scale, value| scale.max(value.abs()));
+        let tolerance = scale * 1e-14;
+        for _ in 0..(80 * n * n).max(1) {
+            let mut pivot = (0, 0);
+            let mut largest = 0.0;
+            for p in 0..n {
+                for q in p + 1..n {
+                    if matrix[p][q].abs() > largest {
+                        largest = matrix[p][q].abs();
+                        pivot = (p, q);
+                    }
+                }
+            }
+            if largest <= tolerance {
+                break;
+            }
+            let (p, q) = pivot;
+            let tau = (matrix[q][q] - matrix[p][p]) / (2.0 * matrix[p][q]);
+            let t = if tau >= 0.0 {
+                1.0 / (tau + (1.0 + tau * tau).sqrt())
+            } else {
+                -1.0 / (-tau + (1.0 + tau * tau).sqrt())
+            };
+            let c = 1.0 / (1.0 + t * t).sqrt();
+            let s = t * c;
+            let app = matrix[p][p];
+            let aqq = matrix[q][q];
+            let apq = matrix[p][q];
+            matrix[p][p] = app - t * apq;
+            matrix[q][q] = aqq + t * apq;
+            matrix[p][q] = 0.0;
+            matrix[q][p] = 0.0;
+            for k in 0..n {
+                if k == p || k == q {
+                    continue;
+                }
+                let akp = matrix[k][p];
+                let akq = matrix[k][q];
+                matrix[k][p] = c * akp - s * akq;
+                matrix[p][k] = matrix[k][p];
+                matrix[k][q] = s * akp + c * akq;
+                matrix[q][k] = matrix[k][q];
+                let vkp = vectors[k][p];
+                let vkq = vectors[k][q];
+                vectors[k][p] = c * vkp - s * vkq;
+                vectors[k][q] = s * vkp + c * vkq;
+            }
+            let vpp = vectors[p][p];
+            let vpq = vectors[p][q];
+            vectors[p][p] = c * vpp - s * vpq;
+            vectors[p][q] = s * vpp + c * vpq;
+            let vqp = vectors[q][p];
+            let vqq = vectors[q][q];
+            vectors[q][p] = c * vqp - s * vqq;
+            vectors[q][q] = s * vqp + c * vqq;
+        }
+        Some(((0..n).map(|index| matrix[index][index]).collect(), vectors))
+    }
+
+    fn numeric_symmetric_eigenpairs(
+        &self,
+        matrix: Vec<Vec<f64>>,
+        order: &str,
+    ) -> ExecResult<Value> {
+        let Some((mut values, vectors)) = Self::jacobi_symmetric(matrix) else {
+            return Err(self.error("symmetric eigensolver requires a non-empty square matrix"));
+        };
+        let mut indices = (0..values.len()).collect::<Vec<_>>();
+        match order {
+            "natural" => {}
+            "ascending" => indices.sort_by(|left, right| values[*left].total_cmp(&values[*right])),
+            "descending" => indices.sort_by(|left, right| values[*right].total_cmp(&values[*left])),
+            _ => {
+                return Err(self.error(
+                    "eigenvalue order must be \"natural\", \"ascending\", or \"descending\"",
+                ))
+            }
+        }
+        let pairs = indices
+            .into_iter()
+            .map(|index| {
+                values[index] = if values[index].abs() < 1e-14 {
+                    0.0
+                } else {
+                    values[index]
+                };
+                let vector = (0..vectors.len())
+                    .map(|row| Self::f64_value(vectors[row][index]))
+                    .collect();
+                Value::Array(Rc::new(vec![
+                    Self::f64_value(values[index]),
+                    Value::Array(Rc::new(vector)),
+                ]))
+            })
+            .collect();
+        Ok(Value::Array(Rc::new(pairs)))
+    }
+
+    fn numeric_general_eigenpairs(
+        &self,
+        matrix: &[Vec<Value>],
+        order: Option<&Value>,
+    ) -> ExecResult<Value> {
+        let order = self.requested_eigen_order(order)?;
+        let numeric = matrix
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|entry| self.numeric_complex_entry(entry, "eigenpairs"))
+                    .collect::<ExecResult<Vec<_>>>()
+            })
+            .collect::<ExecResult<Vec<_>>>()?;
+        let mut pairs = numeric_linear::general_eigenpairs(numeric)
+            .ok_or_else(|| self.error("numeric eigenpairs failed to converge for this matrix"))?;
+        if order != "natural" {
+            if pairs
+                .iter()
+                .any(|(value, _)| value.im.abs() > 1e-10 * value.abs().max(1.0))
+            {
+                return Err(self
+                    .error("requested eigenvalue ordering requires comparable real eigenvalues"));
+            }
+            pairs.sort_by(|left, right| {
+                let ordering = left.0.re.total_cmp(&right.0.re);
+                if order == "descending" {
+                    ordering.reverse()
+                } else {
+                    ordering
+                }
+            });
+        }
+        Ok(Value::Array(Rc::new(
+            pairs
+                .into_iter()
+                .map(|(value, vector)| {
+                    Value::Array(Rc::new(vec![
+                        Self::c64_value(value),
+                        Value::Array(Rc::new(vector.into_iter().map(Self::c64_value).collect())),
+                    ]))
+                })
+                .collect(),
+        )))
+    }
+
+    fn requested_eigen_order<'a>(&self, order: Option<&'a Value>) -> ExecResult<&'a str> {
+        match order {
+            None => Ok("natural"),
+            Some(Value::Str(order))
+                if matches!(order.as_str(), "natural" | "ascending" | "descending") =>
+            {
+                Ok(order)
+            }
+            _ => Err(self
+                .error("eigenvalue order must be \"natural\", \"ascending\", or \"descending\"")),
+        }
+    }
+
+    fn numeric_svd(matrix: Vec<Vec<f64>>) -> Option<(Vec<Vec<f64>>, Vec<Vec<f64>>, Vec<Vec<f64>>)> {
+        let rows = matrix.len();
+        let cols = matrix.first()?.len();
+        if rows == 0 || cols == 0 || matrix.iter().any(|row| row.len() != cols) {
+            return None;
+        }
+        if rows < cols {
+            let transpose = (0..cols)
+                .map(|column| (0..rows).map(|row| matrix[row][column]).collect())
+                .collect();
+            let (u_t, sigma_t, vt_t) = Self::numeric_svd(transpose)?;
+            return Some((
+                (0..rows)
+                    .map(|row| (0..rows).map(|column| vt_t[column][row]).collect())
+                    .collect(),
+                (0..rows)
+                    .map(|row| (0..cols).map(|column| sigma_t[column][row]).collect())
+                    .collect(),
+                (0..cols)
+                    .map(|row| (0..cols).map(|column| u_t[column][row]).collect())
+                    .collect(),
+            ));
+        }
+        let mut gram = vec![vec![0.0; cols]; cols];
+        for i in 0..cols {
+            for j in 0..cols {
+                gram[i][j] = (0..rows).map(|r| matrix[r][i] * matrix[r][j]).sum();
+            }
+        }
+        let (eigenvalues, eigenvectors) = Self::jacobi_symmetric(gram)?;
+        let mut order = (0..cols).collect::<Vec<_>>();
+        order.sort_by(|a, b| eigenvalues[*b].total_cmp(&eigenvalues[*a]));
+        let sigmas = order
+            .iter()
+            .map(|index| eigenvalues[*index].max(0.0).sqrt())
+            .collect::<Vec<_>>();
+        let v = (0..cols)
+            .map(|row| {
+                order
+                    .iter()
+                    .map(|index| eigenvectors[row][*index])
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let mut u = vec![vec![0.0; rows]; rows];
+        for col in 0..cols {
+            let sigma = sigmas[col];
+            if sigma > 1e-12 {
+                for row in 0..rows {
+                    u[row][col] =
+                        (0..cols).map(|k| matrix[row][k] * v[k][col]).sum::<f64>() / sigma;
+                }
+            }
+        }
+        // Fill null directions and the rectangular complement with an orthonormal basis.
+        for col in 0..rows {
+            let norm = (0..rows)
+                .map(|row| u[row][col] * u[row][col])
+                .sum::<f64>()
+                .sqrt();
+            if norm > 1e-10 {
+                for row in 0..rows {
+                    u[row][col] /= norm;
+                }
+                continue;
+            }
+            let mut found = false;
+            for seed in 0..rows {
+                let mut candidate = vec![0.0; rows];
+                candidate[seed] = 1.0;
+                for prior in 0..col {
+                    let dot = (0..rows).map(|r| candidate[r] * u[r][prior]).sum::<f64>();
+                    for r in 0..rows {
+                        candidate[r] -= dot * u[r][prior];
+                    }
+                }
+                let length = candidate.iter().map(|x| x * x).sum::<f64>().sqrt();
+                if length > 1e-10 {
+                    for r in 0..rows {
+                        u[r][col] = candidate[r] / length;
+                    }
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                return None;
+            }
+        }
+        let mut sigma = vec![vec![0.0; cols]; rows];
+        for i in 0..cols {
+            sigma[i][i] = sigmas[i];
+        }
+        let vt = (0..cols)
+            .map(|row| (0..cols).map(|column| v[column][row]).collect())
+            .collect();
+        Some((u, sigma, vt))
+    }
+
     fn eigenvalues_value(&self, value: &Value) -> ExecResult<Value> {
         let matrix = self.square_matrix(value, "eigenvalues")?;
         let triangular = (0..matrix.len())
@@ -2071,6 +3141,31 @@ impl<W: Write> Interpreter<W> {
                     .iter()
                     .enumerate()
                     .map(|(index, row)| row[index].clone())
+                    .collect(),
+            )));
+        }
+        if matrix.len() > 2
+            && (0..matrix.len())
+                .all(|row| (0..row).all(|column| matrix[row][column].equals(&matrix[column][row])))
+        {
+            let numeric = matrix
+                .iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|entry| self.real_number_f64(entry, "eigenvalues"))
+                        .collect::<ExecResult<Vec<_>>>()
+                })
+                .collect::<ExecResult<Vec<_>>>()?;
+            let Value::Array(pairs) = self.numeric_symmetric_eigenpairs(numeric, "natural")? else {
+                unreachable!()
+            };
+            return Ok(Value::Array(Rc::new(
+                pairs
+                    .iter()
+                    .map(|pair| match pair {
+                        Value::Array(items) => items[0].clone(),
+                        _ => unreachable!(),
+                    })
                     .collect(),
             )));
         }
@@ -2104,21 +3199,139 @@ impl<W: Write> Interpreter<W> {
                     self.apply_binary(BinaryOp::Div, minus, Self::integer_value(2))?,
                 ])))
             }
-            _ => Err(self.error("exact eigenvalues currently support matrices up to 2x2")),
+            _ => {
+                let Value::Array(pairs) = self.numeric_general_eigenpairs(&matrix, None)? else {
+                    unreachable!()
+                };
+                Ok(Value::Array(Rc::new(
+                    pairs
+                        .iter()
+                        .map(|pair| {
+                            let Value::Array(items) = pair else {
+                                unreachable!()
+                            };
+                            items[0].clone()
+                        })
+                        .collect(),
+                )))
+            }
         }
     }
 
-    fn eigenvectors_value(&self, value: &Value) -> ExecResult<Value> {
+    fn ordered_eigenvalues_value(&self, value: &Value, order: Option<&Value>) -> ExecResult<Value> {
+        let order = match order {
+            None => "natural",
+            Some(Value::Str(order))
+                if matches!(order.as_str(), "natural" | "ascending" | "descending") =>
+            {
+                order.as_str()
+            }
+            _ => {
+                return Err(self.error(
+                    "eigenvalue order must be \"natural\", \"ascending\", or \"descending\"",
+                ))
+            }
+        };
+        let Value::Array(values) = self.eigenvalues_value(value)? else {
+            unreachable!()
+        };
+        let mut values = values.as_ref().clone();
+        if order != "natural" {
+            if values.len() == 2 && !values.iter().all(|value| matches!(value, Value::Number(_))) {
+                if order == "ascending" {
+                    values.reverse();
+                }
+            } else {
+                if values
+                    .iter()
+                    .any(|value| !matches!(value, Value::Number(number) if !matches!(number, Number::Complex(_))))
+                {
+                    return Err(self.error(
+                        "requested eigenvalue ordering requires comparable real eigenvalues",
+                    ));
+                }
+                values.sort_by(|left, right| {
+                    let (Value::Number(left), Value::Number(right)) = (left, right) else {
+                        unreachable!()
+                    };
+                    let ordering = left.compare(right).unwrap_or(std::cmp::Ordering::Equal);
+                    if order == "descending" {
+                        ordering.reverse()
+                    } else {
+                        ordering
+                    }
+                });
+            }
+        }
+        Ok(Value::Array(Rc::new(values)))
+    }
+
+    fn eigenvectors_value(&self, value: &Value, order: Option<&Value>) -> ExecResult<Value> {
         let matrix = self.square_matrix(value, "eigenvectors")?;
+        if matrix.len() > 2 && Self::triangular_matrix(&matrix) {
+            let Value::Array(pairs) = self.eigenpairs_value(value, order)? else {
+                unreachable!()
+            };
+            return Ok(Value::Array(Rc::new(
+                pairs
+                    .iter()
+                    .map(|pair| {
+                        let Value::Array(items) = pair else {
+                            unreachable!()
+                        };
+                        items[1].clone()
+                    })
+                    .collect(),
+            )));
+        }
+        if matrix.len() > 2
+            && (0..matrix.len())
+                .all(|row| (0..row).all(|column| matrix[row][column].equals(&matrix[column][row])))
+        {
+            let order = self.requested_eigen_order(order)?;
+            let numeric = matrix
+                .iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|entry| self.real_number_f64(entry, "eigenvectors"))
+                        .collect::<ExecResult<Vec<_>>>()
+                })
+                .collect::<ExecResult<Vec<_>>>()?;
+            let Value::Array(pairs) = self.numeric_symmetric_eigenpairs(numeric, order)? else {
+                unreachable!()
+            };
+            return Ok(Value::Array(Rc::new(
+                pairs
+                    .iter()
+                    .map(|pair| match pair {
+                        Value::Array(items) => items[1].clone(),
+                        _ => unreachable!(),
+                    })
+                    .collect(),
+            )));
+        }
         if matrix.len() == 1 {
             return Ok(Value::Array(Rc::new(vec![Value::Array(Rc::new(vec![
                 Self::integer_value(1),
             ]))])));
         }
         if matrix.len() != 2 {
-            return Err(self.error("exact eigenvectors currently support matrices up to 2x2"));
+            let Value::Array(pairs) = self.numeric_general_eigenpairs(&matrix, order)? else {
+                unreachable!()
+            };
+            return Ok(Value::Array(Rc::new(
+                pairs
+                    .iter()
+                    .map(|pair| {
+                        let Value::Array(items) = pair else {
+                            unreachable!()
+                        };
+                        items[1].clone()
+                    })
+                    .collect(),
+            )));
         }
-        let Value::Array(values) = self.eigenvalues_value(value)? else {
+        let Value::Array(values) = self.ordered_eigenvalues_value(value, order)? else {
             unreachable!()
         };
         let mut vectors = Vec::new();
@@ -2146,6 +3359,271 @@ impl<W: Write> Interpreter<W> {
             }
         }
         Ok(Value::Array(Rc::new(vectors)))
+    }
+
+    fn triangular_matrix(matrix: &[Vec<Value>]) -> bool {
+        (0..matrix.len())
+            .all(|row| (0..row).all(|column| Self::definitely_zero(&matrix[row][column])))
+            || (0..matrix.len()).all(|row| {
+                (row + 1..matrix.len()).all(|column| Self::definitely_zero(&matrix[row][column]))
+            })
+    }
+
+    /// Returns [eigenvalue, eigenvector] records in the same order as eigenvalues().
+    fn eigenpairs_value(&self, value: &Value, order: Option<&Value>) -> ExecResult<Value> {
+        let matrix = self.square_matrix(value, "eigenpairs")?;
+        if matrix.len() > 2 {
+            if Self::triangular_matrix(&matrix) {
+                let Value::Array(values) = self.ordered_eigenvalues_value(value, order)? else {
+                    unreachable!()
+                };
+                let mut used = vec![false; matrix.len()];
+                let mut pairs = Vec::new();
+                for eigenvalue in values.iter() {
+                    let index = (0..matrix.len())
+                        .find(|index| !used[*index] && matrix[*index][*index].equals(eigenvalue))
+                        .expect("ordered triangular eigenvalue");
+                    used[index] = true;
+                    let mut shifted = matrix.clone();
+                    for (row, entries) in shifted.iter_mut().enumerate() {
+                        entries[row] = self.apply_binary(
+                            BinaryOp::Sub,
+                            entries[row].clone(),
+                            eigenvalue.clone(),
+                        )?;
+                    }
+                    let Value::Array(basis) =
+                        self.null_space_value(&Self::matrix_value(shifted))?
+                    else {
+                        unreachable!()
+                    };
+                    let basis_index = (0..=index)
+                        .filter(|previous| matrix[*previous][*previous].equals(eigenvalue))
+                        .count()
+                        - 1;
+                    if let Some(vector) = basis.get(basis_index) {
+                        pairs.push(Value::Array(Rc::new(vec![
+                            eigenvalue.clone(),
+                            vector.clone(),
+                        ])));
+                    }
+                }
+                return Ok(Value::Array(Rc::new(pairs)));
+            }
+            if !(0..matrix.len())
+                .all(|row| (0..row).all(|column| matrix[row][column].equals(&matrix[column][row])))
+            {
+                return self.numeric_general_eigenpairs(&matrix, order);
+            }
+            let order = self.requested_eigen_order(order)?;
+            let numeric = matrix
+                .iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|entry| self.real_number_f64(entry, "eigenpairs"))
+                        .collect::<ExecResult<Vec<_>>>()
+                })
+                .collect::<ExecResult<Vec<_>>>()?;
+            return self.numeric_symmetric_eigenpairs(numeric, order);
+        }
+        let Value::Array(values) = self.ordered_eigenvalues_value(value, order)? else {
+            unreachable!()
+        };
+        let mut pairs = Vec::new();
+        for eigenvalue in values.iter() {
+            if pairs.iter().any(
+                |pair: &Value| matches!(pair, Value::Array(items) if items[0].equals(eigenvalue)),
+            ) {
+                continue;
+            }
+            let vector = if matrix.len() == 1 {
+                vec![Self::integer_value(1)]
+            } else if !Self::definitely_zero(&matrix[0][1]) {
+                vec![
+                    matrix[0][1].clone(),
+                    self.apply_binary(BinaryOp::Sub, eigenvalue.clone(), matrix[0][0].clone())?,
+                ]
+            } else if !Self::definitely_zero(&matrix[1][0]) {
+                vec![
+                    self.apply_binary(BinaryOp::Sub, eigenvalue.clone(), matrix[1][1].clone())?,
+                    matrix[1][0].clone(),
+                ]
+            } else if eigenvalue.equals(&matrix[0][0]) {
+                vec![Self::integer_value(1), Self::integer_value(0)]
+            } else {
+                vec![Self::integer_value(0), Self::integer_value(1)]
+            };
+            pairs.push(Value::Array(Rc::new(vec![
+                eigenvalue.clone(),
+                Value::Array(Rc::new(vector)),
+            ])));
+        }
+        Ok(Value::Array(Rc::new(pairs)))
+    }
+
+    fn svd_value(&self, value: &Value) -> ExecResult<Value> {
+        let matrix = self.matrix(value, "svd")?;
+        if matrix
+            .iter()
+            .flatten()
+            .any(|entry| matches!(entry, Value::Number(Number::Complex(_))))
+        {
+            let numeric = matrix
+                .iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|entry| self.numeric_complex_entry(entry, "svd"))
+                        .collect::<ExecResult<Vec<_>>>()
+                })
+                .collect::<ExecResult<Vec<_>>>()?;
+            let (u, sigma, vt) = numeric_linear::svd(numeric)
+                .ok_or_else(|| self.error("complex svd failed to converge"))?;
+            return Ok(Value::Array(Rc::new(vec![
+                Self::matrix_value(
+                    u.into_iter()
+                        .map(|row| row.into_iter().map(Self::c64_value).collect())
+                        .collect(),
+                ),
+                Self::matrix_value(
+                    sigma
+                        .into_iter()
+                        .map(|row| row.into_iter().map(Self::f64_value).collect())
+                        .collect(),
+                ),
+                Self::matrix_value(
+                    vt.into_iter()
+                        .map(|row| row.into_iter().map(Self::c64_value).collect())
+                        .collect(),
+                ),
+            ])));
+        }
+        if matrix.iter().flatten().any(|entry| !matches!(entry, Value::Number(number) if !matches!(number, Number::Complex(_)))) {
+            return Err(self.error("svd requires real numeric matrix entries"));
+        }
+        if matrix.len() > 2 || matrix[0].len() > 2 || matrix.len() != matrix[0].len() {
+            let numeric = matrix
+                .iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|entry| self.real_number_f64(entry, "svd"))
+                        .collect::<ExecResult<Vec<_>>>()
+                })
+                .collect::<ExecResult<Vec<_>>>()?;
+            let (u, sigma, vt) =
+                Self::numeric_svd(numeric).ok_or_else(|| self.error("svd failed to converge"))?;
+            return Ok(Value::Array(Rc::new(vec![
+                Self::matrix_value(
+                    u.into_iter()
+                        .map(|row| row.into_iter().map(Self::f64_value).collect())
+                        .collect(),
+                ),
+                Self::matrix_value(
+                    sigma
+                        .into_iter()
+                        .map(|row| row.into_iter().map(Self::f64_value).collect())
+                        .collect(),
+                ),
+                Self::matrix_value(
+                    vt.into_iter()
+                        .map(|row| row.into_iter().map(Self::f64_value).collect())
+                        .collect(),
+                ),
+            ])));
+        }
+        if matrix.len() == 1 {
+            let sigma = self.call_builtin(Builtin::Abs, vec![matrix[0][0].clone()])?;
+            let sign = if Self::definitely_zero(&sigma) {
+                Self::integer_value(1)
+            } else {
+                self.apply_binary(BinaryOp::Div, matrix[0][0].clone(), sigma.clone())?
+            };
+            return Ok(Value::Array(Rc::new(vec![
+                Self::matrix_value(vec![vec![sign]]),
+                Self::matrix_value(vec![vec![sigma]]),
+                Self::matrix_value(vec![vec![Self::integer_value(1)]]),
+            ])));
+        }
+        let transpose = Self::transpose_matrix(&matrix);
+        let mut gram = vec![vec![Self::integer_value(0); 2]; 2];
+        for row in 0..2 {
+            for column in 0..2 {
+                gram[row][column] = self.dot_values(&transpose[row], &transpose[column])?;
+            }
+        }
+        let gram_value = Self::matrix_value(gram);
+        let Value::Array(pairs) =
+            self.eigenpairs_value(&gram_value, Some(&Value::Str("descending".to_owned())))?
+        else {
+            unreachable!()
+        };
+        let Value::Array(first_pair) = &pairs[0] else {
+            unreachable!()
+        };
+        let Value::Array(first_vector) = &first_pair[1] else {
+            unreachable!()
+        };
+        let length_squared = self.dot_values(first_vector, first_vector)?;
+        let length = self.call_builtin(Builtin::Sqrt, vec![length_squared])?;
+        let v0 = vec![
+            self.apply_binary(BinaryOp::Div, first_vector[0].clone(), length.clone())?,
+            self.apply_binary(BinaryOp::Div, first_vector[1].clone(), length)?,
+        ];
+        let v1 = vec![
+            self.apply_unary(UnaryOp::Neg, v0[1].clone())?,
+            v0[0].clone(),
+        ];
+        let sigma0 = self.call_builtin(Builtin::Sqrt, vec![first_pair[0].clone()])?;
+        let sigma1 = if pairs.len() > 1 {
+            let Value::Array(second_pair) = &pairs[1] else {
+                unreachable!()
+            };
+            self.call_builtin(Builtin::Sqrt, vec![second_pair[0].clone()])?
+        } else {
+            sigma0.clone()
+        };
+        let column = |vector: &[Value], sigma: &Value| -> ExecResult<Option<Vec<Value>>> {
+            if Self::definitely_zero(sigma) {
+                return Ok(None);
+            }
+            let mut result = Vec::with_capacity(2);
+            for row in &matrix {
+                result.push(self.apply_binary(
+                    BinaryOp::Div,
+                    self.dot_values(row, vector)?,
+                    sigma.clone(),
+                )?);
+            }
+            Ok(Some(result))
+        };
+        let mut u0 = column(&v0, &sigma0)?;
+        let mut u1 = column(&v1, &sigma1)?;
+        if u0.is_none() && u1.is_none() {
+            u0 = Some(vec![Self::integer_value(1), Self::integer_value(0)]);
+            u1 = Some(vec![Self::integer_value(0), Self::integer_value(1)]);
+        } else if u0.is_none() {
+            let other = u1.as_ref().unwrap();
+            u0 = Some(vec![
+                self.apply_unary(UnaryOp::Neg, other[1].clone())?,
+                other[0].clone(),
+            ]);
+        } else if u1.is_none() {
+            let other = u0.as_ref().unwrap();
+            u1 = Some(vec![
+                self.apply_unary(UnaryOp::Neg, other[1].clone())?,
+                other[0].clone(),
+            ]);
+        }
+        let (u0, u1) = (u0.unwrap(), u1.unwrap());
+        let u = Self::matrix_value(vec![
+            vec![u0[0].clone(), u1[0].clone()],
+            vec![u0[1].clone(), u1[1].clone()],
+        ]);
+        let sigma = Self::matrix_value(vec![
+            vec![sigma0, Self::integer_value(0)],
+            vec![Self::integer_value(0), sigma1],
+        ]);
+        let vt = Self::matrix_value(vec![v0, v1]);
+        Ok(Value::Array(Rc::new(vec![u, sigma, vt])))
     }
 
     fn null_space_value(&self, value: &Value) -> ExecResult<Value> {
@@ -2538,7 +4016,35 @@ impl<W: Write> Interpreter<W> {
                         return Err(self.error("limit side must be \"left\" or \"right\""));
                     }
                 }
+                if let Value::Str(point) = &args[2] {
+                    if point == "infinity" || point == "-infinity" {
+                        if args.len() == 4 {
+                            return Err(self.error("limit side is only valid at a finite point"));
+                        }
+                        return self.limit_at_infinity(&expression, variable, point == "-infinity");
+                    }
+                }
                 let point = self.value_to_symbolic(args[2].clone())?;
+                if let Some(result) =
+                    self.limit_abs_ratio(&expression, variable, &point, args.get(3))?
+                {
+                    return Ok(result);
+                }
+                if let Some(result) =
+                    self.limit_directional_abs(&expression, variable, &point, args.get(3))?
+                {
+                    return Ok(result);
+                }
+                if let Some(result) =
+                    self.polynomial_rational_limit(&expression, variable, &point, args.get(3))?
+                {
+                    return Ok(result);
+                }
+                if let Some(divergence) =
+                    self.limit_at_finite_pole(&expression, variable, &point, args.get(3))?
+                {
+                    return Ok(divergence);
+                }
                 let result = self.limit_symbolic(expression, variable, &point)?;
                 Ok(Self::symbolic_value(result))
             }
@@ -2547,8 +4053,46 @@ impl<W: Write> Interpreter<W> {
                 let variable = self.calculus_variable(&args[1], "series")?;
                 let point = self.value_to_symbolic(args[2].clone())?;
                 let order = self.nonnegative_integer(&args[3], "series order")?;
+                let with_remainder = match args.get(4) {
+                    None => false,
+                    Some(Value::Str(marker)) if marker == "O" => true,
+                    _ => return Err(self.error("series remainder option must be \"O\"")),
+                };
                 if order > 64 {
                     return Err(self.limit_error("series order exceeds the limit of 64"));
+                }
+                if let Some(expansion) =
+                    self.polynomial_rational_series(&expression, variable, &point, order)?
+                {
+                    return Ok(Self::symbolic_value(Self::series_remainder(
+                        expansion,
+                        variable,
+                        &point,
+                        order,
+                        with_remainder,
+                    )));
+                }
+                if let Some(expansion) =
+                    self.laurent_series(&expression, variable, &point, order)?
+                {
+                    return Ok(Self::symbolic_value(Self::series_remainder(
+                        expansion,
+                        variable,
+                        &point,
+                        order,
+                        with_remainder,
+                    )));
+                }
+                if let Some(expansion) =
+                    self.rational_laurent_series(&expression, variable, &point, order)?
+                {
+                    return Ok(Self::symbolic_value(Self::series_remainder(
+                        expansion,
+                        variable,
+                        &point,
+                        order,
+                        with_remainder,
+                    )));
                 }
                 let variable_expression = Rc::new(SymbolicExpr::Variable(variable));
                 let offset = Self::symbolic_binary_raw(
@@ -2584,7 +4128,13 @@ impl<W: Write> Interpreter<W> {
                     derivative = self.derivative_symbolic(&derivative, variable);
                     factorial *= BigInt::from(degree + 1);
                 }
-                Ok(Self::symbolic_value(result))
+                Ok(Self::symbolic_value(Self::series_remainder(
+                    result,
+                    variable,
+                    &point,
+                    order,
+                    with_remainder,
+                )))
             }
             Builtin::Sum | Builtin::Product => {
                 let expression = self.value_to_symbolic(args[0].clone())?;
@@ -2628,6 +4178,54 @@ impl<W: Write> Interpreter<W> {
                     {
                         return Ok(Self::symbolic_value(result));
                     }
+                    if let SymbolicExpr::Binary {
+                        left: base,
+                        op: BinaryOp::Pow,
+                        right,
+                    } = expression.as_ref()
+                    {
+                        if matches!(right.as_ref(), SymbolicExpr::Variable(found) if *found == variable)
+                            && !Self::contains_symbol(base, variable)
+                        {
+                            let numerator = Self::symbolic_binary_raw(
+                                Self::symbolic_binary_raw(
+                                    Rc::clone(base),
+                                    BinaryOp::Pow,
+                                    Self::symbolic_binary_raw(
+                                        Rc::clone(&upper),
+                                        BinaryOp::Add,
+                                        Self::symbolic_integer(1),
+                                    ),
+                                ),
+                                BinaryOp::Sub,
+                                Self::symbolic_binary_raw(
+                                    Rc::clone(base),
+                                    BinaryOp::Pow,
+                                    Rc::clone(&lower),
+                                ),
+                            );
+                            let denominator = Self::symbolic_binary_raw(
+                                Rc::clone(base),
+                                BinaryOp::Sub,
+                                Self::symbolic_integer(1),
+                            );
+                            let result = if matches!(self.simplify_symbolic_tree(base)?.as_ref(), SymbolicExpr::Number(Number::Integer(number)) if number == &BigInt::from(1))
+                            {
+                                Self::symbolic_binary_raw(
+                                    Self::symbolic_binary_raw(
+                                        Rc::clone(&upper),
+                                        BinaryOp::Sub,
+                                        Rc::clone(&lower),
+                                    ),
+                                    BinaryOp::Add,
+                                    Self::symbolic_integer(1),
+                                )
+                            } else {
+                                Self::symbolic_binary_raw(numerator, BinaryOp::Div, denominator)
+                            };
+                            return Ok(Self::symbolic_value(self.simplify_symbolic_tree(&result)?));
+                        }
+                    }
                 }
                 Ok(Self::symbolic_value(Rc::new(SymbolicExpr::Call {
                     function: builtin,
@@ -2647,6 +4245,55 @@ impl<W: Write> Interpreter<W> {
                     expression = self.simplify_symbolic_tree(&expression)?;
                 }
                 Ok(Self::symbolic_value(expression))
+            }
+            Builtin::DsolveSeparable => {
+                let forcing = self.value_to_symbolic(args[0].clone())?;
+                let response = self.value_to_symbolic(args[1].clone())?;
+                let independent = self.calculus_variable(&args[2], "dsolve_separable")?;
+                let dependent = self.calculus_variable(&args[3], "dsolve_separable")?;
+                let constant = self.value_to_symbolic(args[4].clone())?;
+                if independent == dependent
+                    || Self::contains_symbol(&forcing, dependent)
+                    || Self::contains_symbol(&response, independent)
+                {
+                    return Err(self
+                        .error("dsolve_separable requires f(x) and g(y) with distinct variables"));
+                }
+                let reciprocal = Self::symbolic_binary_raw(
+                    Self::symbolic_integer(1),
+                    BinaryOp::Div,
+                    Rc::clone(&response),
+                );
+                let lhs = if matches!(response.as_ref(), SymbolicExpr::Variable(symbol) if *symbol == dependent)
+                {
+                    Self::symbolic_call(
+                        Builtin::Ln,
+                        Self::symbolic_call(Builtin::Abs, Rc::clone(&response)),
+                    )
+                } else {
+                    self.simplify_symbolic_tree(&self.integral_symbolic(&reciprocal, dependent))?
+                };
+                let rhs_primitive =
+                    self.simplify_symbolic_tree(&self.integral_symbolic(&forcing, independent))?;
+                if !Self::is_closed_antiderivative(&lhs)
+                    || !Self::is_closed_antiderivative(&rhs_primitive)
+                {
+                    return Err(
+                        self.error("dsolve_separable could not integrate both separated sides")
+                    );
+                }
+                let rhs = self.simplify_symbolic_tree(&Self::symbolic_binary_raw(
+                    rhs_primitive,
+                    BinaryOp::Add,
+                    constant,
+                ))?;
+                Ok(Value::Map(Rc::new(vec![
+                    (Value::Str("left".to_owned()), Self::symbolic_value(lhs)),
+                    (Value::Str("right".to_owned()), Self::symbolic_value(rhs)),
+                    (Value::Str("restriction".to_owned()), Value::Str(
+                        "valid where g(y) is nonzero and the primitives are defined; check g(y)=0 for equilibrium solutions".to_owned(),
+                    )),
+                ])))
             }
             Builtin::Dsolve => {
                 if args.len() == 4 {
@@ -2709,6 +4356,751 @@ impl<W: Write> Interpreter<W> {
             .ok_or_else(|| self.error(format!("{name} must be a nonnegative integer")))
     }
 
+    fn limit_at_finite_pole(
+        &self,
+        expression: &Rc<SymbolicExpr>,
+        variable: Symbol,
+        point: &Rc<SymbolicExpr>,
+        side: Option<&Value>,
+    ) -> ExecResult<Option<Value>> {
+        let SymbolicExpr::Binary {
+            left,
+            op: BinaryOp::Div,
+            right,
+        } = expression.as_ref()
+        else {
+            return Ok(None);
+        };
+        let mut numerator_expression = Rc::clone(left);
+        let mut denominator = Rc::clone(right);
+        let mut numerator = None;
+        for _ in 0..=8 {
+            let numerator_at_point = self.simplify_symbolic_tree(&Self::substitute_symbolic(
+                &numerator_expression,
+                variable,
+                point,
+            ))?;
+            let denominator_at_point = self.simplify_symbolic_tree(&Self::substitute_symbolic(
+                &denominator,
+                variable,
+                point,
+            ))?;
+            let (Some(top), Some(bottom)) = (
+                self.limit_numeric_value(&numerator_at_point)?,
+                self.limit_numeric_value(&denominator_at_point)?,
+            ) else {
+                return Ok(None);
+            };
+            if !bottom.is_zero() {
+                return Ok(None);
+            }
+            if !top.is_zero() {
+                numerator = Some(top);
+                break;
+            }
+            numerator_expression = self.derivative_symbolic(&numerator_expression, variable);
+            denominator = self.derivative_symbolic(&denominator, variable);
+        }
+        let Some(numerator) = numerator else {
+            return Ok(None);
+        };
+        for multiplicity in 0..=8 {
+            let value = self.simplify_symbolic_tree(&Self::substitute_symbolic(
+                &denominator,
+                variable,
+                point,
+            ))?;
+            let Some(value) = self.limit_numeric_value(&value)? else {
+                return Ok(None);
+            };
+            if !value.is_zero() {
+                if multiplicity == 0 {
+                    return Ok(None);
+                }
+                let right_sign = if numerator.is_negative() == value.is_negative() {
+                    1
+                } else {
+                    -1
+                };
+                let left_sign = if multiplicity % 2 == 0 {
+                    right_sign
+                } else {
+                    -right_sign
+                };
+                let sign = match side {
+                    Some(Value::Str(side)) if side == "left" => left_sign,
+                    Some(Value::Str(side)) if side == "right" => right_sign,
+                    None if left_sign == right_sign => right_sign,
+                    None => {
+                        return Err(self.error("left and right limits diverge with opposite signs"))
+                    }
+                    _ => unreachable!("limit side already validated"),
+                };
+                return Ok(Some(Value::Infinity(sign)));
+            }
+            denominator = self.derivative_symbolic(&denominator, variable);
+        }
+        Ok(None)
+    }
+
+    fn limit_numeric_value(&self, expression: &Rc<SymbolicExpr>) -> ExecResult<Option<Number>> {
+        match expression.as_ref() {
+            SymbolicExpr::Number(number) => Ok(Some(number.clone())),
+            SymbolicExpr::Binary { left, op, right } => {
+                let (Some(left), Some(right)) = (
+                    self.limit_numeric_value(left)?,
+                    self.limit_numeric_value(right)?,
+                ) else {
+                    return Ok(None);
+                };
+                match self.apply_binary(*op, Value::Number(left), Value::Number(right)) {
+                    Ok(Value::Number(number)) => Ok(Some(number)),
+                    _ => Ok(None),
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn series_remainder(
+        expansion: Rc<SymbolicExpr>,
+        variable: Symbol,
+        point: &Rc<SymbolicExpr>,
+        order: u32,
+        enabled: bool,
+    ) -> Rc<SymbolicExpr> {
+        if !enabled {
+            return expansion;
+        }
+        let offset = if Self::symbolic_is_zero(point) {
+            Rc::new(SymbolicExpr::Variable(variable))
+        } else {
+            Self::symbolic_binary_raw(
+                Rc::new(SymbolicExpr::Variable(variable)),
+                BinaryOp::Sub,
+                Rc::clone(point),
+            )
+        };
+        let power = Self::symbolic_binary_raw(
+            offset,
+            BinaryOp::Pow,
+            Self::symbolic_integer(order as i64 + 1),
+        );
+        Self::symbolic_binary_raw(
+            expansion,
+            BinaryOp::Add,
+            Rc::new(SymbolicExpr::Call {
+                function: Builtin::SeriesRemainder,
+                args: vec![power],
+            }),
+        )
+    }
+
+    fn polynomial_rational_limit(
+        &self,
+        expression: &Rc<SymbolicExpr>,
+        variable: Symbol,
+        point: &Rc<SymbolicExpr>,
+        side: Option<&Value>,
+    ) -> ExecResult<Option<Value>> {
+        let SymbolicExpr::Binary {
+            left: numerator,
+            op: BinaryOp::Div,
+            right: denominator,
+        } = expression.as_ref()
+        else {
+            return Ok(None);
+        };
+        let Some(top) = self.shifted_polynomial_coefficients(numerator, variable, point) else {
+            return Ok(None);
+        };
+        let Some(bottom) = self.shifted_polynomial_coefficients(denominator, variable, point)
+        else {
+            return Ok(None);
+        };
+        let Some(bottom_order) = bottom.iter().position(|coefficient| !coefficient.is_zero())
+        else {
+            return Err(self.error("limit denominator is the zero polynomial"));
+        };
+        let Some(top_order) = top.iter().position(|coefficient| !coefficient.is_zero()) else {
+            return Ok(Some(Self::integer_value(0)));
+        };
+        if top_order > bottom_order {
+            return Ok(Some(Self::integer_value(0)));
+        }
+        let ratio = &top[top_order] / &bottom[bottom_order];
+        if top_order == bottom_order {
+            return Ok(Some(Value::Number(Number::from_rational(ratio))));
+        }
+        let mut sign = if ratio.is_positive() { 1 } else { -1 };
+        let odd_pole = (bottom_order - top_order) % 2 == 1;
+        if odd_pole {
+            match side {
+                Some(Value::Str(side)) if side == "left" => sign = -sign,
+                Some(Value::Str(side)) if side == "right" => {}
+                None => return Err(self.error("left and right limits diverge with opposite signs")),
+                _ => unreachable!("limit side already validated"),
+            }
+        }
+        Ok(Some(Value::Infinity(sign)))
+    }
+
+    fn shifted_polynomial_coefficients(
+        &self,
+        expression: &Rc<SymbolicExpr>,
+        variable: Symbol,
+        point: &Rc<SymbolicExpr>,
+    ) -> Option<Vec<BigRational>> {
+        let SymbolicExpr::Number(point) = point.as_ref() else {
+            return None;
+        };
+        let point = point.try_to_rational()?;
+        let coefficients =
+            Polynomial::coefficient_expressions(expression, variable, &self.symbols).ok()?;
+        let coefficients = coefficients
+            .iter()
+            .map(|coefficient| {
+                let SymbolicExpr::Number(number) = coefficient.as_ref() else {
+                    return None;
+                };
+                number.try_to_rational()
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let mut shifted = vec![BigRational::zero()];
+        for coefficient in coefficients.into_iter().rev() {
+            let mut next = vec![BigRational::zero(); shifted.len() + 1];
+            for (degree, value) in shifted.iter().enumerate() {
+                next[degree] += value * &point;
+                next[degree + 1] += value;
+            }
+            next[0] += coefficient;
+            shifted = next;
+        }
+        while shifted.len() > 1 && shifted.last().is_some_and(|value| value.is_zero()) {
+            shifted.pop();
+        }
+        Some(shifted)
+    }
+
+    fn polynomial_rational_series(
+        &self,
+        expression: &Rc<SymbolicExpr>,
+        variable: Symbol,
+        point: &Rc<SymbolicExpr>,
+        order: u32,
+    ) -> ExecResult<Option<Rc<SymbolicExpr>>> {
+        let SymbolicExpr::Binary {
+            left: numerator,
+            op: BinaryOp::Div,
+            right: denominator,
+        } = expression.as_ref()
+        else {
+            return Ok(None);
+        };
+        let Some(top) = self.shifted_polynomial_coefficients(numerator, variable, point) else {
+            return Ok(None);
+        };
+        let Some(bottom) = self.shifted_polynomial_coefficients(denominator, variable, point)
+        else {
+            return Ok(None);
+        };
+        let Some(pole_order) = bottom.iter().position(|coefficient| !coefficient.is_zero()) else {
+            return Err(self.error("series denominator is the zero polynomial"));
+        };
+        let count = order as usize + pole_order + 1;
+        let mut quotient = Vec::with_capacity(count);
+        for degree in 0..count {
+            let mut residual = top.get(degree).cloned().unwrap_or_else(BigRational::zero);
+            for index in 1..=degree {
+                if let Some(coefficient) = bottom.get(pole_order + index) {
+                    residual -= coefficient * &quotient[degree - index];
+                }
+            }
+            quotient.push(residual / &bottom[pole_order]);
+        }
+        let offset = if Self::symbolic_is_zero(point) {
+            Rc::new(SymbolicExpr::Variable(variable))
+        } else {
+            Self::symbolic_binary_raw(
+                Rc::new(SymbolicExpr::Variable(variable)),
+                BinaryOp::Sub,
+                Rc::clone(point),
+            )
+        };
+        let mut result = None;
+        for (degree, coefficient) in quotient.into_iter().enumerate() {
+            if coefficient.is_zero() {
+                continue;
+            }
+            let exponent = degree as i64 - pole_order as i64;
+            let power = if exponent < 0 {
+                Self::symbolic_binary_raw(
+                    Self::symbolic_integer(1),
+                    BinaryOp::Div,
+                    if exponent == -1 {
+                        Rc::clone(&offset)
+                    } else {
+                        Self::symbolic_binary_raw(
+                            Rc::clone(&offset),
+                            BinaryOp::Pow,
+                            Self::symbolic_integer(-exponent),
+                        )
+                    },
+                )
+            } else if exponent == 0 {
+                Self::symbolic_integer(1)
+            } else if exponent == 1 {
+                Rc::clone(&offset)
+            } else {
+                Self::symbolic_binary_raw(
+                    Rc::clone(&offset),
+                    BinaryOp::Pow,
+                    Self::symbolic_integer(exponent),
+                )
+            };
+            let negative = coefficient.is_negative();
+            let magnitude = coefficient.abs();
+            let term = if exponent == 0 {
+                Rc::new(SymbolicExpr::Number(Number::from_rational(magnitude)))
+            } else if magnitude.is_one() {
+                power
+            } else {
+                Self::symbolic_binary_raw(
+                    Rc::new(SymbolicExpr::Number(Number::from_rational(magnitude))),
+                    BinaryOp::Mul,
+                    power,
+                )
+            };
+            result = Some(match result {
+                None if negative => Rc::new(SymbolicExpr::Unary {
+                    op: UnaryOp::Neg,
+                    expr: term,
+                }),
+                None => term,
+                Some(previous) => Self::symbolic_binary_raw(
+                    previous,
+                    if negative {
+                        BinaryOp::Sub
+                    } else {
+                        BinaryOp::Add
+                    },
+                    term,
+                ),
+            });
+        }
+        let mut result = result.unwrap_or_else(|| Self::symbolic_integer(0));
+        if order <= 8 && pole_order == 0 {
+            result = self.simplify_symbolic_tree(&result)?;
+        }
+        Ok(Some(result))
+    }
+
+    fn rational_laurent_series(
+        &self,
+        expression: &Rc<SymbolicExpr>,
+        variable: Symbol,
+        point: &Rc<SymbolicExpr>,
+        order: u32,
+    ) -> ExecResult<Option<Rc<SymbolicExpr>>> {
+        let SymbolicExpr::Binary {
+            left: numerator,
+            op: BinaryOp::Div,
+            right: denominator,
+        } = expression.as_ref()
+        else {
+            return Ok(None);
+        };
+        if order > 32 {
+            return Ok(None);
+        }
+        let mut denominator_derivative = Rc::clone(denominator);
+        let mut pole_order = None;
+        for degree in 0..=8 {
+            let at_point = self.simplify_symbolic_tree(&Self::substitute_symbolic(
+                &denominator_derivative,
+                variable,
+                point,
+            ))?;
+            let Some(number) = self.limit_numeric_value(&at_point)? else {
+                return Ok(None);
+            };
+            if !number.is_zero() {
+                pole_order = Some(degree);
+                break;
+            }
+            denominator_derivative = self.derivative_symbolic(&denominator_derivative, variable);
+        }
+        let Some(pole_order) = pole_order.filter(|degree| *degree > 0) else {
+            return Ok(None);
+        };
+        let count = order as usize + pole_order as usize + 1;
+        let coefficients = |original: &Rc<SymbolicExpr>| -> ExecResult<Vec<Rc<SymbolicExpr>>> {
+            let mut derivative = Rc::clone(original);
+            let mut factorial = BigInt::one();
+            let mut result = Vec::with_capacity(count);
+            for degree in 0..count {
+                let at_point = Self::substitute_symbolic(&derivative, variable, point);
+                let coefficient = self.simplify_symbolic_tree(&Self::symbolic_binary_raw(
+                    at_point,
+                    BinaryOp::Div,
+                    Rc::new(SymbolicExpr::Number(Number::Integer(factorial.clone()))),
+                ))?;
+                result.push(coefficient);
+                derivative = self.derivative_symbolic(&derivative, variable);
+                factorial *= BigInt::from(degree + 1);
+            }
+            Ok(result)
+        };
+        let top = coefficients(numerator)?;
+        let bottom = coefficients(denominator)?;
+        let pole_order = pole_order as usize;
+        let leading = &bottom[pole_order];
+        let mut quotient = Vec::with_capacity(count);
+        for degree in 0..count {
+            let mut residual = Rc::clone(&top[degree]);
+            for index in 1..=degree.min(count - pole_order - 1) {
+                let product = Self::symbolic_binary_raw(
+                    Rc::clone(&bottom[pole_order + index]),
+                    BinaryOp::Mul,
+                    Rc::clone(&quotient[degree - index]),
+                );
+                residual = self.simplify_symbolic_tree(&Self::symbolic_binary_raw(
+                    residual,
+                    BinaryOp::Sub,
+                    product,
+                ))?;
+            }
+            quotient.push(self.simplify_symbolic_tree(&Self::symbolic_binary_raw(
+                residual,
+                BinaryOp::Div,
+                Rc::clone(leading),
+            ))?);
+        }
+        let offset = self.simplify_symbolic_tree(&Self::symbolic_binary_raw(
+            Rc::new(SymbolicExpr::Variable(variable)),
+            BinaryOp::Sub,
+            Rc::clone(point),
+        ))?;
+        let mut result = Self::symbolic_integer(0);
+        for (degree, coefficient) in quotient.into_iter().enumerate() {
+            if Self::symbolic_is_zero(&coefficient) {
+                continue;
+            }
+            let exponent = degree as i64 - pole_order as i64;
+            let power = if exponent < 0 {
+                Self::symbolic_binary_raw(
+                    Self::symbolic_integer(1),
+                    BinaryOp::Div,
+                    Self::symbolic_binary_raw(
+                        Rc::clone(&offset),
+                        BinaryOp::Pow,
+                        Self::symbolic_integer(-exponent),
+                    ),
+                )
+            } else {
+                Self::symbolic_binary_raw(
+                    Rc::clone(&offset),
+                    BinaryOp::Pow,
+                    Self::symbolic_integer(exponent),
+                )
+            };
+            result = self.simplify_symbolic_tree(&Self::symbolic_binary_raw(
+                result,
+                BinaryOp::Add,
+                Self::symbolic_binary_raw(coefficient, BinaryOp::Mul, power),
+            ))?;
+        }
+        Ok(Some(result))
+    }
+
+    fn laurent_series(
+        &self,
+        expression: &Rc<SymbolicExpr>,
+        variable: Symbol,
+        point: &Rc<SymbolicExpr>,
+        order: u32,
+    ) -> ExecResult<Option<Rc<SymbolicExpr>>> {
+        let SymbolicExpr::Binary {
+            left: numerator,
+            op: BinaryOp::Div,
+            right: denominator,
+        } = expression.as_ref()
+        else {
+            return Ok(None);
+        };
+        let offset = self.simplify_symbolic_tree(&Self::symbolic_binary_raw(
+            Rc::new(SymbolicExpr::Variable(variable)),
+            BinaryOp::Sub,
+            Rc::clone(point),
+        ))?;
+        let (base, pole_order) = match denominator.as_ref() {
+            SymbolicExpr::Binary {
+                left,
+                op: BinaryOp::Pow,
+                right,
+            } => {
+                let SymbolicExpr::Number(Number::Integer(power)) = right.as_ref() else {
+                    return Ok(None);
+                };
+                let Some(power) = power.to_u32() else {
+                    return Ok(None);
+                };
+                (left, power)
+            }
+            _ => (denominator, 1),
+        };
+        if pole_order == 0
+            || pole_order > 8
+            || order + pole_order > 64
+            || !self.simplify_symbolic_tree(base)?.equals(&offset)
+        {
+            return Ok(None);
+        }
+        let mut derivative = Rc::clone(numerator);
+        let mut series = Self::symbolic_integer(0);
+        let mut factorial = BigInt::one();
+        for degree in 0..=(order + pole_order) {
+            let coefficient = self.simplify_symbolic_tree(&Self::substitute_symbolic(
+                &derivative,
+                variable,
+                point,
+            ))?;
+            if !matches!(coefficient.as_ref(), SymbolicExpr::Number(number) if number.is_zero()) {
+                let exponent = degree as i64 - pole_order as i64;
+                let power = if exponent < 0 {
+                    Self::symbolic_binary_raw(
+                        Self::symbolic_integer(1),
+                        BinaryOp::Div,
+                        Self::symbolic_binary_raw(
+                            Rc::clone(&offset),
+                            BinaryOp::Pow,
+                            Self::symbolic_integer(-exponent),
+                        ),
+                    )
+                } else {
+                    Self::symbolic_binary_raw(
+                        Rc::clone(&offset),
+                        BinaryOp::Pow,
+                        Self::symbolic_integer(exponent),
+                    )
+                };
+                let term = Self::symbolic_binary_raw(
+                    Self::symbolic_binary_raw(coefficient, BinaryOp::Mul, power),
+                    BinaryOp::Div,
+                    Rc::new(SymbolicExpr::Number(Number::Integer(factorial.clone()))),
+                );
+                let term = self.simplify_symbolic_tree(&term)?;
+                series = if matches!(series.as_ref(), SymbolicExpr::Number(number) if number.is_zero())
+                {
+                    term
+                } else {
+                    Self::symbolic_binary_raw(series, BinaryOp::Add, term)
+                };
+            }
+            derivative = self.derivative_symbolic(&derivative, variable);
+            factorial *= BigInt::from(degree + 1);
+        }
+        Ok(Some(series))
+    }
+
+    fn rewrite_directional_abs(
+        &self,
+        expression: &Rc<SymbolicExpr>,
+        variable: Symbol,
+        point: &Rc<SymbolicExpr>,
+        right_side: bool,
+    ) -> ExecResult<Option<(Rc<SymbolicExpr>, bool)>> {
+        match expression.as_ref() {
+            SymbolicExpr::Call {
+                function: Builtin::Abs,
+                args,
+            } if args.len() == 1 => {
+                let Some((slope, _)) = Self::affine_coefficients(&args[0], variable) else {
+                    return Ok(None);
+                };
+                let at_point = self.simplify_symbolic_tree(&Self::substitute_symbolic(
+                    &args[0], variable, point,
+                ))?;
+                let Some(value) = self.limit_numeric_value(&at_point)? else {
+                    return Ok(None);
+                };
+                let positive = if value.is_zero() {
+                    if slope.is_zero() {
+                        return Ok(Some((Self::symbolic_integer(0), true)));
+                    }
+                    slope.is_positive() == right_side
+                } else {
+                    !value.is_negative()
+                };
+                let result = if positive {
+                    Rc::clone(&args[0])
+                } else {
+                    Rc::new(SymbolicExpr::Unary {
+                        op: UnaryOp::Neg,
+                        expr: Rc::clone(&args[0]),
+                    })
+                };
+                Ok(Some((result, true)))
+            }
+            SymbolicExpr::Unary { op, expr } => {
+                let Some((rewritten, found)) =
+                    self.rewrite_directional_abs(expr, variable, point, right_side)?
+                else {
+                    return Ok(None);
+                };
+                Ok(Some((
+                    Rc::new(SymbolicExpr::Unary {
+                        op: *op,
+                        expr: rewritten,
+                    }),
+                    found,
+                )))
+            }
+            SymbolicExpr::Binary { left, op, right } => {
+                let Some((left, left_found)) =
+                    self.rewrite_directional_abs(left, variable, point, right_side)?
+                else {
+                    return Ok(None);
+                };
+                let Some((right, right_found)) =
+                    self.rewrite_directional_abs(right, variable, point, right_side)?
+                else {
+                    return Ok(None);
+                };
+                Ok(Some((
+                    Self::symbolic_binary_raw(left, *op, right),
+                    left_found || right_found,
+                )))
+            }
+            SymbolicExpr::Call { function, args } => {
+                let mut rewritten = Vec::with_capacity(args.len());
+                let mut found = false;
+                for arg in args {
+                    let Some((value, had_abs)) =
+                        self.rewrite_directional_abs(arg, variable, point, right_side)?
+                    else {
+                        return Ok(None);
+                    };
+                    rewritten.push(value);
+                    found |= had_abs;
+                }
+                Ok(Some((
+                    Rc::new(SymbolicExpr::Call {
+                        function: *function,
+                        args: rewritten,
+                    }),
+                    found,
+                )))
+            }
+            _ => Ok(Some((Rc::clone(expression), false))),
+        }
+    }
+
+    fn limit_directional_abs(
+        &self,
+        expression: &Rc<SymbolicExpr>,
+        variable: Symbol,
+        point: &Rc<SymbolicExpr>,
+        side: Option<&Value>,
+    ) -> ExecResult<Option<Value>> {
+        let evaluate = |right_side: bool| -> ExecResult<Option<Value>> {
+            let Some((rewritten, found)) =
+                self.rewrite_directional_abs(expression, variable, point, right_side)?
+            else {
+                return Ok(None);
+            };
+            if !found {
+                return Ok(None);
+            }
+            let rewritten = self.simplify_symbolic_tree(&rewritten)?;
+            if let Some(divergence) = self.limit_at_finite_pole(
+                &rewritten,
+                variable,
+                point,
+                Some(&Value::Str(
+                    if right_side { "right" } else { "left" }.to_owned(),
+                )),
+            )? {
+                return Ok(Some(divergence));
+            }
+            let result = self.limit_symbolic(rewritten, variable, point)?;
+            if Self::contains_symbol(&result, variable) {
+                return Ok(None);
+            }
+            Ok(Some(Self::symbolic_value(result)))
+        };
+        match side {
+            Some(Value::Str(side)) => evaluate(side == "right"),
+            None => {
+                let (Some(left), Some(right)) = (evaluate(false)?, evaluate(true)?) else {
+                    return Ok(None);
+                };
+                if left.equals(&right) {
+                    Ok(Some(left))
+                } else {
+                    Err(self.error("left and right limits differ for absolute-value expression"))
+                }
+            }
+            _ => unreachable!("limit side already validated"),
+        }
+    }
+
+    fn limit_abs_ratio(
+        &self,
+        expression: &Rc<SymbolicExpr>,
+        variable: Symbol,
+        point: &Rc<SymbolicExpr>,
+        side: Option<&Value>,
+    ) -> ExecResult<Option<Value>> {
+        let SymbolicExpr::Binary {
+            left,
+            op: BinaryOp::Div,
+            right,
+        } = expression.as_ref()
+        else {
+            return Ok(None);
+        };
+        let affine = match (left.as_ref(), right.as_ref()) {
+            (
+                SymbolicExpr::Call {
+                    function: Builtin::Abs,
+                    args,
+                },
+                other,
+            ) if args.len() == 1 && args[0].equals(other) => &args[0],
+            (
+                other,
+                SymbolicExpr::Call {
+                    function: Builtin::Abs,
+                    args,
+                },
+            ) if args.len() == 1 && args[0].equals(other) => &args[0],
+            _ => return Ok(None),
+        };
+        let Some((slope, _)) = Self::affine_coefficients(affine, variable) else {
+            return Ok(None);
+        };
+        if slope.is_zero() {
+            return Ok(None);
+        }
+        let at_point =
+            self.simplify_symbolic_tree(&Self::substitute_symbolic(affine, variable, point))?;
+        if !Self::symbolic_is_zero(&at_point) {
+            return Ok(None);
+        }
+        let side = match side {
+            Some(Value::Str(side)) => side.as_str(),
+            None => return Err(self.error("left and right limits differ for absolute-value ratio")),
+            _ => return Ok(None),
+        };
+        let sign = if (side == "right") == slope.is_positive() {
+            1
+        } else {
+            -1
+        };
+        Ok(Some(Self::integer_value(sign)))
+    }
+
     fn limit_symbolic(
         &self,
         mut expression: Rc<SymbolicExpr>,
@@ -2725,9 +5117,12 @@ impl<W: Write> Interpreter<W> {
             {
                 let numerator = self.simplify_symbolic_tree(left)?;
                 let denominator = self.simplify_symbolic_tree(right)?;
-                let numerator_zero =
-                    matches!(numerator.as_ref(), SymbolicExpr::Number(number) if number.is_zero());
-                let denominator_zero = matches!(denominator.as_ref(), SymbolicExpr::Number(number) if number.is_zero());
+                let numerator_zero = self
+                    .limit_numeric_value(&numerator)?
+                    .is_some_and(|number| number.is_zero());
+                let denominator_zero = self
+                    .limit_numeric_value(&denominator)?
+                    .is_some_and(|number| number.is_zero());
                 if numerator_zero && denominator_zero {
                     let SymbolicExpr::Binary { left, right, .. } = expression.as_ref() else {
                         unreachable!()
@@ -2750,6 +5145,70 @@ impl<W: Write> Interpreter<W> {
                 Rc::clone(point),
             ],
         }))
+    }
+
+    /// Exact finite limits of rational functions as x tends to either infinity.
+    fn limit_at_infinity(
+        &self,
+        expression: &Rc<SymbolicExpr>,
+        variable: Symbol,
+        negative_infinity: bool,
+    ) -> ExecResult<Value> {
+        let one = Self::symbolic_integer(1);
+        let (numerator, denominator) = match expression.as_ref() {
+            SymbolicExpr::Binary {
+                left,
+                op: BinaryOp::Div,
+                right,
+            } => (left, right),
+            _ => (expression, &one),
+        };
+        let coefficients = |polynomial: &Rc<SymbolicExpr>| {
+            Polynomial::coefficient_expressions(polynomial, variable, &self.symbols).map_err(|_| {
+                self.error(
+                    "limit at infinity requires a rational function with rational coefficients",
+                )
+            })
+        };
+        let top = coefficients(numerator)?;
+        let bottom = coefficients(denominator)?;
+        let degree = |items: &[Rc<SymbolicExpr>]| -> Option<usize> {
+            items.iter().rposition(
+                |item| !matches!(item.as_ref(), SymbolicExpr::Number(number) if number.is_zero()),
+            )
+        };
+        let Some(bottom_degree) = degree(&bottom) else {
+            return Err(self.error("limit denominator is the zero polynomial"));
+        };
+        let Some(top_degree) = degree(&top) else {
+            return Ok(Self::integer_value(0));
+        };
+        if top_degree < bottom_degree {
+            return Ok(Self::integer_value(0));
+        }
+        if top_degree > bottom_degree {
+            let top_leading = self.simplify_symbolic_tree(&top[top_degree])?;
+            let bottom_leading = self.simplify_symbolic_tree(&bottom[bottom_degree])?;
+            if let (SymbolicExpr::Number(top), SymbolicExpr::Number(bottom)) =
+                (top_leading.as_ref(), bottom_leading.as_ref())
+            {
+                let mut sign = if top.is_negative() == bottom.is_negative() {
+                    1
+                } else {
+                    -1
+                };
+                if negative_infinity && (top_degree - bottom_degree) % 2 == 1 {
+                    sign = -sign;
+                }
+                return Ok(Value::Infinity(sign));
+            }
+            return Err(self.error("divergent limit requires numeric leading coefficients"));
+        }
+        self.apply_binary(
+            BinaryOp::Div,
+            Self::symbolic_value(top[top_degree].clone()),
+            Self::symbolic_value(bottom[bottom_degree].clone()),
+        )
     }
 
     fn faulhaber_sum(
@@ -2780,10 +5239,47 @@ impl<W: Write> Interpreter<W> {
         let Some(power) = power_of(expression, variable) else {
             return Ok(None);
         };
-        if power > 3 {
+        if power > 8 {
             return Ok(None);
         }
         let prefix = |end: Rc<SymbolicExpr>| {
+            if power >= 4 {
+                // k^p = sum_j S(p,j) j! binom(k,j). Summing the binomial
+                // basis gives S(p,j)/(j+1) times (n+1)_{j+1}.
+                let mut stirling = vec![BigInt::zero(); power as usize + 1];
+                stirling[0] = BigInt::one();
+                for degree in 1..=power as usize {
+                    let mut next = vec![BigInt::zero(); power as usize + 1];
+                    for index in 1..=degree {
+                        next[index] = &stirling[index] * BigInt::from(index) + &stirling[index - 1];
+                    }
+                    stirling = next;
+                }
+                let mut total = Self::symbolic_integer(0);
+                for index in 1..=power as usize {
+                    if stirling[index].is_zero() {
+                        continue;
+                    }
+                    let mut falling = Self::symbolic_integer(1);
+                    for offset in 0..=index {
+                        let factor = Self::symbolic_binary_raw(
+                            Rc::clone(&end),
+                            BinaryOp::Add,
+                            Self::symbolic_integer(1 - offset as i64),
+                        );
+                        falling = Self::symbolic_binary_raw(falling, BinaryOp::Mul, factor);
+                    }
+                    let coefficient = Rc::new(SymbolicExpr::Number(Number::from_rational(
+                        BigRational::new(stirling[index].clone(), BigInt::from(index + 1)),
+                    )));
+                    total = Self::symbolic_binary_raw(
+                        total,
+                        BinaryOp::Add,
+                        Self::symbolic_binary_raw(coefficient, BinaryOp::Mul, falling),
+                    );
+                }
+                return total;
+            }
             let one = Self::symbolic_integer(1);
             let next = Self::symbolic_binary_raw(Rc::clone(&end), BinaryOp::Add, one);
             match power {
@@ -3839,6 +6335,167 @@ impl<W: Write> Interpreter<W> {
             .into_iter()
             .map(|candidate| Self::solve_affine_argument(argument, variable, candidate))
             .collect()
+    }
+
+    fn solve_periodic(
+        &self,
+        expression: &Rc<SymbolicExpr>,
+        variable: Symbol,
+        parameter: Symbol,
+    ) -> ExecResult<Value> {
+        let (target, right_hand_side) = match expression.as_ref() {
+            SymbolicExpr::Binary { left, op, right }
+                if matches!(op, BinaryOp::Add | BinaryOp::Sub)
+                    && Self::contains_symbol(left, variable)
+                    && !Self::contains_symbol(right, variable) =>
+            {
+                (
+                    left,
+                    if *op == BinaryOp::Sub {
+                        Rc::clone(right)
+                    } else {
+                        Self::symbolic_binary_raw(
+                            Self::symbolic_integer(0),
+                            BinaryOp::Sub,
+                            Rc::clone(right),
+                        )
+                    },
+                )
+            }
+            SymbolicExpr::Binary { left, op, right }
+                if matches!(op, BinaryOp::Add | BinaryOp::Sub)
+                    && Self::contains_symbol(right, variable)
+                    && !Self::contains_symbol(left, variable) =>
+            {
+                (
+                    right,
+                    if *op == BinaryOp::Sub {
+                        Rc::clone(left)
+                    } else {
+                        Self::symbolic_binary_raw(
+                            Self::symbolic_integer(0),
+                            BinaryOp::Sub,
+                            Rc::clone(left),
+                        )
+                    },
+                )
+            }
+            _ => (expression, Self::symbolic_integer(0)),
+        };
+        let SymbolicExpr::Call { function, args } = target.as_ref() else {
+            return Err(self.error("solve_periodic expects a sine, cosine, or tangent equation"));
+        };
+        let (period_factor, function_name) = match function {
+            Builtin::Sin => (2, "sin"),
+            Builtin::Cos => (2, "cos"),
+            Builtin::Tan => (1, "tan"),
+            _ => return Err(self.error("solve_periodic expects sin, cos, or tan")),
+        };
+        let right_hand_side = self.simplify_symbolic_tree(&right_hand_side)?;
+        let Some(target_value) = (match right_hand_side.as_ref() {
+            SymbolicExpr::Number(number) => number.as_rational(),
+            _ => None,
+        }) else {
+            return Err(self.error("solve_periodic requires a real numeric target"));
+        };
+        if matches!(function, Builtin::Sin | Builtin::Cos)
+            && target_value.abs() > BigRational::one()
+        {
+            return Ok(Value::Map(Rc::new(vec![
+                (
+                    Value::Str("families".to_owned()),
+                    Value::Array(Rc::new(vec![])),
+                ),
+                (
+                    Value::Str("parameter".to_owned()),
+                    Value::Symbolic(Rc::new(SymbolicExpr::Variable(parameter))),
+                ),
+                (Value::Str("domain".to_owned()), Value::Str("Z".to_owned())),
+            ])));
+        }
+        let argument = args
+            .first()
+            .ok_or_else(|| self.error("missing trigonometric argument"))?;
+        let (coefficient, _) = Self::affine_coefficients(argument, variable)
+            .filter(|(coefficient, _)| !coefficient.is_zero())
+            .ok_or_else(|| {
+                self.error(format!(
+                    "solve_periodic expects an affine {function_name} argument"
+                ))
+            })?;
+        let angle = |numerator: i64, denominator: i64| {
+            Self::symbolic_binary_raw(
+                Rc::new(SymbolicExpr::Number(Number::from_rational(
+                    BigRational::new(BigInt::from(numerator), BigInt::from(denominator)),
+                ))),
+                BinaryOp::Mul,
+                Rc::new(SymbolicExpr::Constant(MathConstant::Pi)),
+            )
+        };
+        let special_angles = match (*function, &target_value) {
+            (Builtin::Sin, value) if value.is_zero() => {
+                Some(vec![Self::symbolic_integer(0), angle(1, 1)])
+            }
+            (Builtin::Sin, value) if value == &BigRational::one() => Some(vec![angle(1, 2)]),
+            (Builtin::Sin, value) if value == &-BigRational::one() => Some(vec![angle(-1, 2)]),
+            (Builtin::Cos, value) if value.is_zero() => Some(vec![angle(1, 2), angle(-1, 2)]),
+            (Builtin::Cos, value) if value == &BigRational::one() => {
+                Some(vec![Self::symbolic_integer(0)])
+            }
+            (Builtin::Cos, value) if value == &-BigRational::one() => Some(vec![angle(1, 1)]),
+            (Builtin::Tan, value) if value.is_zero() => Some(vec![Self::symbolic_integer(0)]),
+            (Builtin::Tan, value) if value == &BigRational::one() => Some(vec![angle(1, 4)]),
+            (Builtin::Tan, value) if value == &-BigRational::one() => Some(vec![angle(-1, 4)]),
+            _ => None,
+        };
+        let roots = if let Some(angles) = special_angles {
+            angles
+                .into_iter()
+                .map(|angle| {
+                    Self::solve_affine_argument(argument, variable, angle)
+                        .ok_or_else(|| self.error("solve_periodic could not solve affine argument"))
+                })
+                .collect::<ExecResult<Vec<_>>>()?
+        } else {
+            Self::solve_transcendental(expression, variable).ok_or_else(|| {
+                self.error("solve_periodic could not isolate the trigonometric function")
+            })?
+        };
+        let scale = BigRational::from_integer(BigInt::from(period_factor)) / coefficient.abs();
+        let period = Self::symbolic_binary_raw(
+            Rc::new(SymbolicExpr::Number(Number::from_rational(scale))),
+            BinaryOp::Mul,
+            Rc::new(SymbolicExpr::Constant(MathConstant::Pi)),
+        );
+        let shift = Self::symbolic_binary_raw(
+            period,
+            BinaryOp::Mul,
+            Rc::new(SymbolicExpr::Variable(parameter)),
+        );
+        let mut families = Vec::new();
+        for root in roots {
+            let family = Self::symbolic_binary_raw(root, BinaryOp::Add, Rc::clone(&shift));
+            let family = self.simplify_symbolic_tree(&family)?;
+            if !families
+                .iter()
+                .any(|known: &Rc<SymbolicExpr>| known.equals(&family))
+            {
+                families.push(family);
+            }
+        }
+        Ok(Value::Map(Rc::new(vec![
+            (
+                Value::Str("families".to_owned()),
+                Value::Array(Rc::new(
+                    families.into_iter().map(Self::symbolic_value).collect(),
+                )),
+            ),
+            (
+                Value::Str("parameter".to_owned()),
+                Value::Symbolic(Rc::new(SymbolicExpr::Variable(parameter))),
+            ),
+            (Value::Str("domain".to_owned()), Value::Str("Z".to_owned())),
+        ])))
     }
 
     fn contains_symbol(expression: &SymbolicExpr, variable: Symbol) -> bool {
@@ -8385,6 +11042,7 @@ impl<W: Write> Interpreter<W> {
             Value::Str(s) => s.clone(),
             Value::Bool(b) => b.to_string(),
             Value::Nil => "nil".to_string(),
+            Value::Infinity(sign) => if *sign < 0 { "-infinity" } else { "infinity" }.to_owned(),
             Value::Array(elements) => {
                 let values: Vec<String> = elements
                     .iter()
@@ -8394,6 +11052,19 @@ impl<W: Write> Interpreter<W> {
                     })
                     .collect();
                 format!("[{}]", values.join(", "))
+            }
+            Value::Map(entries) => {
+                let values = entries
+                    .iter()
+                    .map(|(key, value)| {
+                        let key = match key {
+                            Value::Str(text) => format!("\"{text}\""),
+                            _ => self.stringify(key),
+                        };
+                        format!("{key}: {}", self.stringify(value))
+                    })
+                    .collect::<Vec<_>>();
+                format!("{{{}}}", values.join(", "))
             }
             Value::Symbolic(expression) => self.format_symbolic(expression, 0),
             Value::Function(function) => {

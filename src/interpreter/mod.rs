@@ -2,6 +2,7 @@
 mod engine;
 pub mod environment;
 pub mod flow;
+mod numeric_linear;
 mod polynomial;
 pub mod value;
 

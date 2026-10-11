@@ -133,13 +133,31 @@ window.scasDownload = (name, content, mime) => {
 window.scasImport = () => {
   const input = document.createElement("input");
   input.type = "file";
-  input.accept = ".scas,text/plain";
+  input.accept = ".scas,.csv,.json,text/plain,text/csv,application/json";
+  input.multiple = true;
   input.onchange = async () => {
-    const file = input.files?.[0];
-    if (file && handle) handle.load_source(await file.text());
+    for (const file of input.files ?? []) {
+      if (!handle) return;
+      const content = await file.text();
+      handle.import_data_file(file.name, content);
+      if (file.name.toLowerCase().endsWith(".scas")) handle.load_source(content);
+    }
   };
   input.click();
 };
+
+window.scasPromptInput = (message) => window.prompt(message);
+
+document.addEventListener("dragover", (event) => event.preventDefault());
+document.addEventListener("drop", async (event) => {
+  event.preventDefault();
+  for (const file of event.dataTransfer?.files ?? []) {
+    if (!/\.(scas|csv|json)$/i.test(file.name)) continue;
+    const content = await file.text();
+    handle?.import_data_file(file.name, content);
+    if (file.name.toLowerCase().endsWith(".scas")) handle?.load_source(content);
+  }
+});
 
 try {
   await init();

@@ -55,7 +55,7 @@ let D_inverse = [1/4, 0; 0, 1/2];
 
 /// \newpage
 /// \section*{Problem 22.2}
-/// \textbf{Problem.} Diagonalize the Markov matrix \(B=\begin{pmatrix}0.6&0.9\\0.4&0.1\end{pmatrix}\). Then find \(\lim_{k\to\infty}\Lambda^k\) and \(\lim_{k\to\infty}B^k\).
+/// \textbf{Problem.} Diagonalize the Markov matrix \(B=\begin{pmatrix}0.6&0.9\\0.4&0.1\end{pmatrix}\). Then find \(\lim_{k\to\infty}Λ^k\) and \(\lim_{k\to\infty}B^k\).
 
 /// We use the exact fractions \(3/5,9/10,2/5,1/10\) in place of the printed decimals.
 let B = [3/5, 9/10; 2/5, 1/10];
@@ -79,7 +79,7 @@ let B = [3/5, 9/10; 2/5, 1/10];
     let Lambda = [1, 0; 0, -3/10];
 \}
 
-/// Reduce \(Q\), then verify \(B=Q\Lambda Q^{-1}\):
+/// Reduce \(Q\), then verify \(B=QΛ Q^{-1}\):
 \[
     inverse_steps(Q) =>
 \]
@@ -90,10 +90,10 @@ let B = [3/5, 9/10; 2/5, 1/10];
     matmul_steps(matmul(Q, Lambda), inverse(Q)) =>
 \]
 
-/// Since \(B^k=Q\Lambda^kQ^{-1}\), the powers are controlled by
-/// \[\Lambda^k=\begin{pmatrix}1&0\\0&(-3/10)^k\end{pmatrix}.\]
+/// Since \(B^k=QΛ^kQ^{-1}\), the powers are controlled by
+/// \[Λ^k=\begin{pmatrix}1&0\\0&(-3/10)^k\end{pmatrix}.\]
 /// The second diagonal entry tends to zero. Therefore
-/// \[\lim_{k\to\infty}\Lambda^k=\begin{pmatrix}1&0\\0&0\end{pmatrix}.\]
+/// \[\lim_{k\to\infty}Λ^k=\begin{pmatrix}1&0\\0&0\end{pmatrix}.\]
 
 /// Substitution gives the limiting projection
 let P = [9/13, 9/13; 4/13, 4/13];

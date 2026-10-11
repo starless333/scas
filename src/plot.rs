@@ -94,6 +94,44 @@ impl PlotBounds {
         self.y_max - self.y_min
     }
 
+    /// Zoom around a point in viewport coordinates (0 = left/top, 1 = right/bottom).
+    pub fn zoomed_at(&self, factor: f64, x_ratio: f64, y_ratio: f64) -> Option<Self> {
+        let x_span = self.x_span() * factor;
+        let y_span = self.y_span() * factor;
+        if !factor.is_finite() || !(1e-6..=1e9).contains(&x_span) || !(1e-6..=1e9).contains(&y_span)
+        {
+            return None;
+        }
+        let x_ratio = x_ratio.clamp(0.0, 1.0);
+        let y_ratio = y_ratio.clamp(0.0, 1.0);
+        let anchor_x = self.x_min + x_ratio * self.x_span();
+        let anchor_y = self.y_max - y_ratio * self.y_span();
+        Some(Self::new(
+            anchor_x - x_ratio * x_span,
+            anchor_x + (1.0 - x_ratio) * x_span,
+            anchor_y - (1.0 - y_ratio) * y_span,
+            anchor_y + y_ratio * y_span,
+        ))
+    }
+
+    pub fn panned_by_pixels(&self, dx: f32, dy: f32, width: f32, height: f32) -> Option<Self> {
+        if width <= 0.0 || height <= 0.0 {
+            return None;
+        }
+        let x_shift = -f64::from(dx) * self.x_span() / f64::from(width);
+        let y_shift = f64::from(dy) * self.y_span() / f64::from(height);
+        let next = Self::new(
+            self.x_min + x_shift,
+            self.x_max + x_shift,
+            self.y_min + y_shift,
+            self.y_max + y_shift,
+        );
+        [next.x_min, next.x_max, next.y_min, next.y_max]
+            .iter()
+            .all(|bound| bound.is_finite())
+            .then_some(next)
+    }
+
     /// Whether an x coordinate falls inside the window (inclusive).
     pub fn contains_x(&self, x: f64) -> bool {
         x >= self.x_min && x <= self.x_max
@@ -1520,6 +1558,29 @@ pub fn execute_plot_command<W: Write>(
     ascii_height: usize,
     base_directory: &Path,
 ) -> Result<PlotOutcome, String> {
+    execute_plot_command_with_range(
+        interpreter,
+        symbols,
+        rest,
+        ascii_width,
+        ascii_height,
+        base_directory,
+        None,
+    )
+}
+
+/// Plot the same command while sampling an explicit horizontal viewport.
+/// Interactive canvases use this during pan and zoom, without rewriting the
+/// user's expression or its optional source range.
+pub fn execute_plot_command_with_range<W: Write>(
+    interpreter: &mut Interpreter<W>,
+    symbols: &mut SymbolTable,
+    rest: &str,
+    ascii_width: usize,
+    ascii_height: usize,
+    base_directory: &Path,
+    range_override: Option<(f64, f64)>,
+) -> Result<PlotOutcome, String> {
     let (svg_mode, terminal_mode, rest) = if rest == "svg" {
         (true, false, "")
     } else if let Some(expression) = rest.strip_prefix("svg ") {
@@ -1532,21 +1593,25 @@ pub fn execute_plot_command<W: Write>(
         (false, false, rest)
     };
     let command = parse_plot_command(rest)?;
-    let (x_min, x_max) = match (&command.from, &command.to) {
-        (Some(from), Some(to)) => {
-            let low = evaluate_scalar(interpreter, symbols, from)?;
-            let high = evaluate_scalar(interpreter, symbols, to)?;
-            if low.partial_cmp(&high) != Some(std::cmp::Ordering::Less) {
-                return Err(format!(
-                    "plot range must satisfy from {} < to {}",
-                    format_number(low),
-                    format_number(high)
-                ));
+    let (x_min, x_max) = match range_override {
+        Some((low, high)) if low.is_finite() && high.is_finite() && low < high => (low, high),
+        Some(_) => return Err("plot view requires finite ascending bounds".to_owned()),
+        None => match (&command.from, &command.to) {
+            (Some(from), Some(to)) => {
+                let low = evaluate_scalar(interpreter, symbols, from)?;
+                let high = evaluate_scalar(interpreter, symbols, to)?;
+                if low.partial_cmp(&high) != Some(std::cmp::Ordering::Less) {
+                    return Err(format!(
+                        "plot range must satisfy from {} < to {}",
+                        format_number(low),
+                        format_number(high)
+                    ));
+                }
+                (low, high)
             }
-            (low, high)
-        }
-        (None, None) => (DEFAULT_X_MIN, DEFAULT_X_MAX),
-        _ => return Err("plot ranges need both bounds: from A to B".to_owned()),
+            (None, None) => (DEFAULT_X_MIN, DEFAULT_X_MAX),
+            _ => return Err("plot ranges need both bounds: from A to B".to_owned()),
+        },
     };
 
     let mut series = Vec::with_capacity(command.series.len());
@@ -2100,6 +2165,21 @@ pub fn render_svg(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn viewport_zoom_keeps_pointer_value_fixed_and_pan_is_reversible() {
+        let initial = PlotBounds::new(-10.0, 10.0, -5.0, 5.0);
+        let zoomed = initial.zoomed_at(0.5, 0.75, 0.25).unwrap();
+        assert_eq!((zoomed.x_min, zoomed.x_max), (-2.5, 7.5));
+        assert_eq!((zoomed.y_min, zoomed.y_max), (-1.25, 3.75));
+        assert_eq!(zoomed.x_min + 0.75 * zoomed.x_span(), 5.0);
+        assert_eq!(zoomed.y_max - 0.25 * zoomed.y_span(), 2.5);
+        let panned = initial
+            .panned_by_pixels(100.0, -50.0, 1000.0, 500.0)
+            .unwrap();
+        assert_eq!(panned, PlotBounds::new(-12.0, 8.0, -6.0, 4.0));
+        assert!(initial.zoomed_at(0.0, 0.5, 0.5).is_none());
+    }
 
     fn linear_interpreter() -> Interpreter<Vec<u8>> {
         Interpreter::new(SymbolTable::new(), Vec::new())

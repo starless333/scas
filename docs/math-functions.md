@@ -61,7 +61,7 @@ Complex numbers are intentionally unordered.
 | Trigonometric | `sin`, `cos`, `tan`, `sec`, `csc`, `cot` | real and complex |
 | Inverse trigonometric | `asin`, `acos`, `atan`, `atan2` | complex except real-only `atan2` |
 | Hyperbolic | `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh` | real and complex |
-| Special | `erf`, `erfc`, `gamma`, `lgamma` | real |
+| Special | `erf`, `erfc`, `gamma`, `lgamma` | real and complex |
 | Utilities | `abs`, `sign`, `floor`, `ceil`, `round`, `trunc`, `min`, `max`, `hypot`, `degrees`, `radians` | real, except complex `abs` and angle conversion |
 | Integer utilities | `gcd`, `lcm` | integers |
 | Polynomial tools | `degree`, `coefficients`, `resultant`, `discriminant`, `polynomial_gcd`, `polynomial_divrem` | exact univariate polynomials over the rationals |
@@ -70,8 +70,11 @@ Complex numbers are intentionally unordered.
 `lgamma(x)` means `ln(abs(gamma(x)))` for real non-pole inputs. The real
 special functions use arbitrary-precision series, continued fractions,
 reflection, recurrence, and asymptotic expansions as appropriate. Complex
-`gamma`, `lgamma`, `erf`, and `erfc` are not implemented; SCAS returns a clear
-runtime error rather than degrading their precision.
+`erf` and `erfc` use an arbitrary-precision series near the complex origin
+and an asymptotic expansion for larger arguments. Complex `gamma` uses
+reflection, recurrence, and a Stirling expansion. Complex `lgamma` is the
+principal logarithm of `gamma`. A difficult argument can produce a convergence
+error at the requested precision.
 
 ## Polynomial invariants and Euclidean operations
 
@@ -343,8 +346,8 @@ inventory.
 
 | Signature | Notes |
 | --- | --- |
-| `erf(x)`, `erfc(x)` | real error functions |
-| `gamma(x)`, `lgamma(x)` | real only; `lgamma(x) = ln(abs(gamma(x)))` |
+| `erf(x)`, `erfc(x)` | real and complex error functions; series and asymptotic branches |
+| `gamma(x)`, `lgamma(x)` | real and complex; real `lgamma(x) = ln(abs(gamma(x)))`; complex `lgamma` uses the principal logarithm |
 
 ### Symbolic algebra
 
@@ -353,7 +356,7 @@ inventory.
 | `simplify(expr)` | canonical simplification |
 | `expand(expr)` | distribution and angle-sum expansion |
 | `factor(expr)` | common-content and univariate factoring |
-| `apart(expr)` | partial fractions (distinct rational linear factors; improper fractions are divided first) |
+| `apart(expr)` | partial fractions (repeated rational linear factors and one remaining irreducible quadratic; improper fractions are divided first) |
 | `together(expr)` | sum of fractions → single fraction (inverse of `apart`, shared content cancelled) |
 | `horner(expr)` | Horner form |
 | `collect(expr, x)` | collect by powers of `x` |

@@ -9,6 +9,7 @@ pub mod lexer;
 pub mod number;
 pub mod parser;
 pub mod plot;
+pub mod runtime_io;
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
 mod web;
 #[cfg(feature = "web")]

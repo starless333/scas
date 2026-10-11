@@ -23,6 +23,7 @@ impl Statement {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum StatementKind {
+    Import(String),
     Let {
         name: Symbol,
         value: Option<Expr>,

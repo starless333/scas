@@ -6283,8 +6283,8 @@ fn token_highlight(token: TokenType) -> Option<Highlight> {
     use TokenType::*;
     Some(match token {
         Eof => return None,
-        Let | Fn | If | Else | For | While | Break | Continue | Return | Print | And | Or | Xor
-        | True | False | Nil | Exit | Help | Clear => Highlight::Keyword,
+        Let | Fn | If | Else | For | While | Break | Continue | Return | Print | Import | And
+        | Or | Xor | True | False | Nil | Exit | Help | Clear => Highlight::Keyword,
         Number => Highlight::Number,
         Str => Highlight::String,
         DocComment => Highlight::DocComment,

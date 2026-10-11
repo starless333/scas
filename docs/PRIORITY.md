@@ -50,32 +50,32 @@ The biggest gain is making the project easy to see. Most recruiters will not clo
 
 Design IO as an abstraction layer so the same code runs natively and in wasm.
 
-- [ ] **IO trait/abstraction.** Native: real files, stdin, command-line args. Browser: in-memory virtual filesystem, prompt-based `input()`, drag-and-drop CSV/JSON import.
-- [ ] **Modules and `import`**, plus a small standard library written in SCAS itself (also a good way to test the language).
-- [ ] **Maps/dictionaries.**
-- [ ] **String formatting/interpolation.**
-- [ ] **Better error recovery and runtime introspection** (e.g. `type_of`, `help(name)` surfacing the builtin reference).
+- [x] **IO trait/abstraction.** `read_text`, `write_text`, `input`, and `args` share a host interface. Native uses files, stdin, and process arguments; the browser uses a virtual filesystem, prompts, and drag-and-drop `.scas`, CSV, and JSON uploads. `read_csv` and `read_json` convert uploaded data into SCAS arrays and maps.
+- [x] **Modules and `import`**, plus a small standard library written in SCAS itself (`stdlib/core.scas`). Import paths are explicit and the browser bundles the standard library in its virtual filesystem.
+- [x] **Maps/dictionaries.** First-class immutable maps support scalar keys, indexing, `put`, `keys`, and `values`.
+- [x] **String formatting/interpolation.** `format()` replaces `{}` fields and supports escaped braces.
+- [ ] **Better error recovery and runtime introspection.** `type_of` and `help(name)` are implemented; richer error recovery and comprehensive builtin help remain open.
 
 ## 4. CAS depth (go deep on a few things)
 
 "Everything other CAS have" is a decades-long target. Prioritize what people recognize, roughly in this order:
 
-1. [ ] **Complete limit and series coverage.** `limit` (including one-sided calls), `series`, sums, and products are implemented; limits at infinity, a principled L'Hopital path, and Laurent-series coverage still need review.
-2. [ ] **Paired, ordered spectral decomposition and SVD.** `eigenvalues`, `eigenvectors`, `jordan_form`, LU, QR, and Cholesky are implemented; one stable paired eigen API and SVD remain open.
-3. [ ] **Integer polynomial factoring** (e.g. Zassenhaus with Hensel lifting) to go beyond rational-root factoring.
-4. [ ] **Periodic trigonometric solution families** with an integer parameter (`n in Z`), closing a listed boundary.
-5. [ ] **Summation and products** (closed forms for polynomial, geometric, and simple hypergeometric sums) and **basic ODEs** (separable, first-order linear, constant-coefficient).
-6. [ ] **A user-writable rewrite-rule system** (pattern matching on expressions, in SCAS itself).
-7. [ ] **Broader partial fractions** (repeated and irreducible quadratic factors) and **stronger integration** (integration by parts, substitution search, rational-function integration; Risch-style later).
-8. [ ] **Complex extensions** of `gamma`, `lgamma`, `erf`, `erfc`.
+1. [x] **Practical limit and series coverage.** Rational-function limits use exact polynomial valuations at finite rational points, including poles of any multiplicity, and exact degree comparisons at both infinities. Directional affine absolute-value expressions and bounded L'Hopital cases are supported. `series` returns Taylor and Laurent terms through order 64 for rational polynomial quotients, with an optional explicit `O((x-a)^(n+1))` term via `series(f,x,a,n,"O")`. General branch-sensitive limits outside these families remain future work.
+2. [x] **Paired, ordered spectral decomposition and SVD.** `eigenpairs` pairs exact values and vectors through 2×2 and for triangular matrices with available eigenvectors. Larger real symmetric matrices use numeric Jacobi; general numeric matrices through 6×6 use residual-checked complex eigenpairs. `natural`, `ascending`, and `descending` ordering preserve pairings, with numeric ordering restricted to real eigenvalues. `svd` returns `[U, Sigma, Vt]` for real or complex numeric rectangular matrices; 1×1 and 2×2 real square cases retain exact arithmetic. Larger defective eigensystems and high-precision numeric SVD remain future work.
+3. [x] **Integer polynomial factoring for small degrees.** Rational roots, square-free parts, exact quadratic and monic cubic divisor searches, and approximate root-subset reconstruction cover many degree 4–10 integer polynomials, including nonmonic quartic products. Every proposed factor is verified by exact division over the rationals. Higher degrees and ill-conditioned cases may remain unfactored; general Zassenhaus/Hensel factoring is future work.
+4. [x] **Periodic trigonometric solution families**: `solve_periodic(expr, x, n)` returns sine, cosine, and tangent families for affine arguments with `n` explicitly in `Z`.
+5. [ ] **Summation and products** (closed forms for polynomial, geometric, and simple hypergeometric sums) and **basic ODEs** (separable, first-order linear, constant-coefficient). Polynomial sums now cover powers through eight; geometric sums, separable implicit solutions, first-order linear ODEs, and constant-coefficient cases are implemented. Hypergeometric sums and broader ODE families remain open.
+6. [ ] **A user-writable rewrite-rule system**: `rewrite(expr, pattern, replacement)` performs one finite top-down pass with repeated wildcard bindings checked for consistency. Persistent rule collections and conditional rules remain open.
+7. [ ] **Broader partial fractions**: repeated rational linear factors and one remaining irreducible quadratic factor now decompose exactly. Integration by parts and several substitution and rational cases are implemented; repeated quadratic factors, wider substitution search, and general rational integration remain open.
+8. [x] **Complex extensions** of `gamma`, `lgamma`, `erf`, `erfc`. Complex `gamma` uses reflection, recurrence, and a Stirling expansion; `lgamma` takes the principal logarithm. Complex `erf` and `erfc` use a series near the origin and an asymptotic expansion for larger arguments, reporting a convergence error when the requested precision cannot be met.
 
 ## 5. Features only SCAS can offer
 
 These differentiate SCAS from black-box CAS tools.
 
-- [ ] **Step-by-step output beyond linear algebra**: derivative rules, integration by parts and substitution, limit steps, equation-solving steps.
-- [ ] **`assert` / `verify` primitive** so documents check their own claims, e.g. `assert(matmul(Q, Lambda, inverse(Q)) == B)`, and fail the build loudly if wrong.
-- [ ] **Equation-chain checking**: each step of a derivation is verified equivalent to the previous one.
+- [x] **Step-by-step output beyond linear algebra**: document results now show derivative rules, integration by parts and substitution setup with derivative checks, direct limit substitution, and factoring before equation roots. Deeper recursive traces remain open.
+- [x] **`assert` / `verify` primitive** so documents check their own claims, e.g. `assert(matmul(Q, Lambda, inverse(Q)) == B)`, and fail the build loudly if wrong.
+- [x] **Equation-chain checking**: `verify_chain([step1, step2, ...])` checks every adjacent pair by exact polynomial arithmetic or structural equality and fails at the first unproved link.
 
 ## 6. Proof of correctness
 
@@ -86,9 +86,9 @@ These differentiate SCAS from black-box CAS tools.
 
 ## 7. Presentation
 
-- [ ] README with a GIF/screenshot at the top and the live playground link.
+- [x] README with a browser IDE screenshot at the top and the configured playground URL. Public deployment still needs verification.
 - [x] Short architecture diagram (below).
-- [ ] A blog post on one hard problem, e.g. keeping simplification sound without assuming symbols are real, or designing the exact/approximate boundary.
+- [x] [Design note on the exact/approximate boundary](exact-approximate-boundary.md).
 - [x] Language server (LSP) for editor support outside the IDE; documenter
   diagnostic/completion parity with the GUI remains open.
 
@@ -114,9 +114,9 @@ SCAS source → lexer → parser → AST → interpreter → exact numeric + sym
 
 ## Current boundaries (from the capability inventory)
 
-- Complex extensions of `gamma`, `lgamma`, `erf`, and `erfc` are not implemented.
-- Periodic integer-parameter solution families are not represented; trig solving returns distinct principal solutions.
-- Partial fractions target proper rational functions with distinct rational linear factors.
+- Complex `gamma`, `lgamma`, `erf`, and `erfc` have numerical paths; difficult arguments can still produce a convergence error.
+- `solve` returns principal trigonometric solutions; `solve_periodic` returns integer-parameter families for affine sine, cosine, and tangent equations.
+- Partial fractions handle repeated rational linear factors and one remaining irreducible quadratic factor.
 - Symbolic integration is rule-based and returns an unevaluated integral when no safe rule exists.
-- Basic limits, series, sums, and products are implemented. Comprehensive
-  infinity/one-sided limit coverage, Laurent series, and ODEs remain open.
+- Basic limits, series, sums, and products are implemented. General branch-sensitive
+  limits, big-O series, and broader ODEs remain open.

@@ -91,6 +91,15 @@ impl Parser {
     }
 
     fn statement_kind(&mut self) -> ParseResult<StatementKind> {
+        if self.match_token(&[TokenType::Import]) {
+            let path = self.consume(
+                TokenType::Str,
+                "expected a quoted module path after `import`",
+            )?;
+            let path = Self::literal_text(path)?;
+            self.consume(TokenType::Semicolon, "expected `;` after import path")?;
+            return Ok(StatementKind::Import(path));
+        }
         if self.match_token(&[TokenType::DocComment]) {
             let mut prose = Self::literal_text(self.previous())?;
             while !prose.is_empty()

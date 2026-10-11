@@ -22,7 +22,7 @@ canvas { display: block; width: 100%; height: 100%; outline: none; }
   scrollbar-width: thin;
 }
 #math-preview[hidden] { display: none; }
-#math-preview .preview-toolbar { display: flex; align-items: center; justify-content: space-between; min-height: 28px; gap: 8px; font-size: 11px; }
+#math-preview .preview-toolbar { display: flex; align-items: center; justify-content: space-between; min-height: 20px; gap: 4px; font-size: 11px; white-space: nowrap; }
 #math-preview .preview-toolbar strong { font-weight: 600; }
 .preview-actions { display: flex; gap: 4px; }
 #math-preview-state { color: #4f9cf9; font-size: 10px; margin-left: 4px; }
@@ -31,24 +31,29 @@ canvas { display: block; width: 100%; height: 100%; outline: none; }
 #math-preview .preview-actions button:focus-visible { outline: 2px solid #4f9cf9; outline-offset: 2px; }
 #math-preview-close { display: none; }
 @media (max-width: 850px) { #math-preview-close { display: block; min-width: 24px; } }
-#math-preview .preview-caption { padding-bottom: 10px; border-bottom: 1px solid #3a3a3b; color: #adadad; font-size: 10.5px; }
+#math-preview .preview-caption { display: flex; align-items: center; justify-content: space-between; gap: 5px; padding: 5px 0 12px; border-bottom: 1px solid #3a3a3b; color: #adadad; font-size: 10.5px; }
+#math-preview .preview-caption button { flex: none; border: 1px solid #4d4d4d; border-radius: 2px; padding: 2px 5px; color: #cccccc; background: #323233; font: inherit; cursor: pointer; }
+#math-preview .preview-intro { display: flex; flex-direction: column; gap: 3px; padding: 14px 0 0; }
+#math-preview .preview-intro strong { font-size: 15px; font-weight: 600; }
+#math-preview .preview-intro span { color: #adadad; font-size: 11px; line-height: 1.3; }
 #math-preview-content { min-height: 100%; }
 #math-preview .preview-empty { color: #adadad; font-size: 13px; }
 #math-preview .preview-page {
-  min-height: 140px;
-  padding: 18px;
+  min-height: 65px;
+  padding: 8px 11px;
   background: #1f1f1f;
+  font-size: 9px;
 }
-#math-preview .preview-prose { margin: 0 0 12px; line-height: 1.55; overflow-wrap: anywhere; }
+#math-preview .preview-prose { margin: 0 0 2px; line-height: 1.15; overflow-wrap: anywhere; }
 #math-preview h2, #math-preview h3 { margin: 4px 0 12px; color: #cccccc; }
-#math-preview h2 { font-size: 21px; }
-#math-preview h3 { font-size: 17px; }
+#math-preview h2 { font-size: 12px; }
+#math-preview h3 { font-size: 10px; }
 #math-preview .preview-centered { text-align: center; }
 #math-preview h2.preview-centered { font-size: 19px; line-height: 1.3; }
 #math-preview p.preview-centered { margin: 4px 0; }
 #math-preview hr { border: 0; border-top: 1px solid #555; margin: 16px 0 20px; }
-#math-preview .preview-math { margin: 12px 0 18px; overflow-x: auto; overflow-y: hidden; }
-#math-preview mjx-container[jax="CHTML"][display="true"] { margin: 0.8em 0; }
+#math-preview .preview-math { margin: 2px 0 0; overflow-x: auto; overflow-y: hidden; }
+#math-preview mjx-container[jax="CHTML"][display="true"] { margin: 0.2em 0; }
 #math-preview .preview-error { color: #f9777f; font-size: 12px; }
 
 #loading {

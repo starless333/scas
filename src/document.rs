@@ -500,6 +500,10 @@ fn render_evaluation(
     };
     let name = interpreter.symbols().resolve(function);
 
+    if let crate::interpreter::value::Value::Derivation { result, steps } = value {
+        return render_derivation(name, args, source, result, steps, &renderer);
+    }
+
     if name == "solve" && args.len() == 2 {
         let equation = renderer.expression(&args[0]);
         let variable = renderer.expression(&args[1]);
@@ -532,10 +536,6 @@ fn render_evaluation(
         return format!(
             r"\begin{{aligned}}{source}&={result}+C \\ \frac{{d}}{{d{variable}}}\left({result}\right)&={integrand}\end{{aligned}}"
         );
-    }
-
-    if let crate::interpreter::value::Value::Derivation { result, steps } = value {
-        return render_derivation(name, args, source, result, steps, &renderer);
     }
 
     if matches!(
@@ -572,6 +572,95 @@ fn render_derivation(
     use crate::interpreter::value::StepOperation;
 
     let base_name = name.strip_suffix("_steps").unwrap_or(name);
+    if matches!(base_name, "derivative" | "integral" | "solve" | "limit") {
+        let rendered_result = renderer.value(result);
+        let mut rows = Vec::new();
+        match (base_name, args) {
+            ("derivative", [expression, variable]) => {
+                let variable = renderer.expression(variable);
+                rows.push(format!(
+                    r"f\left({variable}\right) &= {}",
+                    renderer.expression(expression)
+                ));
+                for step in steps.iter().skip(1).take(steps.len().saturating_sub(2)) {
+                    if let StepOperation::Explanation(rule) = &step.operation {
+                        rows.push(format!(
+                            r"\frac{{df}}{{d{variable}}} &= {} && \text{{{rule}}}",
+                            renderer.value(&step.value)
+                        ));
+                    }
+                }
+                rows.push(format!(r"\frac{{df}}{{d{variable}}} &= {rendered_result}"));
+            }
+            ("integral", [expression, variable]) => {
+                let variable = renderer.expression(variable);
+                for step in steps {
+                    if let StepOperation::Explanation(label) = &step.operation {
+                        let name = match label.as_str() {
+                            "by parts: u" | "substitution: u" => Some("u"),
+                            "by parts: du" | "substitution: du" => Some(r"\frac{du}{d"),
+                            "by parts: v" => Some("v"),
+                            _ => None,
+                        };
+                        if let Some(name) = name {
+                            let name = if name == r"\frac{du}{d" {
+                                format!(r"\frac{{du}}{{d{variable}}}")
+                            } else {
+                                name.to_owned()
+                            };
+                            rows.push(format!(
+                                r"{name} &= {} && \text{{{label}}}",
+                                renderer.value(&step.value)
+                            ));
+                        }
+                    }
+                }
+                if steps.iter().any(|step| matches!(&step.operation, StepOperation::Explanation(label) if label == "by parts: u")) {
+                    rows.push(r"\int u\,dv &= uv-\int v\,du".to_owned());
+                }
+                rows.push(format!(
+                    r"\int {}\,d{variable} &= {rendered_result}+C",
+                    renderer.expression(expression)
+                ));
+                if let Some(check) = steps.iter().find(|step| matches!(&step.operation, StepOperation::Explanation(rule) if rule == "differentiate to check")) {
+                    rows.push(format!(r"\frac{{d}}{{d{variable}}}\left({rendered_result}\right) &= {} && \text{{check}}", renderer.value(&check.value)));
+                }
+            }
+            ("solve", [equation, variable]) => {
+                rows.push(format!(r"{} &= 0", renderer.expression(equation)));
+                for step in steps.iter().skip(1).take(steps.len().saturating_sub(2)) {
+                    rows.push(format!(
+                        r"&\iff {}=0 && \text{{factor}}",
+                        renderer.value(&step.value)
+                    ));
+                }
+                let variable = renderer.expression(variable);
+                if let crate::interpreter::value::Value::Array(roots) = result {
+                    let solutions = if roots.is_empty() {
+                        r"\text{no solutions}".to_owned()
+                    } else {
+                        roots
+                            .iter()
+                            .map(|root| format!("{variable} = {}", renderer.value(root)))
+                            .collect::<Vec<_>>()
+                            .join(r",\quad ")
+                    };
+                    rows.push(format!(r"&\implies {solutions}"));
+                }
+            }
+            ("limit", _) => {
+                rows.push(format!(r"{source} &= {rendered_result}"));
+                if let Some(step) = steps.iter().find(|step| matches!(&step.operation, StepOperation::Explanation(rule) if rule == "direct substitution")) {
+                    rows.insert(0, format!(r"&\to {} && \text{{direct substitution}}", renderer.value(&step.value)));
+                }
+                if let Some(step) = steps.iter().find(|step| matches!(&step.operation, StepOperation::Explanation(rule) if rule == "L'Hopital")) {
+                    rows.insert(rows.len() - 1, format!(r"&\to {} && \text{{L'Hopital's rule}}", renderer.value(&step.value)));
+                }
+            }
+            _ => {}
+        }
+        return format!(r"\begin{{aligned}}{}\end{{aligned}}", rows.join(" \\\\\n"));
+    }
     if base_name == "trace" {
         if let Some(terms) = steps.iter().find_map(|step| match &step.value {
             crate::interpreter::value::Value::Array(values)
@@ -1060,6 +1149,31 @@ det_steps([1, 2; 3, 4]) =>;
         assert!(latex.contains(r"\begin{align*}"));
         assert!(!latex.contains(r"\begin{aligned}"));
         assert!(latex.matches("\\\\\n").count() >= 3, "{latex}");
+    }
+
+    #[test]
+    fn calculus_results_include_rules_checks_and_factoring() {
+        let document = build(
+            r#"
+\[ derivative(x*sin(x), x) => \]
+\[ integral(2*x, x) => \]
+\[ integral(x*exp(x), x) => \]
+\[ integral(sin(3*x+1), x) => \]
+\[ solve(x^2-1, x) => \]
+\[ limit(x^2, x, 2) => \]
+\[ limit(sin(x)/x, x, 0) => \]
+"#,
+        )
+        .unwrap();
+        let body = document.body();
+        assert!(body.contains(r"\text{product rule}"), "{body}");
+        assert!(body.contains(r"\text{check}"), "{body}");
+        assert!(body.contains(r"\text{by parts: u}"), "{body}");
+        assert!(body.contains(r"\int u\,dv"), "{body}");
+        assert!(body.contains(r"\text{substitution: u}"), "{body}");
+        assert!(body.contains(r"\text{factor}"), "{body}");
+        assert!(body.contains(r"\text{direct substitution}"), "{body}");
+        assert!(body.contains(r"\text{L'Hopital's rule}"), "{body}");
     }
 
     #[test]

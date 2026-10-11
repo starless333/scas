@@ -113,7 +113,9 @@ At $x = 3$ the slope is $8$.
   and the exact result. Builtins with deeper traces include every available
   intermediate row. Linear-algebra derivations include the exact row operation
   beside each `A \sim A'` transition; integration adds `+C` and a
-  differentiation check, and `solve(f, x)` expands its roots explicitly.
+  differentiation check, shows by-parts or affine-substitution setup when
+  applicable, and `solve(f, x)` factors before expanding its roots. Documented
+  derivatives show the applied rule, and limits show direct substitution.
 - Single-letter variables use normal italic mathematical notation. Longer
   identifiers are upright.
 

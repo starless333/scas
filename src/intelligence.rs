@@ -331,7 +331,10 @@ fn expression_in_statement(statement: &Statement, byte: usize) -> Option<&Expr> 
         | StatementKind::Chain(statements) => statements
             .iter()
             .find_map(|statement| expression_in_statement(statement, byte)),
-        StatementKind::Break | StatementKind::Continue | StatementKind::DocComment(_) => None,
+        StatementKind::Break
+        | StatementKind::Continue
+        | StatementKind::DocComment(_)
+        | StatementKind::Import(_) => None,
     }
 }
 

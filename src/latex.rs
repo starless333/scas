@@ -619,6 +619,9 @@ impl<'a> LatexRenderer<'a> {
                 r"\text{false}"
             }),
             Value::Nil => output.push_str(r"\varnothing"),
+            Value::Infinity(sign) => {
+                output.push_str(if *sign < 0 { r"-\infty" } else { r"\infty" })
+            }
             Value::Array(elements) => {
                 output.push_str(r"\begin{pmatrix}");
                 let matrix = elements
@@ -642,6 +645,18 @@ impl<'a> LatexRenderer<'a> {
                     }
                 }
                 output.push_str(r"\end{pmatrix}");
+            }
+            Value::Map(entries) => {
+                output.push_str(r"\left\{");
+                for (index, (key, value)) in entries.iter().enumerate() {
+                    if index != 0 {
+                        output.push_str(r",\;");
+                    }
+                    self.write_value(key, output);
+                    output.push_str(r":\;");
+                    self.write_value(value, output);
+                }
+                output.push_str(r"\right\}");
             }
             Value::Symbolic(expression) => self.write_symbolic(expression, 0, output),
             Value::Function(_) | Value::Builtin(_) => output.push_str(r"\text{function}"),

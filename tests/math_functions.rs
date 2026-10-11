@@ -117,6 +117,38 @@ fn special_functions_match_high_precision_reference_vectors() {
 }
 
 #[test]
+fn complex_erf_series_covers_moderate_complex_arguments() {
+    assert_eq!(
+        output_at_precision("print(erf(evalf(i))); print(erfc(evalf(i)));", 30),
+        "1.65042575879754287602533772956i\n1 - 1.65042575879754287602533772956i\n"
+    );
+    assert!(output_at_precision("print(erf(evalf(3*i)));", 30)
+        .starts_with("1629.99462260156565106164795208i"));
+    let large = output_at_precision("print(erf(evalf(20*i))); print(erfc(evalf(20*i)));", 30);
+    assert!(
+        large.starts_with(
+            "147479753962878620244773315313e+143i\n1 - 147479753962878620244773315313e+143i\n"
+        ),
+        "{large}"
+    );
+}
+
+#[test]
+fn complex_gamma_and_log_gamma_use_the_principal_branch() {
+    let gamma = output_at_precision("print(gamma(evalf(1+i)));", 30);
+    assert!(
+        gamma.starts_with("0.498015668118356042713691117462 - 0.154949828301810685124955130484i"),
+        "{gamma}"
+    );
+    let log_gamma = output_at_precision("print(lgamma(evalf(1+i)));", 30);
+    assert!(
+        log_gamma
+            .starts_with("-0.650923199301856338885216831504 - 0.301640320467533197887531657797i"),
+        "{log_gamma}"
+    );
+}
+
+#[test]
 fn simplification_requires_the_assumptions_that_make_it_valid() {
     assert_eq!(
         output(

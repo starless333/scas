@@ -86,6 +86,7 @@ pub enum TokenType {
     Continue, // done
     Return,   // done
     Print,    // done
+    Import,
 
     True,  // done
     False, // done

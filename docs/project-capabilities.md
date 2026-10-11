@@ -253,12 +253,12 @@ Use or adapt these bullets to fit the role and available space:
 
 ## Current boundaries
 
-- Complex extensions of `gamma`, `lgamma`, `erf`, and `erfc` are not yet
-  implemented.
-- Periodic integer-parameter solution families are not represented; supported
-  trigonometric solving returns distinct principal solutions.
-- Partial fractions intentionally target proper rational functions with
-  distinct rational linear factors.
+- Complex `gamma`, `lgamma`, `erf`, and `erfc` have numerical implementations.
+  Difficult inputs may return a convergence error at the requested precision.
+- `solve` returns principal trigonometric roots; `solve_periodic` returns
+  integer-parameter families for affine sine, cosine, and tangent equations.
+- Partial fractions support repeated rational linear factors and one remaining
+  irreducible quadratic factor. Repeated quadratic factors remain open.
 - Symbolic integration is rule-based and returns an unevaluated integral when
   no safe rule is available.
 - The browser IDE is buildable and tested locally, but its Pages deployment is

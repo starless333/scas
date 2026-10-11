@@ -1,8 +1,67 @@
 use scas::interpreter::Interpreter;
 use scas::lexer::Scanner;
 use scas::parser::Parser;
+use scas::runtime_io::{MemoryIo, RuntimeIo};
 use scas::{execute, execute_with_limits, ExecutionError, Limits};
 use std::num::NonZeroU64;
+use std::rc::Rc;
+
+#[test]
+fn imports_share_scope_and_virtual_io_supports_text_and_input() {
+    let io = Rc::new(MemoryIo::new());
+    io.insert_file("math.scas", "double(x) = 2 * x;".to_owned())
+        .unwrap();
+    io.queue_input("Ada".to_owned());
+    io.set_args(vec!["first".to_owned()]);
+    let source = "import \"math.scas\"; import \"math.scas\"; write_text(\"out.txt\", format(\"{} {}\", input(\"name: \"), double(21))); print(read_text(\"out.txt\")); print(args()[0]);";
+    let mut scanner = Scanner::new(source);
+    let tokens = scanner.scan_tokens().clone();
+    assert!(scanner.errors().is_empty());
+    let program = Parser::new(tokens).parse().unwrap();
+    let mut interpreter = Interpreter::with_limits_and_io(
+        scanner.into_symbols(),
+        Vec::new(),
+        Limits::default(),
+        io.clone(),
+    );
+    interpreter.run(&program).unwrap();
+    let result = String::from_utf8(interpreter.output_mut().clone()).unwrap();
+    assert!(result.contains("Ada 42"), "{result}");
+    assert!(result.contains("first"), "{result}");
+    assert_eq!(io.read_text("out.txt").unwrap(), "Ada 42");
+}
+
+#[test]
+fn bundled_scas_library_imports_in_native_execution() {
+    assert_eq!(
+        output("import \"stdlib/core.scas\"; print(square(7)); print(lerp(0, 10, 1/4));"),
+        "49\n5/2\n"
+    );
+}
+
+#[test]
+fn virtual_csv_and_json_import_as_values() {
+    let io = Rc::new(MemoryIo::new());
+    io.insert_file("rows.csv", "name,value\n\"Ada, A.\",42\n".to_owned())
+        .unwrap();
+    io.insert_file(
+        "data.json",
+        r#"{"ok":true,"items":[1,2.5],"exact":12345678901234567890.12345678901234567890}"#
+            .to_owned(),
+    )
+    .unwrap();
+    let source =
+        "print(read_csv(\"rows.csv\")[1][0]); print(read_json(\"data.json\")[\"items\"][1]); print(read_json(\"data.json\")[\"exact\"]);";
+    let mut scanner = Scanner::new(source);
+    let program = Parser::new(scanner.scan_tokens().clone()).parse().unwrap();
+    let mut interpreter =
+        Interpreter::with_limits_and_io(scanner.into_symbols(), Vec::new(), Limits::default(), io);
+    interpreter.run(&program).unwrap();
+    assert_eq!(
+        String::from_utf8(interpreter.output_mut().clone()).unwrap(),
+        "Ada, A.\n2.5\n12345678901234567890.1234567890123456789\n"
+    );
+}
 
 fn output(source: &str) -> String {
     let mut bytes = Vec::new();

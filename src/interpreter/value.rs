@@ -96,13 +96,17 @@ pub enum Builtin {
     DefiniteIntegral,
     Limit,
     Series,
+    SeriesRemainder,
     Sum,
     Product,
     MultipleIntegral,
     Dsolve,
+    DsolveSeparable,
     CharacteristicPolynomial,
     Eigenvalues,
     Eigenvectors,
+    Eigenpairs,
+    Svd,
     Lu,
     Qr,
     Cholesky,
@@ -122,6 +126,23 @@ pub enum Builtin {
     Discriminant,
     PolynomialGcd,
     PolynomialDivRem,
+    TypeOf,
+    Help,
+    Assert,
+    VerifyChain,
+    Rewrite,
+    SolvePeriodic,
+    Format,
+    Map,
+    Put,
+    Keys,
+    Values,
+    ReadText,
+    WriteText,
+    Input,
+    Args,
+    ReadJson,
+    ReadCsv,
 }
 
 impl Builtin {
@@ -218,12 +239,15 @@ impl Builtin {
         ("product", Builtin::Product),
         ("multiple_integral", Builtin::MultipleIntegral),
         ("dsolve", Builtin::Dsolve),
+        ("dsolve_separable", Builtin::DsolveSeparable),
         (
             "characteristic_polynomial",
             Builtin::CharacteristicPolynomial,
         ),
         ("eigenvalues", Builtin::Eigenvalues),
         ("eigenvectors", Builtin::Eigenvectors),
+        ("eigenpairs", Builtin::Eigenpairs),
+        ("svd", Builtin::Svd),
         ("lu", Builtin::Lu),
         ("qr", Builtin::Qr),
         ("cholesky", Builtin::Cholesky),
@@ -243,9 +267,30 @@ impl Builtin {
         ("discriminant", Builtin::Discriminant),
         ("polynomial_gcd", Builtin::PolynomialGcd),
         ("polynomial_divrem", Builtin::PolynomialDivRem),
+        ("type_of", Builtin::TypeOf),
+        ("help", Builtin::Help),
+        ("assert", Builtin::Assert),
+        ("verify", Builtin::Assert),
+        ("verify_chain", Builtin::VerifyChain),
+        ("rewrite", Builtin::Rewrite),
+        ("solve_periodic", Builtin::SolvePeriodic),
+        ("format", Builtin::Format),
+        ("map", Builtin::Map),
+        ("put", Builtin::Put),
+        ("keys", Builtin::Keys),
+        ("values", Builtin::Values),
+        ("read_text", Builtin::ReadText),
+        ("write_text", Builtin::WriteText),
+        ("input", Builtin::Input),
+        ("args", Builtin::Args),
+        ("read_json", Builtin::ReadJson),
+        ("read_csv", Builtin::ReadCsv),
     ];
 
     pub fn name(self) -> &'static str {
+        if self == Self::SeriesRemainder {
+            return "O";
+        }
         Self::ALL
             .iter()
             .find_map(|(name, builtin)| (*builtin == self).then_some(*name))
@@ -367,7 +412,9 @@ pub enum Value {
     Str(String),
     Bool(bool),
     Nil,
+    Infinity(i8),
     Array(Rc<Vec<Value>>),
+    Map(Rc<Vec<(Value, Value)>>),
     Symbolic(Rc<SymbolicExpr>),
     Function(Rc<UserFunction>),
     Builtin(Builtin),
@@ -390,8 +437,17 @@ impl Value {
             (Value::Str(a), Value::Str(b)) => a == b,
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Nil, Value::Nil) => true,
+            (Value::Infinity(a), Value::Infinity(b)) => a == b,
             (Value::Array(a), Value::Array(b)) => {
                 a.len() == b.len() && a.iter().zip(b.iter()).all(|(a, b)| a.equals(b))
+            }
+            (Value::Map(a), Value::Map(b)) => {
+                a.len() == b.len()
+                    && a.iter().all(|(key, value)| {
+                        b.iter().any(|(other_key, other_value)| {
+                            key.equals(other_key) && value.equals(other_value)
+                        })
+                    })
             }
             (Value::Symbolic(a), Value::Symbolic(b)) => a.equals(b),
             (Value::Function(a), Value::Function(b)) => Rc::ptr_eq(a, b),
@@ -412,7 +468,9 @@ impl Value {
             Value::Str(_) => "string",
             Value::Bool(_) => "bool",
             Value::Nil => "nil",
+            Value::Infinity(_) => "infinity",
             Value::Array(_) => "array",
+            Value::Map(_) => "map",
             Value::Symbolic(_) => "symbolic expression",
             Value::Function(_) => "function",
             Value::Builtin(_) => "builtin function",

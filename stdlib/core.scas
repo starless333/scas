@@ -1,0 +1,5 @@
+/// Small SCAS-written library. Import with `import "stdlib/core.scas";`.
+square(x) = x * x;
+cube(x) = x * x * x;
+mean2(a, b) = (a + b) / 2;
+lerp(a, b, t) = a + (b - a) * t;

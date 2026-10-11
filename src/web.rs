@@ -2,8 +2,9 @@
 //! separate while platform services are being extracted from its binary.
 
 use crate::ast::SourceSpan;
-use crate::document::{Document, DocumentFragment, FragmentKind};
+use crate::document::{self, Document, DocumentFragment, FragmentKind};
 use crate::lexer::{Scanner, TokenType};
+use crate::plot::{self, PlotBounds};
 use crate::web_runtime::{MIT_EXAMPLE, STARTER};
 use eframe::egui::{
     self,
@@ -11,6 +12,7 @@ use eframe::egui::{
     Color32, FontData, FontDefinitions, FontFamily, FontId, RichText, TextEdit,
 };
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 use wasm_bindgen::prelude::*;
@@ -23,6 +25,8 @@ extern "C" {
     fn download_file(name: &str, content: &str, mime: &str);
     #[wasm_bindgen(js_namespace = window, js_name = scasImport)]
     fn import_file();
+    #[wasm_bindgen(js_namespace = window, js_name = scasPromptInput)]
+    fn prompt_input(message: &str) -> Option<String>;
     #[wasm_bindgen(catch, js_namespace = window, js_name = scasCreateWorker)]
     fn create_worker() -> Result<Worker, JsValue>;
     #[wasm_bindgen(js_namespace = window, js_name = scasShowPreview)]
@@ -75,6 +79,12 @@ impl WebHandle {
     pub fn load_source(&self, source: String) {
         if let Some(mut app) = self.runner.app_mut::<WebApp>() {
             app.load_source(source);
+        }
+    }
+
+    pub fn import_data_file(&self, name: String, content: String) {
+        if let Some(mut app) = self.runner.app_mut::<WebApp>() {
+            app.import_data_file(name, content);
         }
     }
 
@@ -229,7 +239,7 @@ fn paint_line_numbers(ui: &egui::Ui, output: &egui::text_edit::TextEditOutput, g
                 egui::pos2(separator - 10.0, output.galley_pos.y + row.rect.center().y),
                 egui::Align2::RIGHT_CENTER,
                 line.to_string(),
-                FontId::monospace(18.0),
+                FontId::monospace(if gutter < 60.0 { 13.0 } else { 18.0 }),
                 Color32::from_rgb(0, 122, 204),
             );
         }
@@ -240,9 +250,72 @@ fn paint_line_numbers(ui: &egui::Ui, output: &egui::text_edit::TextEditOutput, g
     }
 }
 
+fn paint_web_logo(ui: &mut egui::Ui) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 27.0), egui::Sense::hover());
+    let center = rect.center();
+    let stroke = egui::Stroke::new(2.4, Color32::from_rgb(0, 122, 204));
+    for (a, b) in [
+        (egui::vec2(-8.0, -7.0), egui::vec2(7.0, -7.0)),
+        (egui::vec2(-8.0, -7.0), egui::vec2(-1.0, 0.0)),
+        (egui::vec2(-1.0, 0.0), egui::vec2(-8.0, 7.0)),
+        (egui::vec2(-8.0, 7.0), egui::vec2(7.0, 7.0)),
+    ] {
+        ui.painter().line_segment([center + a, center + b], stroke);
+    }
+    ui.painter()
+        .circle_filled(center + egui::vec2(8.0, -7.0), 1.8, stroke.color);
+    ui.painter()
+        .circle_filled(center + egui::vec2(8.0, 7.0), 1.8, stroke.color);
+}
+
+fn web_icon_button(ui: &mut egui::Ui, glyph: char, tooltip: &str) -> egui::Response {
+    ui.add_sized(
+        [27.0, 27.0],
+        egui::Button::new(RichText::new(glyph).font(FontId::new(
+            16.0,
+            FontFamily::Name("VS Code Codicons".into()),
+        )))
+        .frame(false),
+    )
+    .on_hover_text(tooltip)
+}
+
+fn web_activity_button(
+    ui: &mut egui::Ui,
+    glyph: char,
+    selected: bool,
+    tooltip: &str,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(40.0, 38.0), egui::Sense::click());
+    if selected {
+        ui.painter().rect_filled(
+            egui::Rect::from_min_size(rect.left_top(), egui::vec2(2.0, rect.height())),
+            0.0,
+            Color32::from_rgb(0, 122, 204),
+        );
+    }
+    if response.hovered() {
+        ui.painter()
+            .rect_filled(rect.shrink(2.0), 2.0, Color32::from_gray(70));
+    }
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        glyph,
+        FontId::new(23.0, FontFamily::Name("VS Code Codicons".into())),
+        if selected {
+            Color32::from_rgb(204, 204, 204)
+        } else {
+            Color32::from_rgb(157, 157, 157)
+        },
+    );
+    response.on_hover_text(tooltip)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Document,
+    Repl,
     Plot,
 }
 
@@ -263,6 +336,12 @@ struct WebProblem {
     message: String,
 }
 
+struct WebReplEntry {
+    input: String,
+    output: String,
+    error: Option<String>,
+}
+
 struct WebApp {
     context: egui::Context,
     source: String,
@@ -276,6 +355,14 @@ struct WebApp {
     plot_series: Vec<WebSeries>,
     plot_bounds: [f64; 4],
     plot_svg: String,
+    plot_custom_view: bool,
+    plot_fit_y_pending: bool,
+    plot_due: Option<f64>,
+    repl_input: String,
+    repl_entries: Vec<WebReplEntry>,
+    repl_history_index: Option<usize>,
+    last_repl_submission: String,
+    queued_inputs: Vec<String>,
     generation: u64,
     pending: bool,
     due: Option<f64>,
@@ -292,6 +379,10 @@ struct WebApp {
     highlight_source: String,
     highlight_job: LayoutJob,
     first_frame: bool,
+    quick_open: bool,
+    quick_open_query: String,
+    explorer_root_open: bool,
+    explorer_expanded: HashSet<String>,
 }
 
 impl WebApp {
@@ -321,20 +412,50 @@ impl WebApp {
             .and_then(|hash| hash.strip_prefix("#source=").map(str::to_owned))
             .and_then(|encoded| js_sys::decode_uri_component(&encoded).ok())
             .map(String::from);
+        let source_name = if shared.is_some() {
+            "shared.scas"
+        } else if stored.is_some() {
+            "untitled.scas"
+        } else {
+            "Untitled"
+        };
         let source = shared.or(stored).unwrap_or_else(|| STARTER.to_owned());
+        let initial_preview = if source_name == "Untitled" {
+            document::build_live_with_limits(&source, crate::web_runtime::browser_limits()).ok()
+        } else {
+            None
+        };
+        let initial_tex = initial_preview
+            .as_ref()
+            .map_or_else(String::new, Document::latex);
+        let initial_preview_json = initial_preview.as_ref().map_or_else(|| "[]".to_owned(), |document| {
+            serde_json::to_string(&document.fragments.iter().map(|fragment| json!({
+                "kind": match fragment.kind { FragmentKind::Prose => "prose", FragmentKind::DisplayMath => "display", FragmentKind::AlignedMath => "aligned" },
+                "latex": fragment.latex,
+                "span": { "line": fragment.span.line }
+            })).collect::<Vec<_>>()).unwrap_or_else(|_| "[]".to_owned())
+        });
         let mut app = Self {
             context,
             source,
             output: String::new(),
             error: None,
             problems: Vec::new(),
-            document: None,
-            tex: String::new(),
+            document: initial_preview,
+            tex: initial_tex,
             tab: Tab::Document,
             plot_expression: "sin(x)".to_owned(),
             plot_series: Vec::new(),
             plot_bounds: [-10.0, 10.0, -1.0, 1.0],
             plot_svg: String::new(),
+            plot_custom_view: false,
+            plot_fit_y_pending: false,
+            plot_due: None,
+            repl_input: String::new(),
+            repl_entries: Vec::new(),
+            repl_history_index: None,
+            last_repl_submission: String::new(),
+            queued_inputs: Vec::new(),
             generation: 0,
             pending: false,
             due: None,
@@ -342,8 +463,8 @@ impl WebApp {
             _onmessage: onmessage,
             responses,
             status,
-            source_name: "untitled.scas".to_owned(),
-            preview_json: "[]".to_owned(),
+            source_name: source_name.to_owned(),
+            preview_json: initial_preview_json,
             explorer_open: true,
             preview_open: true,
             output_open: false,
@@ -351,6 +472,10 @@ impl WebApp {
             highlight_source: String::new(),
             highlight_job: LayoutJob::default(),
             first_frame: true,
+            quick_open: false,
+            quick_open_query: String::new(),
+            explorer_root_open: true,
+            explorer_expanded: HashSet::new(),
         };
         app.request("run");
         app
@@ -361,6 +486,21 @@ impl WebApp {
         "imported.scas".clone_into(&mut self.source_name);
         self.save_draft();
         self.request("run");
+    }
+
+    fn import_data_file(&mut self, name: String, content: String) {
+        let name = name.rsplit(['/', '\\']).next().unwrap_or(&name).to_owned();
+        if let Some(worker) = &self.worker {
+            let payload =
+                json!({"kind": "file_import", "generation": 0, "name": name, "content": content});
+            if worker
+                .post_message(&JsValue::from_str(&payload.to_string()))
+                .is_ok()
+            {
+                self.status = format!("Imported {name}");
+                self.context.request_repaint();
+            }
+        }
     }
 
     fn save_draft(&self) {
@@ -378,6 +518,10 @@ impl WebApp {
             "kind": kind,
             "source": self.source,
             "expression": self.plot_expression,
+            "input": self.repl_input,
+            "inputs": self.queued_inputs,
+            "view": if kind == "plot" && self.plot_custom_view { Some(self.plot_bounds) } else { None },
+            "fit_y": kind == "plot" && self.plot_fit_y_pending,
         });
         if let Some(worker) = &self.worker {
             if worker
@@ -406,6 +550,40 @@ impl WebApp {
                 continue;
             }
             self.pending = false;
+            if let Some(prompt) = value["input_required"].as_str() {
+                if let Some(answer) = prompt_input(prompt) {
+                    self.queued_inputs.push(answer);
+                    if value["kind"].as_str() == Some("repl") {
+                        self.repl_input = self.last_repl_submission.clone();
+                        self.request("repl");
+                        self.repl_input.clear();
+                    } else {
+                        self.request("run");
+                    }
+                    continue;
+                }
+            } else {
+                self.queued_inputs.clear();
+            }
+            if value["kind"].as_str() == Some("repl") {
+                let entry = WebReplEntry {
+                    input: value["input"].as_str().unwrap_or("").to_owned(),
+                    output: value["output"].as_str().unwrap_or("").to_owned(),
+                    error: value["error"].as_str().map(str::to_owned),
+                };
+                if entry.input.trim() == ":reset" && entry.error.is_none() {
+                    self.repl_entries.clear();
+                }
+                self.status = if entry.error.is_some() {
+                    "Needs attention"
+                } else {
+                    "Ready"
+                }
+                .to_owned();
+                self.repl_entries.push(entry);
+                context.request_repaint();
+                continue;
+            }
             self.error = value["error"].as_str().map(str::to_owned);
             self.problems = value["diagnostics"]
                 .as_array()
@@ -456,8 +634,12 @@ impl WebApp {
             if let Some(bounds) = value["bounds"].as_array() {
                 if bounds.len() == 4 {
                     for (index, bound) in bounds.iter().enumerate() {
-                        self.plot_bounds[index] = bound.as_f64().unwrap_or(self.plot_bounds[index]);
+                        if !self.plot_custom_view || (self.plot_fit_y_pending && index >= 2) {
+                            self.plot_bounds[index] =
+                                bound.as_f64().unwrap_or(self.plot_bounds[index]);
+                        }
                     }
+                    self.plot_fit_y_pending = false;
                 }
             }
             if let Some(series) = value["series"].as_array() {
@@ -496,14 +678,62 @@ impl WebApp {
         }
     }
 
-    fn plot(&self, ui: &mut egui::Ui) {
-        if self.plot_series.is_empty() {
-            ui.centered_and_justified(|ui| {
-                ui.label("Enter an expression, then select Plot.");
-            });
-            return;
+    fn plot_view(&self) -> PlotBounds {
+        let [x_min, x_max, y_min, y_max] = self.plot_bounds;
+        PlotBounds::new(x_min, x_max, y_min, y_max)
+    }
+
+    fn apply_plot_view(&mut self, view: PlotBounds, now: f64, context: &egui::Context) {
+        self.plot_bounds = [view.x_min, view.x_max, view.y_min, view.y_max];
+        self.plot_custom_view = true;
+        self.plot_fit_y_pending = false;
+        self.plot_svg.clear();
+        self.plot_due = Some(now + 0.14);
+        context.request_repaint_after(Duration::from_millis(150));
+    }
+
+    fn zoom_plot(
+        &mut self,
+        factor: f64,
+        x_ratio: f64,
+        y_ratio: f64,
+        now: f64,
+        context: &egui::Context,
+    ) {
+        if let Some(view) = self.plot_view().zoomed_at(factor, x_ratio, y_ratio) {
+            self.apply_plot_view(view, now, context);
         }
-        let (rect, _) = ui.allocate_exact_size(ui.available_size(), egui::Sense::hover());
+    }
+
+    fn plot(&mut self, ui: &mut egui::Ui) {
+        let (rect, response) =
+            ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
+        let now = ui.input(|input| input.time);
+        let drag = if response.dragged() {
+            ui.input(|input| input.pointer.delta())
+        } else {
+            egui::Vec2::ZERO
+        };
+        if drag != egui::Vec2::ZERO {
+            if let Some(view) =
+                self.plot_view()
+                    .panned_by_pixels(drag.x, drag.y, rect.width(), rect.height())
+            {
+                self.apply_plot_view(view, now, ui.ctx());
+            }
+        }
+        let (scroll, pointer) = ui.input(|input| {
+            (
+                input.raw_scroll_delta.y,
+                input.pointer.hover_pos().unwrap_or(rect.center()),
+            )
+        });
+        if response.hovered() && scroll.abs() > 0.0 {
+            let factor = f64::from((-scroll * 0.0015).exp()).clamp(0.5, 2.0);
+            let x_ratio = f64::from((pointer.x - rect.left()) / rect.width().max(1.0));
+            let y_ratio = f64::from((pointer.y - rect.top()) / rect.height().max(1.0));
+            self.zoom_plot(factor, x_ratio, y_ratio, now, ui.ctx());
+        }
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, Color32::from_rgb(31, 31, 31));
         let [x_min, x_max, y_min, y_max] = self.plot_bounds;
@@ -513,20 +743,55 @@ impl WebApp {
                 rect.bottom() - ((y - y_min) / (y_max - y_min)) as f32 * rect.height(),
             )
         };
-        let grid = Color32::from_gray(62);
-        if x_min <= 0.0 && 0.0 <= x_max {
-            let x = map(0.0, 0.0).x;
-            painter.line_segment(
-                [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
-                egui::Stroke::new(1.0, grid),
-            );
-        }
-        if y_min <= 0.0 && 0.0 <= y_max {
-            let y = map(0.0, 0.0).y;
-            painter.line_segment(
-                [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
-                egui::Stroke::new(1.0, grid),
-            );
+        let x_step = plot::nice_step(x_max - x_min, 10.0);
+        let y_step = plot::nice_step(y_max - y_min, 8.0);
+        for (vertical, minimum, maximum, step) in
+            [(true, x_min, x_max, x_step), (false, y_min, y_max, y_step)]
+        {
+            if !step.is_finite() || step <= 0.0 {
+                continue;
+            }
+            let mut value = (minimum / step).ceil() * step;
+            for _ in 0..80 {
+                if value > maximum {
+                    break;
+                }
+                let zero = value.abs() < step * 1e-6;
+                let color = if zero {
+                    Color32::from_gray(90)
+                } else {
+                    Color32::from_gray(46)
+                };
+                let stroke = egui::Stroke::new(if zero { 1.4 } else { 1.0 }, color);
+                if vertical {
+                    let x = map(value, 0.0).x;
+                    painter.line_segment(
+                        [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+                        stroke,
+                    );
+                    painter.text(
+                        egui::pos2(x + 3.0, rect.bottom() - 4.0),
+                        egui::Align2::LEFT_BOTTOM,
+                        format_plot_tick(value, step),
+                        FontId::monospace(10.0),
+                        Color32::from_gray(135),
+                    );
+                } else {
+                    let y = map(0.0, value).y;
+                    painter.line_segment(
+                        [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
+                        stroke,
+                    );
+                    painter.text(
+                        egui::pos2(rect.left() + 5.0, y - 3.0),
+                        egui::Align2::LEFT_BOTTOM,
+                        format_plot_tick(value, step),
+                        FontId::monospace(10.0),
+                        Color32::from_gray(135),
+                    );
+                }
+                value += step;
+            }
         }
         let colors = [
             Color32::from_rgb(79, 156, 249),
@@ -544,10 +809,163 @@ impl WebApp {
                 previous = point;
             }
         }
+        if self.plot_series.is_empty() {
+            painter.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "Enter an expression above, then select Plot.",
+                FontId::proportional(13.0),
+                Color32::from_gray(157),
+            );
+        }
+        painter.text(
+            egui::pos2(rect.right() - 10.0, rect.bottom() - 10.0),
+            egui::Align2::RIGHT_BOTTOM,
+            "Drag to pan · Scroll to zoom",
+            FontId::proportional(11.0),
+            Color32::from_gray(157),
+        );
+    }
+}
+
+fn format_plot_tick(value: f64, step: f64) -> String {
+    let digits = if step < 0.001 {
+        6
+    } else if step < 1.0 {
+        3
+    } else if step < 100.0 {
+        1
+    } else {
+        0
+    };
+    let text = format!("{value:.digits$}");
+    if digits == 0 {
+        text
+    } else {
+        text.trim_end_matches('0').trim_end_matches('.').to_owned()
     }
 }
 
 impl WebApp {
+    fn submit_repl(&mut self) {
+        if self.pending || self.repl_input.trim().is_empty() {
+            return;
+        }
+        self.repl_input = self.repl_input.trim().to_owned();
+        self.last_repl_submission = self.repl_input.clone();
+        self.request("repl");
+        self.repl_input.clear();
+        self.repl_history_index = None;
+    }
+
+    fn show_repl(&mut self, ui: &mut egui::Ui) {
+        egui::Frame::none()
+            .fill(Color32::from_rgb(37, 37, 38))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.set_min_height(30.0);
+                    ui.label(RichText::new("REPL").strong().size(12.0));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("Reset session").clicked() && !self.pending {
+                            self.repl_input = ":reset".to_owned();
+                            self.submit_repl();
+                        }
+                    });
+                });
+            });
+        let muted = Color32::from_rgb(157, 157, 157);
+        let history_height = (ui.available_height() - 104.0).max(60.0);
+        egui::ScrollArea::vertical()
+            .id_source("web-repl-history")
+            .max_height(history_height)
+            .auto_shrink([false, false])
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                if self.repl_entries.is_empty() {
+                    ui.add_space(26.0);
+                    ui.vertical_centered(|ui| {
+                        ui.label(RichText::new("Start a calculation").strong().size(18.0));
+                        ui.label(RichText::new("Enter an expression below. Definitions stay available for this browser session.").size(12.0).color(muted));
+                        ui.monospace("Try: f(x) = x^2 - 2;   then   f(3)");
+                    });
+                }
+                for (index, entry) in self.repl_entries.iter().enumerate() {
+                    egui::Frame::none().inner_margin(egui::Margin::symmetric(12.0, 9.0)).show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(format!("{}", index + 1)).monospace().size(10.5).color(muted));
+                            ui.label(RichText::new(&entry.input).monospace().size(14.0));
+                        });
+                        if !entry.output.is_empty() {
+                            ui.label(RichText::new(&entry.output).monospace().size(13.0));
+                        }
+                        if let Some(error) = &entry.error {
+                            ui.colored_label(Color32::from_rgb(249, 119, 127), error);
+                        }
+                    });
+                    ui.separator();
+                }
+            });
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(">")
+                    .monospace()
+                    .size(17.0)
+                    .color(Color32::from_rgb(0, 122, 204)),
+            );
+            let response = ui.add_sized(
+                [ui.available_width() - 75.0, 62.0],
+                TextEdit::multiline(&mut self.repl_input)
+                    .id(egui::Id::new("web-repl-input"))
+                    .font(FontId::monospace(14.0))
+                    .desired_rows(2)
+                    .hint_text(
+                        "SCAS expression or statement · Enter to run, Shift+Enter for a new line",
+                    ),
+            );
+            if response.has_focus() {
+                let (up, down, enter, shift) = ui.input(|input| {
+                    (
+                        input.key_pressed(egui::Key::ArrowUp),
+                        input.key_pressed(egui::Key::ArrowDown),
+                        input.key_pressed(egui::Key::Enter),
+                        input.modifiers.shift,
+                    )
+                });
+                if up && self.repl_input.trim().is_empty() {
+                    let index = self.repl_entries.len().saturating_sub(1);
+                    if let Some(entry) = self.repl_entries.get(index) {
+                        self.repl_input.clone_from(&entry.input);
+                        self.repl_history_index = Some(index);
+                    }
+                } else if down {
+                    if let Some(index) = self.repl_history_index {
+                        if let Some(next) = self.repl_entries.get(index + 1) {
+                            self.repl_input.clone_from(&next.input);
+                            self.repl_history_index = Some(index + 1);
+                        } else {
+                            self.repl_input.clear();
+                            self.repl_history_index = None;
+                        }
+                    }
+                }
+                if enter && !shift {
+                    self.submit_repl();
+                }
+            }
+            if ui
+                .add_enabled(
+                    !self.pending && !self.repl_input.trim().is_empty(),
+                    egui::Button::new("Run"),
+                )
+                .clicked()
+            {
+                self.submit_repl();
+            }
+        });
+    }
+
     fn preview_panel(&self, ui: &mut egui::Ui, context: &egui::Context) {
         let rect = ui.max_rect();
         show_preview(
@@ -612,13 +1030,19 @@ impl eframe::App for WebApp {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll(context);
         if self.first_frame {
-            if context.screen_rect().width() < 850.0 {
+            if context.screen_rect().width() < 1100.0 {
                 self.explorer_open = false;
+            }
+            if context.screen_rect().width() < 850.0 {
                 self.preview_open = false;
             }
             self.first_frame = false;
         }
-        let editor_font = FontId::monospace(24.0);
+        let editor_font = FontId::monospace(if context.screen_rect().width() < 600.0 {
+            18.0
+        } else {
+            27.0
+        });
         if self.highlight_source != self.source {
             self.highlight_job = highlight_source(&self.source, editor_font.clone());
             self.highlight_source.clone_from(&self.source);
@@ -628,15 +1052,28 @@ impl eframe::App for WebApp {
             self.due = None;
             self.request("run");
         }
+        if self.plot_due.is_some_and(|due| now >= due) {
+            self.plot_due = None;
+            self.request("plot");
+        }
         if context.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::B)) {
             self.explorer_open = !self.explorer_open;
         }
         if context.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::J)) {
             self.output_open = !self.output_open;
         }
+        if context.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::P)) {
+            self.quick_open = true;
+        }
         if context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::Enter)) {
-            self.request("run");
-            self.output_open = true;
+            if self.tab == Tab::Repl {
+                self.submit_repl();
+            } else if self.tab == Tab::Document {
+                self.request("run");
+                self.output_open = true;
+            } else {
+                self.request("plot");
+            }
         }
         let dark = Color32::from_rgb(31, 31, 31);
         let panel = Color32::from_rgb(37, 37, 38);
@@ -658,50 +1095,124 @@ impl eframe::App for WebApp {
             .frame(
                 egui::Frame::none()
                     .fill(Color32::from_rgb(60, 60, 60))
-                    .inner_margin(egui::Margin::symmetric(8.0, 4.0)),
+                    .inner_margin(egui::Margin::symmetric(7.0, 4.0)),
             )
             .show(context, |ui| {
+                let available = ui.available_width();
+                let compact = available < 700.0;
+                let left_width = if compact {
+                    160.0
+                } else {
+                    (available * 0.32).clamp(410.0, 690.0)
+                };
+                let center_width = if compact {
+                    (available - left_width - 90.0).max(80.0)
+                } else {
+                    (available * 0.38).clamp(350.0, 970.0)
+                };
                 ui.horizontal_centered(|ui| {
-                    ui.label(
-                        RichText::new("SCAS")
-                            .strong()
-                            .size(15.0)
-                            .color(Color32::from_rgb(224, 224, 224)),
-                    );
-                    ui.add_space(12.0);
-                    self.file_menu(ui);
-                    ui.menu_button("View", |ui| {
-                        ui.checkbox(&mut self.explorer_open, "Explorer  Ctrl+B");
-                        ui.checkbox(&mut self.preview_open, "Document Preview");
-                        ui.checkbox(&mut self.output_open, "Output Panel  Ctrl+J");
-                        if ui.button("Problems").clicked() {
-                            self.bottom_tab = BottomTab::Problems;
-                            self.output_open = true;
-                            ui.close_menu();
-                        }
-                    });
-                    if !narrow {
-                        ui.add_space(26.0);
-                        egui::Frame::none()
-                            .fill(Color32::from_rgb(50, 50, 50))
-                            .stroke(border)
-                            .inner_margin(egui::Margin::symmetric(15.0, 3.0))
-                            .show(ui, |ui| {
-                                ui.label(RichText::new(&self.source_name).size(12.0));
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(left_width, 30.0),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui.set_min_width(left_width);
+                            paint_web_logo(ui);
+                            ui.add_space(9.0);
+                            let button_frame = ui.visuals().button_frame;
+                            ui.visuals_mut().button_frame = false;
+                            self.file_menu(ui);
+                            ui.menu_button("Edit", |ui| {
+                                if ui.button("Copy source").clicked() {
+                                    ui.output_mut(|output| {
+                                        output.copied_text = self.source.clone()
+                                    });
+                                    "Source copied".clone_into(&mut self.status);
+                                    ui.close_menu();
+                                }
                             });
-                    }
+                            ui.menu_button("View", |ui| {
+                                ui.checkbox(&mut self.explorer_open, "Explorer  Ctrl+B");
+                                ui.checkbox(&mut self.preview_open, "Document Preview");
+                                ui.checkbox(&mut self.output_open, "Output Panel  Ctrl+J");
+                                if ui.button("Problems").clicked() {
+                                    self.bottom_tab = BottomTab::Problems;
+                                    self.output_open = true;
+                                    ui.close_menu();
+                                }
+                                if ui.button("Interactive REPL").clicked() {
+                                    self.tab = Tab::Repl;
+                                    ui.close_menu();
+                                }
+                            });
+                            if !compact {
+                                ui.menu_button("Go", |ui| {
+                                    if ui.button("Quick Open…  Ctrl+P").clicked() {
+                                        self.quick_open = true;
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("Editor").clicked() {
+                                        self.tab = Tab::Document;
+                                        ui.close_menu();
+                                    }
+                                });
+                            }
+                            ui.menu_button("Run", |ui| {
+                                if ui.button("Run Active  Ctrl+Enter").clicked() {
+                                    match self.tab {
+                                        Tab::Document => {
+                                            self.request("run");
+                                            self.output_open = true;
+                                        }
+                                        Tab::Repl => self.submit_repl(),
+                                        Tab::Plot => self.request("plot"),
+                                    }
+                                    ui.close_menu();
+                                }
+                                if ui.button("Graphing Calculator").clicked() {
+                                    self.tab = Tab::Plot;
+                                    ui.close_menu();
+                                }
+                            });
+                            if !compact {
+                                ui.menu_button("Terminal", |ui| {
+                                    if ui.button("Interactive REPL").clicked() {
+                                        self.tab = Tab::Repl;
+                                        ui.close_menu();
+                                    }
+                                });
+                            }
+                            ui.visuals_mut().button_frame = button_frame;
+                        },
+                    );
+                    ui.add_space(5.0);
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(center_width, 30.0),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui.set_min_width(center_width);
+                            if ui
+                                .add_sized(
+                                    [center_width - 2.0, 26.0],
+                                    egui::Button::new(RichText::new("scas").size(12.0))
+                                        .fill(Color32::from_rgb(54, 54, 54))
+                                        .stroke(border),
+                                )
+                                .on_hover_text("Quick Open · Ctrl+P")
+                                .clicked()
+                            {
+                                self.quick_open = true;
+                            }
+                        },
+                    );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.hyperlink_to("Docs", "./docs/index.html");
-                        if ui
-                            .button(RichText::new('\u{eb2c}').font(FontId::new(
-                                16.0,
-                                FontFamily::Name("VS Code Codicons".into()),
-                            )))
-                            .on_hover_text("Run document · Ctrl+Enter")
-                            .clicked()
-                        {
-                            self.request("run");
-                            self.output_open = true;
+                        if web_icon_button(ui, '\u{ebf4}', "Toggle preview").clicked() {
+                            self.preview_open = !self.preview_open;
+                        }
+                        if web_icon_button(ui, '\u{ebf2}', "Toggle output panel").clicked() {
+                            self.output_open = !self.output_open;
+                        }
+                        if web_icon_button(ui, '\u{ebf3}', "Toggle Explorer").clicked() {
+                            self.explorer_open = !self.explorer_open;
                         }
                     });
                 });
@@ -740,41 +1251,27 @@ impl eframe::App for WebApp {
             )
             .show(context, |ui| {
                 ui.vertical_centered(|ui| {
-                    if ui
-                        .selectable_label(
-                            self.explorer_open,
-                            RichText::new('\u{eaf0}').font(FontId::new(
-                                22.0,
-                                FontFamily::Name("VS Code Codicons".into()),
-                            )),
-                        )
-                        .on_hover_text("Explorer · Ctrl+B")
+                    if web_activity_button(ui, '\u{eaf0}', self.explorer_open, "Explorer · Ctrl+B")
                         .clicked()
                     {
                         self.explorer_open = !self.explorer_open;
                     }
-                    if ui
-                        .selectable_label(
-                            self.tab == Tab::Document,
-                            RichText::new('\u{ea7b}').font(FontId::new(
-                                22.0,
-                                FontFamily::Name("VS Code Codicons".into()),
-                            )),
-                        )
-                        .on_hover_text("Document")
+                    if web_activity_button(ui, '\u{ea6d}', self.quick_open, "Quick Open · Ctrl+P")
                         .clicked()
                     {
-                        self.tab = Tab::Document;
+                        self.quick_open = true;
                     }
-                    if ui
-                        .selectable_label(
-                            self.tab == Tab::Plot,
-                            RichText::new('\u{ebe2}').font(FontId::new(
-                                22.0,
-                                FontFamily::Name("VS Code Codicons".into()),
-                            )),
-                        )
-                        .on_hover_text("Graphing")
+                    if web_activity_button(
+                        ui,
+                        '\u{ea85}',
+                        self.tab == Tab::Repl,
+                        "Interactive REPL",
+                    )
+                    .clicked()
+                    {
+                        self.tab = Tab::Repl;
+                    }
+                    if web_activity_button(ui, '\u{ebe2}', self.tab == Tab::Plot, "Graphing")
                         .clicked()
                     {
                         self.tab = Tab::Plot;
@@ -783,24 +1280,110 @@ impl eframe::App for WebApp {
             });
         if self.explorer_open {
             egui::SidePanel::left("web-explorer")
-                .default_width(260.0).width_range(180.0..=400.0).resizable(true)
-                .frame(egui::Frame::none().fill(panel).stroke(border)
-                    .inner_margin(egui::Margin::symmetric(12.0, 8.0)))
+                .default_width(300.0)
+                .width_range(200.0..=420.0)
+                .resizable(true)
+                .frame(
+                    egui::Frame::none()
+                        .fill(panel)
+                        .stroke(border)
+                        .inner_margin(egui::Margin::symmetric(12.0, 3.0)),
+                )
                 .show(context, |ui| {
-                    ui.label(RichText::new("Explorer").strong().size(13.0));
-                    ui.add_space(15.0);
-                    ui.label(RichText::new("OPEN EDITORS").strong().size(11.0).color(muted));
-                    if ui.selectable_label(self.tab == Tab::Document, format!("  SC   {}", self.source_name)).clicked() {
-                        self.tab = Tab::Document;
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Explorer").strong().size(13.0));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if web_icon_button(ui, '\u{ea7c}', "Explorer actions").clicked() {
+                                self.quick_open = true;
+                            }
+                        });
+                    });
+                    ui.horizontal(|ui| {
+                        if ui
+                            .small_button(if self.explorer_root_open {
+                                "⌄"
+                            } else {
+                                "›"
+                            })
+                            .clicked()
+                        {
+                            self.explorer_root_open = !self.explorer_root_open;
+                        }
+                        if ui
+                            .selectable_label(false, RichText::new("scas").strong())
+                            .clicked()
+                        {
+                            self.explorer_root_open = !self.explorer_root_open;
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if web_icon_button(ui, '\u{eb1c}', "Collapse folders").clicked() {
+                                self.explorer_expanded.clear();
+                            }
+                            if web_icon_button(ui, '\u{eb37}', "Refresh workspace").clicked() {
+                                self.request("run");
+                            }
+                            if web_icon_button(ui, '\u{ea7b}', "New document").clicked() {
+                                self.load_source(STARTER.to_owned());
+                                self.source_name = "Untitled".to_owned();
+                                self.tab = Tab::Document;
+                            }
+                        });
+                    });
+                    if self.explorer_root_open {
+                        ui.spacing_mut().item_spacing.y = 5.0;
+                        for folder in [
+                            "assets", "benches", "docs", "examples", "scripts", "src", "stdlib",
+                            "tests", "themes", "web",
+                        ] {
+                            let expanded = self.explorer_expanded.contains(folder);
+                            ui.horizontal(|ui| {
+                                ui.add_space(7.0);
+                                if ui.small_button(if expanded { "⌄" } else { "›" }).clicked() {
+                                    if expanded {
+                                        self.explorer_expanded.remove(folder);
+                                    } else {
+                                        self.explorer_expanded.insert(folder.to_owned());
+                                    }
+                                }
+                                ui.label(
+                                    RichText::new('\u{ea83}')
+                                        .font(FontId::new(
+                                            15.0,
+                                            FontFamily::Name("VS Code Codicons".into()),
+                                        ))
+                                        .color(muted),
+                                );
+                                if ui.selectable_label(false, folder).clicked() {
+                                    if expanded {
+                                        self.explorer_expanded.remove(folder);
+                                    } else {
+                                        self.explorer_expanded.insert(folder.to_owned());
+                                    }
+                                }
+                            });
+                            if expanded && folder == "examples" {
+                                ui.indent("web-examples", |ui| {
+                                    if ui.button("Starter.scas").clicked() {
+                                        self.load_source(STARTER.to_owned());
+                                        self.source_name = "Starter.scas".to_owned();
+                                        self.tab = Tab::Document;
+                                    }
+                                    if ui.button("MIT 18.06.scas").clicked() {
+                                        self.load_source(MIT_EXAMPLE.to_owned());
+                                        self.source_name = "MIT 18.06.scas".to_owned();
+                                        self.tab = Tab::Document;
+                                    }
+                                });
+                            }
+                        }
                     }
-                    ui.add_space(16.0);
-                    ui.label(RichText::new("BROWSER WORKSPACE").strong().size(11.0).color(muted));
-                    if ui.selectable_label(self.tab == Tab::Plot, "  ⌁   Graphing").clicked() {
-                        self.tab = Tab::Plot;
-                    }
-                    ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-                        ui.label(RichText::new("Files are kept in this browser. Use File to import or download a .scas document.")
-                            .size(11.0).color(muted));
+                    ui.add_space(7.0);
+                    ui.separator();
+                    ui.collapsing("Outline", |ui| {
+                        ui.label("SCAS document symbols");
+                    });
+                    ui.collapsing("Timeline", |ui| {
+                        ui.label("No timeline entries");
                     });
                 });
         }
@@ -887,8 +1470,8 @@ impl eframe::App for WebApp {
                 if !narrow {
                     egui::SidePanel::right("web-preview")
                         .resizable(true)
-                        .default_width(480.0)
-                        .width_range(280.0..=750.0)
+                        .default_width(220.0)
+                        .width_range(220.0..=750.0)
                         .frame(
                             egui::Frame::none()
                                 .fill(panel)
@@ -902,27 +1485,57 @@ impl eframe::App for WebApp {
                 .frame(egui::Frame::none().fill(dark))
                 .show(context, |ui| {
                     egui::Frame::none().fill(panel).show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
                         ui.horizontal(|ui| {
-                            ui.set_min_height(30.0);
-                            ui.label(
-                                RichText::new("SC")
-                                    .strong()
-                                    .size(12.0)
-                                    .color(Color32::from_rgb(0, 122, 204)),
-                            );
-                            ui.label(RichText::new(&self.source_name).size(12.0));
+                            egui::Frame::none()
+                                .fill(dark)
+                                .inner_margin(egui::Margin::symmetric(10.0, 2.0))
+                                .show(ui, |ui| {
+                                    ui.horizontal_centered(|ui| {
+                                        ui.set_min_height(30.0);
+                                        ui.label(
+                                            RichText::new("SC")
+                                                .strong()
+                                                .size(12.0)
+                                                .color(Color32::from_rgb(0, 122, 204)),
+                                        );
+                                        ui.label(RichText::new(&self.source_name).size(12.0));
+                                        if web_icon_button(
+                                            ui,
+                                            '\u{ea76}',
+                                            "Reset to a new document",
+                                        )
+                                        .clicked()
+                                        {
+                                            self.load_source(STARTER.to_owned());
+                                            "untitled.scas".clone_into(&mut self.source_name);
+                                        }
+                                    });
+                                });
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    if ui
-                                        .small_button(RichText::new('\u{ebf4}').font(FontId::new(
-                                            16.0,
-                                            FontFamily::Name("VS Code Codicons".into()),
-                                        )))
-                                        .on_hover_text("Toggle mathematical preview")
-                                        .clicked()
+                                    if web_icon_button(ui, '\u{ea7c}', "Editor actions").clicked() {
+                                        self.quick_open = true;
+                                    }
+                                    if web_icon_button(
+                                        ui,
+                                        '\u{ebf4}',
+                                        "Toggle mathematical preview",
+                                    )
+                                    .clicked()
                                     {
                                         self.preview_open = !self.preview_open;
+                                    }
+                                    if web_icon_button(
+                                        ui,
+                                        '\u{eb2c}',
+                                        "Run active workspace · Ctrl+Enter",
+                                    )
+                                    .clicked()
+                                    {
+                                        self.request("run");
+                                        self.output_open = true;
                                     }
                                 },
                             );
@@ -934,7 +1547,8 @@ impl eframe::App for WebApp {
                         ui.label(RichText::new("SCAS").size(11.0).color(muted));
                     });
                     ui.add_space(4.0);
-                    let available_rows = (ui.available_height() / 24.0) as usize;
+                    let available_rows =
+                        (ui.available_height() / if narrow { 19.0 } else { 28.0 }) as usize;
                     let cached_source = &self.highlight_source;
                     let cached_job = &self.highlight_job;
                     let mut layouter = |ui: &egui::Ui, source: &str, width: f32| {
@@ -946,7 +1560,7 @@ impl eframe::App for WebApp {
                         job.wrap.max_width = width;
                         ui.fonts(|fonts| fonts.layout_job(job))
                     };
-                    let gutter = 62.0;
+                    let gutter = 48.0;
                     let response = egui::ScrollArea::both()
                         .show(ui, |ui| {
                             let output = TextEdit::multiline(&mut self.source)
@@ -992,14 +1606,45 @@ impl eframe::App for WebApp {
                 TextEdit::store_state(context, editor_id, state);
                 context.memory_mut(|memory| memory.request_focus(editor_id));
             }
+        } else if self.tab == Tab::Repl {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::none().fill(dark))
+                .show(context, |ui| self.show_repl(ui));
         } else {
             egui::TopBottomPanel::top("plot-controls")
                 .frame(egui::Frame::none().fill(panel))
                 .show(context, |ui| {
                     ui.horizontal(|ui| {
                         ui.label("y =");
-                        ui.text_edit_singleline(&mut self.plot_expression);
-                        if ui.button("Plot").clicked() {
+                        let expression = ui.text_edit_singleline(&mut self.plot_expression);
+                        if ui.button("Plot").clicked()
+                            || (expression.lost_focus()
+                                && ui.input(|input| input.key_pressed(egui::Key::Enter)))
+                        {
+                            self.plot_custom_view = false;
+                            self.plot_fit_y_pending = false;
+                            self.plot_due = None;
+                            self.request("plot");
+                        }
+                        ui.separator();
+                        if ui.button("+").on_hover_text("Zoom in").clicked() {
+                            self.zoom_plot(0.75, 0.5, 0.5, now, context);
+                        }
+                        if ui.button("−").on_hover_text("Zoom out").clicked() {
+                            self.zoom_plot(1.0 / 0.75, 0.5, 0.5, now, context);
+                        }
+                        if ui
+                            .button("Fit y")
+                            .on_hover_text("Fit the vertical range to the visible samples")
+                            .clicked()
+                        {
+                            self.plot_custom_view = true;
+                            self.plot_fit_y_pending = true;
+                            self.request("plot");
+                        }
+                        if ui.button("Reset view").clicked() {
+                            self.plot_custom_view = false;
+                            self.plot_fit_y_pending = false;
                             self.request("plot");
                         }
                         if ui
@@ -1038,6 +1683,69 @@ impl eframe::App for WebApp {
         }
         if !preview_visible {
             hide_preview();
+        }
+        if self.quick_open {
+            let mut open = true;
+            let mut selected = None;
+            egui::Window::new("Quick Open")
+                .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 48.0))
+                .fixed_size(egui::vec2(
+                    440.0_f32.min(context.screen_rect().width() - 36.0),
+                    130.0,
+                ))
+                .collapsible(false)
+                .resizable(false)
+                .open(&mut open)
+                .show(context, |ui| {
+                    let response = ui.add_sized(
+                        [ui.available_width(), 26.0],
+                        TextEdit::singleline(&mut self.quick_open_query)
+                            .hint_text("Search files and views"),
+                    );
+                    if response.lost_focus()
+                        && ui.input(|input| input.key_pressed(egui::Key::Enter))
+                    {
+                        selected = Some(0);
+                    }
+                    let query = self.quick_open_query.to_lowercase();
+                    for (index, label) in [
+                        "mit-18-06-session-22.scas  ·  examples",
+                        "starter.scas  ·  examples",
+                        "Graphing calculator",
+                        "Interactive REPL",
+                    ]
+                    .iter()
+                    .enumerate()
+                    {
+                        if label.to_lowercase().contains(&query)
+                            && ui.selectable_label(false, *label).clicked()
+                        {
+                            selected = Some(index);
+                        }
+                    }
+                });
+            if context.input(|input| input.key_pressed(egui::Key::Escape)) {
+                open = false;
+            }
+            self.quick_open = open;
+            if let Some(index) = selected {
+                match index {
+                    0 => {
+                        self.load_source(MIT_EXAMPLE.to_owned());
+                        "mit-18-06-session-22.scas".clone_into(&mut self.source_name);
+                        self.tab = Tab::Document;
+                    }
+                    1 => {
+                        self.load_source(STARTER.to_owned());
+                        "starter.scas".clone_into(&mut self.source_name);
+                        self.tab = Tab::Document;
+                    }
+                    2 => self.tab = Tab::Plot,
+                    _ => self.tab = Tab::Repl,
+                }
+                self.quick_open = false;
+                self.quick_open_query.clear();
+            }
         }
     }
 }

@@ -402,7 +402,7 @@ impl Polynomial {
             .collect()
     }
 
-    /// Durand-Kerner finds every complex root at once. Exact/rational factors
+    /// Aberth iteration finds every complex root at once. Exact/rational factors
     /// have already been removed, so this is only the fallback for irreducible
     /// degree-three-and-higher factors.
     fn numeric_roots(coefficients: &[BigRational]) -> Vec<Rc<SymbolicExpr>> {
@@ -432,43 +432,74 @@ impl Polynomial {
                 }
             })
             .collect::<Vec<_>>();
-        for _ in 0..2_000 {
+        let mut converged = false;
+        for _ in 0..4_000 {
             let previous = roots.clone();
             let mut largest_delta = 0.0_f64;
             for index in 0..degree {
-                let value = values.iter().rev().fold(
-                    Complex64 {
-                        real: 0.0,
+                let z = previous[index];
+                let mut value = Complex64 {
+                    real: values[degree],
+                    imaginary: 0.0,
+                };
+                let mut derivative = Complex64 {
+                    real: 0.0,
+                    imaginary: 0.0,
+                };
+                for coefficient in values[..degree].iter().rev() {
+                    derivative = derivative.mul(z).add(value);
+                    value = value.mul(z).add(Complex64 {
+                        real: *coefficient,
                         imaginary: 0.0,
-                    },
-                    |accumulator, coefficient| {
-                        accumulator.mul(previous[index]).add(Complex64 {
-                            real: *coefficient,
-                            imaginary: 0.0,
-                        })
-                    },
-                );
-                let denominator = previous
-                    .iter()
-                    .enumerate()
-                    .filter(|(other, _)| *other != index)
-                    .fold(
+                    });
+                }
+                if derivative.magnitude() <= f64::EPSILON {
+                    return Vec::new();
+                }
+                let newton = value.div(derivative);
+                let mut repulsion = Complex64 {
+                    real: 0.0,
+                    imaginary: 0.0,
+                };
+                for (other, root) in previous.iter().enumerate() {
+                    if other == index {
+                        continue;
+                    }
+                    let difference = z.sub(*root);
+                    if difference.magnitude() <= f64::EPSILON {
+                        return Vec::new();
+                    }
+                    repulsion = repulsion.add(
                         Complex64 {
                             real: 1.0,
                             imaginary: 0.0,
-                        },
-                        |product, (_, root)| product.mul(previous[index].sub(*root)),
+                        }
+                        .div(difference),
                     );
-                if denominator.magnitude() <= f64::EPSILON {
-                    continue;
                 }
-                let delta = value.div(denominator);
+                let correction = Complex64 {
+                    real: 1.0,
+                    imaginary: 0.0,
+                }
+                .sub(newton.mul(repulsion));
+                if correction.magnitude() <= f64::EPSILON {
+                    return Vec::new();
+                }
+                let delta = newton.div(correction);
                 roots[index] = previous[index].sub(delta);
                 largest_delta = largest_delta.max(delta.magnitude());
             }
             if largest_delta < 1e-13 {
+                converged = true;
                 break;
             }
+        }
+        if !converged
+            || roots
+                .iter()
+                .any(|root| !root.real.is_finite() || !root.imaginary.is_finite())
+        {
+            return Vec::new();
         }
         for root in &mut roots {
             if root.real.abs() < 1e-12 {
@@ -562,34 +593,46 @@ impl Polynomial {
             quotient = Some(divided);
         }
 
+        let mut remaining = denominator_coefficients.clone();
         let mut roots = Vec::new();
         for root in Self::root_candidates(&denominator_coefficients) {
-            if Self::evaluate_coefficients(&denominator_coefficients, &root).is_zero() {
-                roots.push(root);
+            let mut multiplicity = 0;
+            while let Some(quotient) = Self::synthetic_divide(&remaining, &root) {
+                remaining = quotient;
+                multiplicity += 1;
+            }
+            if multiplicity > 0 {
+                roots.push((root, multiplicity));
             }
         }
-        roots.sort();
-        roots.dedup();
-        if roots.len() + 1 != denominator_coefficients.len() {
+        // A final irreducible quadratic contributes one linear numerator.
+        if remaining.len() != 1 && remaining.len() != 3 {
             return None;
         }
 
-        let derivative: Vec<_> = denominator_coefficients
-            .iter()
-            .enumerate()
-            .skip(1)
-            .map(|(exponent, coefficient)| coefficient * BigInt::from(exponent))
-            .collect();
         let mut result = None;
-        for root in roots {
-            let derivative_value = Self::evaluate_coefficients(&derivative, &root);
-            if derivative_value.is_zero() {
-                return None;
+        let mut residual_numerator = numerator_coefficients.clone();
+        for (root, multiplicity) in roots {
+            let mut reduced = denominator_coefficients.clone();
+            for _ in 0..multiplicity {
+                reduced = Self::synthetic_divide(&reduced, &root)?;
             }
-            let coefficient =
-                Self::evaluate_coefficients(&numerator_coefficients, &root) / derivative_value;
-            if coefficient.is_zero() {
-                continue;
+            let numerator_taylor = Self::shift_coefficients(&numerator_coefficients, &root);
+            let denominator_taylor = Self::shift_coefficients(&reduced, &root);
+            let mut taylor_quotient = Vec::new();
+            for degree in 0..multiplicity {
+                let mut coefficient = numerator_taylor
+                    .get(degree)
+                    .cloned()
+                    .unwrap_or_else(BigRational::zero);
+                for prior in 0..degree {
+                    coefficient -= denominator_taylor
+                        .get(degree - prior)
+                        .cloned()
+                        .unwrap_or_else(BigRational::zero)
+                        * &taylor_quotient[prior];
+                }
+                taylor_quotient.push(coefficient / &denominator_taylor[0]);
             }
             let variable_expression = Rc::new(SymbolicExpr::Variable(variable.symbol));
             let root_expression = Rc::new(SymbolicExpr::Number(Number::from_rational(
@@ -608,26 +651,77 @@ impl Polynomial {
                     root_expression,
                 )
             };
-            let numerator = Rc::new(SymbolicExpr::Number(Number::from_rational(
-                coefficient.abs(),
-            )));
-            let fraction = Self::binary(numerator, BinaryOp::Div, linear);
-            result = Some(match result {
-                None if coefficient.is_negative() => Rc::new(SymbolicExpr::Unary {
-                    op: UnaryOp::Neg,
-                    expr: fraction,
-                }),
-                None => fraction,
-                Some(previous) => Self::binary(
-                    previous,
-                    if coefficient.is_negative() {
-                        BinaryOp::Sub
-                    } else {
-                        BinaryOp::Add
-                    },
-                    fraction,
-                ),
-            });
+            for (degree, coefficient) in taylor_quotient.into_iter().enumerate() {
+                if coefficient.is_zero() {
+                    continue;
+                }
+                let power = multiplicity - degree;
+                let mut complementary = denominator_coefficients.clone();
+                for _ in 0..power {
+                    complementary = Self::synthetic_divide(&complementary, &root)?;
+                }
+                if residual_numerator.len() < complementary.len() {
+                    residual_numerator.resize(complementary.len(), BigRational::zero());
+                }
+                for (index, value) in complementary.iter().enumerate() {
+                    residual_numerator[index] -= &coefficient * value;
+                }
+                let denominator = if power == 1 {
+                    Rc::clone(&linear)
+                } else {
+                    Self::binary(
+                        Rc::clone(&linear),
+                        BinaryOp::Pow,
+                        Self::integer_expression(power as u32),
+                    )
+                };
+                let numerator = Rc::new(SymbolicExpr::Number(Number::from_rational(
+                    coefficient.abs(),
+                )));
+                let fraction = Self::binary(numerator, BinaryOp::Div, denominator);
+                result = Some(match result {
+                    None if coefficient.is_negative() => Rc::new(SymbolicExpr::Unary {
+                        op: UnaryOp::Neg,
+                        expr: fraction,
+                    }),
+                    None => fraction,
+                    Some(previous) => Self::binary(
+                        previous,
+                        if coefficient.is_negative() {
+                            BinaryOp::Sub
+                        } else {
+                            BinaryOp::Add
+                        },
+                        fraction,
+                    ),
+                });
+            }
+        }
+        if remaining.len() == 3 {
+            let (linear_product, remainder) =
+                Self::divide_coefficients(denominator_coefficients, &remaining)?;
+            if remainder.iter().any(|coefficient| !coefficient.is_zero()) {
+                return None;
+            }
+            let (quadratic_numerator, remainder) =
+                Self::divide_coefficients(residual_numerator, &linear_product)?;
+            if remainder.iter().any(|coefficient| !coefficient.is_zero()) {
+                return None;
+            }
+            if quadratic_numerator
+                .iter()
+                .any(|coefficient| !coefficient.is_zero())
+            {
+                let numerator =
+                    Self::from_univariate(variable.clone(), quadratic_numerator).to_expression();
+                let denominator =
+                    Self::from_univariate(variable.clone(), remaining).to_expression();
+                let fraction = Self::binary(numerator, BinaryOp::Div, denominator);
+                result = Some(match result {
+                    None => fraction,
+                    Some(previous) => Self::binary(previous, BinaryOp::Add, fraction),
+                });
+            }
         }
         match (quotient, result) {
             (Some(quotient), rest) => {
@@ -909,7 +1003,308 @@ impl Polynomial {
         if let Some(factored) = self.factor_univariate_roots() {
             return factored;
         }
+        if let Some(factored) = self.factor_integer_quadratics() {
+            return factored;
+        }
+        if let Some(factored) = self.factor_integer_cubics() {
+            return factored;
+        }
+        if let Some(factored) = self.factor_from_numeric_root_subsets() {
+            return factored;
+        }
         self.to_expression()
+    }
+
+    /// Reconstruct integer factors from subsets of approximate complex roots.
+    /// Every candidate is divided over Q before it is accepted, so floating
+    /// point error can only make this search miss a factor, never invent one.
+    fn factor_from_numeric_root_subsets(&self) -> Option<Rc<SymbolicExpr>> {
+        let (variable, coefficients) = self.univariate_coefficients()?;
+        let degree = coefficients.len().checked_sub(1)?;
+        if !(4..=10).contains(&degree) || coefficients.iter().any(|value| !value.is_integer()) {
+            return None;
+        }
+        let leading = coefficients.last()?.to_integer().to_i64()?;
+        if leading == 0 || leading.unsigned_abs() > 1_000_000 {
+            return None;
+        }
+        let values = coefficients
+            .iter()
+            .map(ToPrimitive::to_f64)
+            .collect::<Option<Vec<_>>>()?;
+        if values.iter().any(|value| !value.is_finite()) {
+            return None;
+        }
+        let radius = 1.0
+            + values[..degree]
+                .iter()
+                .map(|value| (value / values[degree]).abs())
+                .fold(0.0_f64, f64::max);
+        if !radius.is_finite() || radius > 1.0e8 {
+            return None;
+        }
+        let mut roots = (0..degree)
+            .map(|index| {
+                let angle = std::f64::consts::TAU * (index as f64 + 0.271_828) / degree as f64;
+                Complex64 {
+                    real: radius * angle.cos(),
+                    imaginary: radius * angle.sin(),
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut converged = false;
+        for _ in 0..4_000 {
+            let previous = roots.clone();
+            let mut largest_delta = 0.0_f64;
+            for index in 0..degree {
+                let z = previous[index];
+                let mut value = Complex64 {
+                    real: values[degree],
+                    imaginary: 0.0,
+                };
+                let mut derivative = Complex64 {
+                    real: 0.0,
+                    imaginary: 0.0,
+                };
+                for coefficient in values[..degree].iter().rev() {
+                    derivative = derivative.mul(z).add(value);
+                    value = value.mul(z).add(Complex64 {
+                        real: *coefficient,
+                        imaginary: 0.0,
+                    });
+                }
+                if derivative.magnitude() <= f64::EPSILON {
+                    return None;
+                }
+                let newton = value.div(derivative);
+                let mut repulsion = Complex64 {
+                    real: 0.0,
+                    imaginary: 0.0,
+                };
+                for (other, root) in previous.iter().enumerate() {
+                    if other == index {
+                        continue;
+                    }
+                    let difference = z.sub(*root);
+                    if difference.magnitude() <= f64::EPSILON {
+                        return None;
+                    }
+                    repulsion = repulsion.add(
+                        Complex64 {
+                            real: 1.0,
+                            imaginary: 0.0,
+                        }
+                        .div(difference),
+                    );
+                }
+                let correction = Complex64 {
+                    real: 1.0,
+                    imaginary: 0.0,
+                }
+                .sub(newton.mul(repulsion));
+                if correction.magnitude() <= f64::EPSILON {
+                    return None;
+                }
+                let delta = newton.div(correction);
+                roots[index] = previous[index].sub(delta);
+                largest_delta = largest_delta.max(delta.magnitude());
+            }
+            if largest_delta < 1e-10 {
+                converged = true;
+                break;
+            }
+        }
+        if !converged
+            || roots
+                .iter()
+                .any(|root| !root.real.is_finite() || !root.imaginary.is_finite())
+        {
+            return None;
+        }
+        let leading_divisors = Self::positive_divisors(leading.unsigned_abs());
+        for mask in 1usize..(1usize << degree) {
+            let candidate_degree = mask.count_ones() as usize;
+            if candidate_degree < 2 || candidate_degree > degree / 2 {
+                continue;
+            }
+            let mut approximate = vec![Complex64 {
+                real: 1.0,
+                imaginary: 0.0,
+            }];
+            for (index, root) in roots.iter().enumerate() {
+                if mask & (1 << index) == 0 {
+                    continue;
+                }
+                let mut next = vec![
+                    Complex64 {
+                        real: 0.0,
+                        imaginary: 0.0
+                    };
+                    approximate.len() + 1
+                ];
+                for (power, coefficient) in approximate.iter().enumerate() {
+                    next[power] = next[power].sub(coefficient.mul(*root));
+                    next[power + 1] = next[power + 1].add(*coefficient);
+                }
+                approximate = next;
+            }
+            for divisor in &leading_divisors {
+                let scale = *divisor as f64;
+                let mut candidate = Vec::with_capacity(approximate.len());
+                let mut integral = true;
+                for coefficient in &approximate {
+                    let real = coefficient.real * scale;
+                    let imaginary = coefficient.imaginary * scale;
+                    let rounded = real.round();
+                    if !real.is_finite()
+                        || real.abs() > i64::MAX as f64
+                        || (real - rounded).abs() > 1e-5_f64.max(real.abs() * 1e-10)
+                        || imaginary.abs() > 1e-5_f64.max(real.abs() * 1e-10)
+                    {
+                        integral = false;
+                        break;
+                    }
+                    candidate.push(BigRational::from_integer(BigInt::from(rounded as i64)));
+                }
+                if !integral {
+                    continue;
+                }
+                let (quotient, remainder) =
+                    Self::divide_coefficients(coefficients.clone(), &candidate)?;
+                if quotient.len() < 2 || remainder.iter().any(|coefficient| !coefficient.is_zero())
+                {
+                    continue;
+                }
+                let left = Self::from_univariate(variable.clone(), candidate).factored_expression();
+                let right = Self::from_univariate(variable, quotient).factored_expression();
+                return Some(Self::binary(left, BinaryOp::Mul, right));
+            }
+        }
+        None
+    }
+
+    /// Bounded exact search for monic cubic factors of degree 6–8 polynomials.
+    fn factor_integer_cubics(&self) -> Option<Rc<SymbolicExpr>> {
+        let (variable, coefficients) = self.univariate_coefficients()?;
+        if !(7..=9).contains(&coefficients.len()) {
+            return None;
+        }
+        let denominator_lcm = coefficients.iter().fold(BigInt::one(), |lcm, coefficient| {
+            lcm.lcm(coefficient.denom())
+        });
+        let integers: Vec<BigInt> = coefficients
+            .iter()
+            .map(|coefficient| (coefficient * &denominator_lcm).to_integer())
+            .collect();
+        if integers.last()? != &BigInt::one() {
+            return None;
+        }
+        let constant = integers.first()?.abs().to_u64()?;
+        if constant == 0 || constant > 1_000_000 {
+            return None;
+        }
+        let max_coefficient = integers
+            .iter()
+            .filter_map(|coefficient| coefficient.abs().to_u64())
+            .max()?;
+        let bound = max_coefficient.saturating_mul(2).clamp(4, 24) as i64;
+        let mut checked = 0usize;
+        for divisor in Self::positive_divisors(constant) {
+            for sign in [1i64, -1] {
+                for linear in -bound..=bound {
+                    for quadratic in -bound..=bound {
+                        checked += 1;
+                        if checked > 100_000 {
+                            return None;
+                        }
+                        let candidate = [
+                            BigInt::from(sign) * divisor,
+                            BigInt::from(linear),
+                            BigInt::from(quadratic),
+                            BigInt::one(),
+                        ]
+                        .into_iter()
+                        .map(BigRational::from_integer)
+                        .collect::<Vec<_>>();
+                        let (quotient, remainder) =
+                            Self::divide_coefficients(coefficients.clone(), &candidate)?;
+                        if quotient.len() < 2
+                            || remainder.iter().any(|coefficient| !coefficient.is_zero())
+                        {
+                            continue;
+                        }
+                        let left = Self::from_univariate(variable.clone(), candidate)
+                            .factored_expression();
+                        let right = Self::from_univariate(variable, quotient).factored_expression();
+                        return Some(Self::binary(left, BinaryOp::Mul, right));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Search exact quadratic divisors of a primitive small integer polynomial.
+    /// The finite coefficient bound keeps interactive factoring deterministic.
+    fn factor_integer_quadratics(&self) -> Option<Rc<SymbolicExpr>> {
+        let (variable, coefficients) = self.univariate_coefficients()?;
+        if coefficients.len() < 5 || coefficients.len() > 9 {
+            return None;
+        }
+        let denominator_lcm = coefficients.iter().fold(BigInt::one(), |lcm, coefficient| {
+            lcm.lcm(coefficient.denom())
+        });
+        let integers: Vec<BigInt> = coefficients
+            .iter()
+            .map(|coefficient| (coefficient * &denominator_lcm).to_integer())
+            .collect();
+        let leading = integers.last()?.abs().to_u64()?;
+        let constant = integers.first()?.abs().to_u64()?;
+        if leading == 0 || constant == 0 || leading > 1_000_000 || constant > 1_000_000 {
+            return None;
+        }
+        let max_coefficient = integers
+            .iter()
+            .filter_map(|coefficient| coefficient.abs().to_u64())
+            .max()?;
+        let bound = max_coefficient.saturating_mul(16).min(256) as i64;
+        let mut candidates_checked = 0usize;
+        for leading_divisor in Self::positive_divisors(leading) {
+            for constant_divisor in Self::positive_divisors(constant) {
+                for leading_sign in [1i64, -1] {
+                    for constant_sign in [1i64, -1] {
+                        for middle in -bound..=bound {
+                            candidates_checked += 1;
+                            if candidates_checked > 50_000 {
+                                return None;
+                            }
+                            let candidate = vec![
+                                BigRational::from_integer(
+                                    BigInt::from(constant_sign) * constant_divisor,
+                                ),
+                                BigRational::from_integer(BigInt::from(middle)),
+                                BigRational::from_integer(
+                                    BigInt::from(leading_sign) * leading_divisor,
+                                ),
+                            ];
+                            let (quotient, remainder) =
+                                Self::divide_coefficients(coefficients.clone(), &candidate)?;
+                            if quotient.len() < 2
+                                || remainder.iter().any(|coefficient| !coefficient.is_zero())
+                            {
+                                continue;
+                            }
+                            let left = Self::from_univariate(variable.clone(), candidate)
+                                .factored_expression();
+                            let right =
+                                Self::from_univariate(variable, quotient).factored_expression();
+                            return Some(Self::binary(left, BinaryOp::Mul, right));
+                        }
+                    }
+                }
+            }
+        }
+        None
     }
 
     fn content_and_common_monomial(&self) -> (BigRational, Monomial) {
@@ -1251,6 +1646,21 @@ impl Polynomial {
             .fold(BigRational::zero(), |result, coefficient| {
                 result * value + coefficient
             })
+    }
+
+    /// Coefficients of p(root + y), ordered by ascending powers of y.
+    fn shift_coefficients(coefficients: &[BigRational], root: &BigRational) -> Vec<BigRational> {
+        let mut shifted = Vec::<BigRational>::new();
+        for coefficient in coefficients.iter().rev() {
+            let mut next = vec![BigRational::zero(); shifted.len() + 1];
+            next[0] = coefficient.clone();
+            for (degree, value) in shifted.iter().enumerate() {
+                next[degree] += value * root;
+                next[degree + 1] += value;
+            }
+            shifted = next;
+        }
+        shifted
     }
 
     fn synthetic_divide(

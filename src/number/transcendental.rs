@@ -229,6 +229,179 @@ fn evaluate_complex(function: UnaryMathFunction, value: DecimalComplex) -> Decim
     }
 }
 
+/// The entire series converges everywhere. Extra guard digits account for
+/// cancellation in the alternating terms away from the origin.
+fn erf_complex(
+    number: &Number,
+    precision: usize,
+    complement: bool,
+) -> Result<Number, MathEvaluationError> {
+    let work_precision = precision.saturating_mul(3).saturating_add(100);
+    let value = complex_float(number, work_precision)?;
+    let (real, imaginary) = value.clone().into_parts();
+    let radius_squared = &real * &real + &imaginary * &imaginary;
+    let asymptotic_threshold = DBig::from(precision.saturating_mul(3).max(100))
+        .with_precision(work_precision)
+        .value();
+    let one = DecimalComplex::from(DBig::ONE.with_precision(work_precision).value());
+    let result = if radius_squared > asymptotic_threshold {
+        // erfc(z) ~ exp(-z²)/(sqrt(pi) z) Σ (-1)^n (2n-1)!!/(2z²)^n.
+        // Reflect the left half-plane first so the asymptotic branch stays
+        // within |arg(z)| <= pi/2.
+        let reflected = real < DBig::ZERO;
+        let argument = if reflected { -value } else { value };
+        let square = argument.clone() * argument.clone();
+        let mut term = one.clone();
+        let mut sum = term.clone();
+        let tolerance = decimal_float(
+            &format!("1e-{}", precision.saturating_add(8)),
+            work_precision,
+        )?;
+        let mut converged = false;
+        for index in 1..=precision.saturating_mul(8).saturating_add(64) {
+            term = -term
+                * DecimalComplex::from(
+                    DBig::from(2 * index - 1)
+                        .with_precision(work_precision)
+                        .value(),
+                )
+                / (DecimalComplex::from(DBig::from(2).with_precision(work_precision).value())
+                    * square.clone());
+            let (term_real, term_imaginary) = term.clone().into_parts();
+            sum += term.clone();
+            if term_real.abs() < tolerance && term_imaginary.abs() < tolerance {
+                converged = true;
+                break;
+            }
+        }
+        if !converged {
+            return Err(MathEvaluationError(
+                "complex erf asymptotic expansion did not converge at the requested precision"
+                    .to_owned(),
+            ));
+        }
+        let erfc = (-square).exp() * sum
+            / (DecimalComplex::from(DBig::pi(work_precision).sqrt()) * argument);
+        if reflected {
+            if complement {
+                DecimalComplex::from(DBig::from(2).with_precision(work_precision).value()) - erfc
+            } else {
+                erfc - one.clone()
+            }
+        } else if complement {
+            erfc
+        } else {
+            one.clone() - erfc
+        }
+    } else {
+        let square = value.clone() * value.clone();
+        let mut term = value;
+        let mut sum = term.clone();
+        let iterations = precision.saturating_mul(8).saturating_add(1000).min(16_384);
+        for index in 1..iterations {
+            let divisor =
+                DecimalComplex::from(DBig::from(index).with_precision(work_precision).value());
+            term = -(term * square.clone()) / divisor;
+            let odd = DecimalComplex::from(
+                DBig::from(2 * index + 1)
+                    .with_precision(work_precision)
+                    .value(),
+            );
+            sum += term.clone() / odd;
+        }
+        let scale = DecimalComplex::from(
+            DBig::from(2).with_precision(work_precision).value() / DBig::pi(work_precision).sqrt(),
+        );
+        let erf = scale * sum;
+        if complement {
+            one - erf
+        } else {
+            erf
+        }
+    };
+    let (mut result_real, imaginary) = result.into_parts();
+    if real == DBig::ZERO {
+        result_real = if complement { DBig::ONE } else { DBig::ZERO };
+    }
+    complex_number(DecimalComplex::from_parts(
+        result_real.with_precision(precision).value(),
+        imaginary.with_precision(precision).value(),
+    ))
+}
+
+fn gamma_complex(
+    number: &Number,
+    precision: usize,
+    logarithm: bool,
+) -> Result<Number, MathEvaluationError> {
+    let work_precision = precision.saturating_add(16);
+    let value = complex_float(number, work_precision)?;
+    let (real, _) = value.clone().into_parts();
+    let one = DecimalComplex::from(DBig::ONE.with_precision(work_precision).value());
+    let gamma = if real < decimal_float("0.5", work_precision)? {
+        let reflected = one.clone() - value.clone();
+        let sine = (DecimalComplex::from(DBig::pi(work_precision)) * value).sin();
+        DecimalComplex::from(DBig::pi(work_precision))
+            / (sine * gamma_complex_positive(reflected, work_precision)?)
+    } else {
+        gamma_complex_positive(value, work_precision)?
+    };
+    let result = if logarithm { gamma.ln() } else { gamma };
+    let (real, imaginary) = result.into_parts();
+    complex_number(DecimalComplex::from_parts(
+        real.with_precision(precision).value(),
+        imaginary.with_precision(precision).value(),
+    ))
+}
+
+fn gamma_complex_positive(
+    mut value: DecimalComplex,
+    work_precision: usize,
+) -> Result<DecimalComplex, MathEvaluationError> {
+    let (real, _) = value.clone().into_parts();
+    let threshold = DBig::from(work_precision / 2 + 12)
+        .with_precision(work_precision)
+        .value();
+    let one = DecimalComplex::from(DBig::ONE.with_precision(work_precision).value());
+    let half = DecimalComplex::from(decimal_float("0.5", work_precision)?);
+    let mut correction = one.clone();
+    let mut shifted_real = real;
+    while shifted_real < threshold {
+        correction *= value.clone();
+        value += one.clone();
+        shifted_real += DBig::ONE;
+    }
+    let terms = work_precision / 2 + 8;
+    let generated = (terms > EVEN_BERNOULLI.len()).then(|| bernoulli_numbers(terms * 2));
+    let pi = DBig::pi(work_precision);
+    let log_two_pi = (DBig::from(2).with_precision(work_precision).value() * pi).ln();
+    let mut result = (value.clone() - half) * value.clone().ln() - value.clone()
+        + DecimalComplex::from(decimal_float("0.5", work_precision)? * log_two_pi);
+    let squared = value.clone() * value.clone();
+    let mut odd_power = value;
+    for k in 1..=terms {
+        let index = k * 2;
+        let coefficient = if let Some((numerator, denominator)) = EVEN_BERNOULLI.get(k - 1) {
+            rational_float(numerator, denominator, work_precision)?
+        } else {
+            let bernoulli = &generated.as_ref().expect("generated above")[index];
+            rational_float(
+                &bernoulli.numer().to_string(),
+                &bernoulli.denom().to_string(),
+                work_precision,
+            )?
+        };
+        result += DecimalComplex::from(coefficient)
+            / (DecimalComplex::from(
+                DBig::from(index * (index - 1))
+                    .with_precision(work_precision)
+                    .value(),
+            ) * odd_power.clone());
+        odd_power *= squared.clone();
+    }
+    Ok(result.exp() / correction)
+}
+
 pub(super) fn evaluate_unary(
     number: &Number,
     function: UnaryMathFunction,
@@ -273,10 +446,13 @@ pub(super) fn evaluate_unary(
             | UnaryMathFunction::Gamma
             | UnaryMathFunction::Lgamma
     ) {
+        if matches!(number, Number::Complex(_))
+            && matches!(function, UnaryMathFunction::Erf | UnaryMathFunction::Erfc)
+        {
+            return erf_complex(number, precision, function == UnaryMathFunction::Erfc);
+        }
         if matches!(number, Number::Complex(_)) {
-            return Err(MathEvaluationError(
-                "complex special-function evaluation is not implemented".to_string(),
-            ));
+            return gamma_complex(number, precision, function == UnaryMathFunction::Lgamma);
         }
         let value = real_float(number, precision.saturating_add(16))?;
         let result = match function {

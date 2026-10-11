@@ -14,6 +14,295 @@ fn runtime_error(source: &str) -> String {
 }
 
 #[test]
+fn symbolic_geometric_sum_closes_over_symbolic_bounds() {
+    assert_eq!(output("print(sum(2^k, k, 0, n));"), "2 ^ (n + 1) - 1\n");
+    assert_eq!(output("print(sum(1^k, k, 2, n));"), "n - 1\n");
+}
+
+#[test]
+fn assertions_introspection_and_paired_eigenvectors() {
+    assert_eq!(
+        output(r#"
+            print(type_of([1, 2]));
+            print(help(limit));
+            print(assert(2 + 2 == 4));
+            print(verify(true));
+            print(format("lambda={} vector={{}} {}", 3, [0, 1]));
+            print(eigenpairs([2,0;0,3]));
+        "#),
+        "array\nlimit: limit(expression, variable, point[, side])\ntrue\ntrue\nlambda=3 vector={} [0, 1]\n[[3, [0, 1]], [2, [1, 0]]]\n",
+    );
+    assert_eq!(
+        runtime_error("assert(false, \"matrix identity is wrong\");"),
+        "assertion failed: matrix identity is wrong"
+    );
+    assert_eq!(
+        runtime_error("assert(x == 0);"),
+        "assertion failed: claim evaluated to false or could not be proved"
+    );
+}
+
+#[test]
+fn equation_chains_require_proof_at_every_link() {
+    assert_eq!(
+        output("print(verify_chain([x^2 + 2*x + 1, (x + 1)^2, x*x + 2*x + 1]));"),
+        "true\n"
+    );
+    assert_eq!(
+        runtime_error("verify_chain([x^2, x^2 + 1]);"),
+        "equation chain fails at step 1 -> 2"
+    );
+    assert_eq!(
+        runtime_error("verify_chain([x/x, 1]);"),
+        "equation chain fails at step 1 -> 2"
+    );
+}
+
+#[test]
+fn user_rewrite_rules_match_consistent_subexpressions_once() {
+    assert_eq!(
+        output("print(rewrite(sin(x)+sin(y), sin(t), t^2));"),
+        "x ^ 2 + y ^ 2\n"
+    );
+    assert_eq!(
+        runtime_error("rewrite(sin(x), sin(t), t+u);"),
+        "rewrite replacement uses an unbound pattern variable 'u'"
+    );
+}
+
+#[test]
+fn partial_fractions_support_repeated_rational_poles() {
+    let decomposition = output("print(apart((x+1)/(x-1)^2));");
+    assert!(decomposition.contains("(x - 1) ^ 2"), "{decomposition}");
+    assert!(decomposition.contains("x - 1"), "{decomposition}");
+    assert_eq!(
+        output("print(together(apart((x+1)/(x-1)^2)));"),
+        "(x + 1) / (x ^ 2 - 2 * x + 1)\n"
+    );
+    assert_eq!(
+        output("print(subs(apart(1/((x-1)*(x^2+1))), x, 2));"),
+        "1/5\n"
+    );
+    assert_eq!(
+        output("print(subs(apart((2*x+3)/((x-1)^2*(x^2+1))), x, 2));"),
+        "7/5\n"
+    );
+}
+
+#[test]
+fn periodic_trigonometric_families_name_an_integer_parameter() {
+    assert_eq!(
+        output("print(solve_periodic(sin(x), x, n)); print(solve_periodic(tan(2*x), x, n));"),
+        "{\"families\": [2 * n * pi, 2 * n * pi + pi], \"parameter\": n, \"domain\": Z}\n{\"families\": [1/2 * n * pi], \"parameter\": n, \"domain\": Z}\n"
+    );
+    assert_eq!(
+        runtime_error("solve_periodic(sin(x^2), x, n);"),
+        "solve_periodic expects an affine sin argument"
+    );
+    assert_eq!(
+        output("print(solve_periodic(sin(x)-2, x, n)[\"families\"]);"),
+        "[]\n"
+    );
+    let unit_sine = output("print(solve_periodic(sin(x)-1, x, n)[\"families\"]);");
+    assert_eq!(unit_sine.matches(", ").count(), 0, "{unit_sine}");
+}
+
+#[test]
+fn integer_quartics_factor_without_rational_roots() {
+    let factored = output("print(factor(x^4+4));");
+    assert!(
+        factored.contains("x ^ 2") && factored.contains(" * "),
+        "{factored}"
+    );
+    assert_eq!(output("print(expand(factor(x^4+4)));"), "x ^ 4 + 4\n");
+}
+
+#[test]
+fn integer_sextics_can_split_into_irreducible_cubics() {
+    let source = "(x^3+x+1)*(x^3+2*x+2)";
+    let factored = output(&format!("print(factor(expand({source})));"));
+    assert!(
+        factored.contains("x ^ 3 + x + 1") && factored.contains("x ^ 3 + 2 * x + 2"),
+        "{factored}"
+    );
+    assert_eq!(
+        output(&format!(
+            "print(expand(factor(expand({source}))) == expand({source}));"
+        )),
+        "true\n"
+    );
+}
+
+#[test]
+fn nonmonic_degree_eight_polynomials_can_split_into_quartics() {
+    let source = "(2*x^4+x+1)*(x^4+2*x+2)";
+    let factored = output(&format!("print(factor(expand({source})));"));
+    assert!(
+        factored.contains("2 * x ^ 4 + x + 1") && factored.contains("x ^ 4 + 2 * x + 2"),
+        "{factored}"
+    );
+    assert_eq!(
+        output(&format!(
+            "print(expand(factor(expand({source}))) == expand({source}));"
+        )),
+        "true\n"
+    );
+}
+
+#[test]
+fn rational_laurent_series_handles_a_nontrivial_denominator() {
+    let series = output("print(series(1/(x+x^2),x,0,3));");
+    assert!(series.contains("/ x"), "{series}");
+    assert_eq!(output("print(limit((x+x^2)/(x),x,0));"), "1\n");
+    let with_remainder = output("print(series(1/(x+x^2),x,0,3,\"O\"));");
+    assert!(with_remainder.contains("O(x ^ 4)"), "{with_remainder}");
+}
+
+#[test]
+fn directional_absolute_value_limits_handle_composite_expressions() {
+    assert_eq!(
+        output(
+            "print(limit((abs(x)+x)/x,x,0,\"left\")); print(limit((abs(x)+x)/x,x,0,\"right\"));"
+        ),
+        "0\n2\n"
+    );
+    assert_eq!(
+        runtime_error("limit((abs(x)+x)/x,x,0);"),
+        "left and right limits differ for absolute-value expression"
+    );
+}
+
+#[test]
+fn high_order_rational_poles_and_full_order_series_are_exact() {
+    assert_eq!(output("print(limit(x^20/x^18,x,0)); print(limit((2*x^20)/(3*x^20),x,0)); print(limit(1/(x^10+x^11),x,0)); print(limit(1/x^11,x,0,\"left\"));"), "0\n2/3\ninfinity\n-infinity\n");
+    let series = output("print(series(1/(x+x^2),x,0,64,\"O\"));");
+    assert!(series.starts_with("1 / x - 1 + x - x ^ 2"), "{series}");
+    assert!(series.ends_with("- x ^ 64 + O(x ^ 65)\n"), "{series}");
+}
+
+#[test]
+fn repeated_diagonal_eigenvalues_keep_independent_exact_vectors() {
+    assert_eq!(
+        output("print(eigenpairs([2,0,0;0,2,0;0,0,3],\"ascending\"));"),
+        "[[2, [1, 0, 0]], [2, [0, 1, 0]], [3, [0, 0, 1]]]\n"
+    );
+    assert_eq!(
+        output("print(eigenpairs([2,1,0;0,3,1;0,0,4],\"ascending\"));"),
+        "[[2, [1, 0, 0]], [3, [1, 1, 0]], [4, [1/2, 1, 1]]]\n"
+    );
+}
+
+#[test]
+fn nonsymmetric_complex_eigenpairs_and_complex_svd_reconstruct() {
+    assert_eq!(output("let p=eigenpairs([0,-1,0;1,0,0;0,0,2]); print(p[0][0]); print(abs(p[1][0])); print(abs(p[2][0]));"), "2\n1\n1\n");
+    assert_eq!(output("let a=[1+i,2;3*i,4;5,6-i]; let d=svd(a); let r=matmul(matmul(d[0],d[1]),d[2]); assert(abs(r[0][0]-(1+i))<1/1000000); assert(abs(r[1][0]-3*i)<1/1000000); assert(abs(r[2][1]-(6-i))<1/1000000); print(d[1][0][0]>d[1][1][1]);"), "true\n");
+}
+
+#[test]
+fn higher_polynomial_sums_use_exact_closed_forms() {
+    assert_eq!(
+        output("print(subs(sum(k^4,k,1,n),n,5)); print(subs(sum(k^5,k,2,n),n,4));"),
+        "979\n1299\n"
+    );
+}
+
+#[test]
+fn separable_ode_returns_an_implicit_solution_with_its_restriction() {
+    let solved = output("print(dsolve_separable(x, y, x, y, C));");
+    assert!(solved.contains("ln(abs(y))"), "{solved}");
+    assert!(solved.contains("equilibrium solutions"), "{solved}");
+    assert_eq!(
+        runtime_error("dsolve_separable(x, y, x, x, C);"),
+        "dsolve_separable requires f(x) and g(y) with distinct variables"
+    );
+}
+
+#[test]
+fn maps_and_string_formatting_are_available() {
+    assert_eq!(
+        output(
+            r#"
+        let settings = map([["theme", "dark"], ["zoom", 2], ["zoom", 3]]);
+        print(type_of(settings));
+        print(settings["zoom"]);
+        print(keys(settings));
+        print(values(put(settings, "zoom", 4)));
+        print(format("{}: {}", "zoom", settings["zoom"]));
+    "#
+        ),
+        "map\n3\n[\"theme\", \"zoom\"]\n[\"dark\", 4]\nzoom: 3\n"
+    );
+    assert_eq!(
+        runtime_error("print(map([])[\"missing\"]);"),
+        "map key 'missing' was not found"
+    );
+}
+
+#[test]
+fn rational_limits_at_infinity_are_exact() {
+    assert_eq!(
+        output(
+            r#"
+        print(limit((3*x^2 + 1)/(2*x^2 - x), x, "infinity"));
+        print(limit(1/(x^2 + 1), x, "-infinity"));
+        print(limit(7, x, "infinity"));
+    "#
+        ),
+        "3/2\n0\n7\n"
+    );
+    assert_eq!(
+        output("print(limit(x, x, \"infinity\")); print(limit(x^3, x, \"-infinity\"));"),
+        "infinity\n-infinity\n"
+    );
+}
+
+#[test]
+fn directional_poles_and_laurent_terms_are_explicit() {
+    assert_eq!(output("print(limit(1/x, x, 0, \"left\")); print(limit(1/x, x, 0, \"right\")); print(limit(1/x^2, x, 0)); print(limit(x/(x^2), x, 0, \"right\"));"), "-infinity\ninfinity\ninfinity\ninfinity\n");
+    assert_eq!(
+        runtime_error("print(limit(1/x, x, 0));"),
+        "left and right limits diverge with opposite signs"
+    );
+    assert_eq!(output("print(series(1/x, x, 0, 3));"), "1 / x\n");
+    let laurent = output("print(series((1 + x)/(x^2), x, 0, 2));");
+    assert!(
+        laurent.contains("1 / x ^ 2") && laurent.contains("1 / x"),
+        "{laurent}"
+    );
+}
+
+#[test]
+fn absolute_value_ratios_have_directional_real_limits() {
+    assert_eq!(
+        output("print(limit(abs(x)/x,x,0,\"left\")); print(limit(abs(x)/x,x,0,\"right\")); print(limit(abs(2*x-2)/(2*x-2),x,1,\"left\"));"),
+        "-1\n1\n-1\n"
+    );
+    assert_eq!(
+        runtime_error("limit(abs(x)/x,x,0);"),
+        "left and right limits differ for absolute-value ratio"
+    );
+}
+
+#[test]
+fn eigenvalue_order_and_exact_small_svd_reconstruct_matrix() {
+    assert_eq!(output("print(eigenvalues([2,0;0,3], \"ascending\")); print(eigenpairs([2,0;0,3], \"descending\"));"), "[2, 3]\n[[3, [0, 1]], [2, [1, 0]]]\n");
+    assert_eq!(
+        output("let d = svd([3,0;0,4]); print(d[1]); print(matmul(matmul(d[0], d[1]), d[2]));"),
+        "[[4, 0], [0, 3]]\n[[3, 0], [0, 4]]\n"
+    );
+    assert_eq!(
+        output(
+            "let d = svd([0,0;0,0]); print(matmul(matmul(d[0], d[1]), d[2])); print(svd([[-5]])[1]);"
+        ),
+        "[[0, 0], [0, 0]]\n[[5]]\n"
+    );
+    assert_eq!(
+        output("let d = svd([1,1;0,0]); let r = matmul(matmul(d[0], d[1]), d[2]); assert(abs(evalf(r[0][0]) - 1) < 1/1000000); assert(abs(evalf(r[0][1]) - 1) < 1/1000000); print(r[1]);"),
+        "[0, 0]\n"
+    );
+}
+
+#[test]
 fn randomized_safe_symbolic_collection_identity_holds() {
     let mut state = 0xcafe_babe_u64;
     let mut source = String::new();

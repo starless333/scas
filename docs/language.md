@@ -33,12 +33,22 @@ Symbolic names are normalized automatically; explicit transforms include
 roots, differentiation, and elementary antiderivatives. Calculus operations
 return an unevaluated call when no safe rule is known.
 
+`verify_chain([a, b, ...])` checks each adjacent pair with exact polynomial
+arithmetic or structural equality and stops at the first unproved link.
+`rewrite(expr, pattern, replacement)` applies a single top-down pass. Unbound
+names in the pattern are wildcards; repeated names must match the same expression,
+and every name in the replacement must be bound. It is a user-specified
+transformation, so SCAS does not assume the rule preserves equality.
+`solve_periodic(expr, x, n)` gives affine sine, cosine, and tangent solution
+families in a map with `families`, `parameter`, and `domain` (`"Z"`) fields.
+
 `pi`, `e`, and `tau` are exact symbolic constants. Exact function inputs remain
 exact or symbolic; `evalf(expression)` requests an arbitrary-precision decimal
 or complex approximation. A decimal input also requests numerical evaluation.
 Elementary functions use principal complex branches when a result leaves the
 real domain. The real special functions `gamma`, `lgamma`, `erf`, and `erfc`
-are arbitrary precision; their complex extensions are explicitly unsupported.
+are arbitrary precision. Complex `gamma` and `lgamma` use reflection and
+Stirling methods; complex `erf` and `erfc` use series and asymptotic methods.
 See [`math-functions.md`](math-functions.md) for the support matrix and branch
 conventions.
 
