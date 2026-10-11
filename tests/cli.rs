@@ -120,12 +120,15 @@ fn html_documentation_suite_covers_every_builtin_and_page() {
         "index.html",
         "getting-started.html",
         "language.html",
+        "math-functions.html",
         "builtins.html",
         "calculus.html",
         "linear-algebra.html",
         "documenter.html",
         "ide.html",
         "internals.html",
+        "correctness.html",
+        "demo-mit-diagonalization.html",
     ];
     for page in pages {
         let source = fs::read_to_string(docs.join(page))

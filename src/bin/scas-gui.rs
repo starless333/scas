@@ -22,6 +22,7 @@ use scas::lexer::{Scanner, SymbolTable, TokenType};
 use scas::parser::Parser;
 use scas::plot::{self, CriticalPoint, PlotBounds, SampledSeries};
 use scas::Limits;
+use serde::{Deserialize, Serialize};
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::hash::{Hash, Hasher};
@@ -43,6 +44,7 @@ let angle = π / 6;\n\
 \\[ sin(angle) => \\]\n\
 print(sin(angle));\n";
 const DEFAULT_AUTO_GREEK: bool = true;
+const DEFAULT_EDITOR_FONT_SIZE: f32 = 27.0;
 const DEFAULT_CODE_FONT_NAME: &str = "JetBrains Mono";
 const DEFAULT_CODE_FONT_BYTES: &[u8] =
     include_bytes!("../../assets/fonts/JetBrainsMono-Regular.ttf");
@@ -66,7 +68,7 @@ const MAX_VIEW_SPAN: f64 = 1.0e12;
 const MIN_EDITOR_WORKSPACE_WIDTH: f32 = 420.0;
 const MIN_PREVIEW_WIDTH: f32 = 220.0;
 const MIN_DOCUMENT_PREVIEW_ZOOM: f32 = 0.5;
-const MAX_DOCUMENT_PREVIEW_ZOOM: f32 = 4.0;
+const MAX_DOCUMENT_PREVIEW_ZOOM: f32 = 16.0;
 const DOCUMENT_PREVIEW_ZOOM_STEP: f32 = 1.25;
 /// Keeps a long document name from crowding the workspace tabs and tools.
 /// The complete name remains available from the tab tooltip.
@@ -160,11 +162,11 @@ struct LatexRender {
     size: [usize; 2],
 }
 
-type LatexDocumentResult = (u64, Result<Vec<Arc<LatexRender>>, String>);
+type LatexDocumentResult = (u64, f32, Result<Vec<Arc<LatexRender>>, String>);
 
 #[derive(Default)]
 struct LatexRenderCache {
-    entries: HashMap<u64, (String, [u8; 3], Arc<LatexRender>)>,
+    entries: HashMap<u64, (String, [u8; 3], u32, Arc<LatexRender>)>,
     order: VecDeque<u64>,
     bytes: usize,
 }
@@ -201,6 +203,43 @@ enum LineNumberMode {
     Absolute,
     Relative,
     Hybrid,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(default)]
+struct GuiPreferences {
+    theme: String,
+    custom_theme_path: Option<PathBuf>,
+    editor_font_size: f32,
+    custom_font_path: Option<PathBuf>,
+    line_numbers: String,
+    auto_greek: bool,
+}
+
+impl Default for GuiPreferences {
+    fn default() -> Self {
+        Self {
+            theme: "Dark Modern".to_owned(),
+            custom_theme_path: None,
+            editor_font_size: DEFAULT_EDITOR_FONT_SIZE,
+            custom_font_path: None,
+            line_numbers: LineNumberMode::Absolute.key().to_owned(),
+            auto_greek: DEFAULT_AUTO_GREEK,
+        }
+    }
+}
+
+impl GuiPreferences {
+    fn normalize(mut self) -> Self {
+        if !self.editor_font_size.is_finite() {
+            self.editor_font_size = DEFAULT_EDITOR_FONT_SIZE;
+        }
+        self.editor_font_size = self.editor_font_size.clamp(9.0, 32.0);
+        if LineNumberMode::from_key(&self.line_numbers).is_none() {
+            self.line_numbers = LineNumberMode::Absolute.key().to_owned();
+        }
+        self
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -363,6 +402,25 @@ impl LineNumberMode {
             Self::Hybrid => "Relative + current",
         }
     }
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Absolute => "absolute",
+            Self::Relative => "relative",
+            Self::Hybrid => "hybrid",
+        }
+    }
+
+    fn from_key(value: &str) -> Option<Self> {
+        match value {
+            "off" => Some(Self::Off),
+            "absolute" => Some(Self::Absolute),
+            "relative" => Some(Self::Relative),
+            "hybrid" => Some(Self::Hybrid),
+            _ => None,
+        }
+    }
 }
 
 struct ScasApp {
@@ -382,12 +440,17 @@ struct ScasApp {
     run_result: Option<Receiver<RunResult>>,
     status: String,
     themes: Vec<Theme>,
+    theme_paths: Vec<Option<PathBuf>>,
     selected_theme: usize,
     startup_maximize_pending: bool,
     editor_font_size: f32,
     settings_open: bool,
     theme_path: String,
     font_path: String,
+    active_font_path: Option<PathBuf>,
+    preferences_path: Option<PathBuf>,
+    saved_preferences: GuiPreferences,
+    preferences_save_due: Option<Instant>,
     preview: String,
     preview_document: Option<Document>,
     preview_error: Option<String>,
@@ -417,6 +480,11 @@ struct ScasApp {
     latex_render: Option<Receiver<LatexDocumentResult>>,
     latex_pending: Option<(String, [u8; 3], u64)>,
     last_latex_key: Option<u64>,
+    last_latex_source_key: Option<u64>,
+    latex_render_zoom: f32,
+    latex_texture_zoom: f32,
+    latex_observed_zoom: f32,
+    latex_zoom_due: Option<Instant>,
     latex_textures: Vec<egui::TextureHandle>,
     latex_render_error: Option<String>,
     repl_math_receiver: Option<Receiver<(u64, Result<LatexRender, String>)>>,
@@ -615,11 +683,142 @@ fn adjusted_document_preview_zoom(current: f32, factor: f32) -> f32 {
     (current * factor).clamp(MIN_DOCUMENT_PREVIEW_ZOOM, MAX_DOCUMENT_PREVIEW_ZOOM)
 }
 
+fn preferences_path_for(
+    os: &str,
+    xdg_config_home: Option<&Path>,
+    app_data: Option<&Path>,
+    user_home: Option<&Path>,
+) -> Option<PathBuf> {
+    let directory = match os {
+        "windows" => app_data.map(|path| path.join("SCAS")),
+        "macos" => user_home.map(|path| path.join("Library/Application Support/SCAS")),
+        _ => xdg_config_home
+            .map(|path| path.join("scas"))
+            .or_else(|| user_home.map(|path| path.join(".config/scas"))),
+    }?;
+    Some(directory.join("preferences.toml"))
+}
+
+fn preferences_path() -> Option<PathBuf> {
+    let xdg_config_home = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
+    let app_data = std::env::var_os("APPDATA").map(PathBuf::from);
+    let user_home =
+        std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from);
+    preferences_path_for(
+        std::env::consts::OS,
+        xdg_config_home.as_deref(),
+        app_data.as_deref(),
+        user_home.as_deref(),
+    )
+}
+
+fn load_preferences(path: Option<&Path>) -> (GuiPreferences, Option<String>) {
+    let Some(path) = path else {
+        return (
+            GuiPreferences::default(),
+            Some(
+                "Preferences will reset on restart because no config directory is available"
+                    .to_owned(),
+            ),
+        );
+    };
+    let source = match fs::read_to_string(path) {
+        Ok(source) => source,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return (GuiPreferences::default(), None)
+        }
+        Err(error) => {
+            return (
+                GuiPreferences::default(),
+                Some(format!("Could not read preferences: {error}")),
+            )
+        }
+    };
+    match toml::from_str::<GuiPreferences>(&source) {
+        Ok(preferences) => (preferences.normalize(), None),
+        Err(error) => (
+            GuiPreferences::default(),
+            Some(format!("Ignored invalid preferences: {error}")),
+        ),
+    }
+}
+
+fn save_preferences(path: &Path, preferences: &GuiPreferences) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "preferences path has no parent directory".to_owned())?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
+    let source = toml::to_string_pretty(preferences)
+        .map_err(|error| format!("could not encode preferences: {error}"))?;
+    let temporary = path.with_extension("toml.tmp");
+    fs::write(&temporary, &source)
+        .map_err(|error| format!("could not write {}: {error}", temporary.display()))?;
+    if let Err(rename_error) = fs::rename(&temporary, path) {
+        fs::write(path, source).map_err(|error| {
+            format!(
+                "could not save {}: {error} ({rename_error})",
+                path.display()
+            )
+        })?;
+        let _ = fs::remove_file(temporary);
+    }
+    Ok(())
+}
+
+fn font_definitions_from_path(path: &Path) -> Result<(FontDefinitions, String), String> {
+    let bytes = fs::read(path)
+        .map_err(|error| format!("Could not load font {}: {error}", path.display()))?;
+    let name = path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("custom-editor-font")
+        .to_owned();
+    let mut fonts = default_font_definitions();
+    fonts
+        .font_data
+        .insert(name.clone(), FontData::from_owned(bytes));
+    fonts
+        .families
+        .entry(FontFamily::Monospace)
+        .or_default()
+        .insert(0, name.clone());
+    Ok((fonts, name))
+}
+
 impl ScasApp {
     fn new(context: &egui::Context) -> Self {
         install_default_fonts(context);
-        let themes = Theme::bundled_themes();
-        themes[0].apply(context);
+        let preferences_path = preferences_path();
+        let (preferences, preference_warning) = load_preferences(preferences_path.as_deref());
+        let mut warnings = preference_warning.into_iter().collect::<Vec<_>>();
+        let mut themes = Theme::bundled_themes();
+        let mut theme_paths = vec![None; themes.len()];
+        let mut selected_theme = themes
+            .iter()
+            .position(|theme| theme.name == preferences.theme)
+            .unwrap_or(0);
+        if let Some(path) = preferences.custom_theme_path.as_deref() {
+            match Theme::load(path) {
+                Ok(theme) => {
+                    themes.push(theme);
+                    theme_paths.push(Some(path.to_owned()));
+                    selected_theme = themes.len() - 1;
+                }
+                Err(error) => warnings.push(format!("Saved theme was unavailable: {error}")),
+            }
+        }
+        themes[selected_theme].apply(context);
+        let mut active_font_path = None;
+        if let Some(path) = preferences.custom_font_path.as_deref() {
+            match font_definitions_from_path(path) {
+                Ok((fonts, _)) => {
+                    context.set_fonts(fonts);
+                    active_font_path = Some(path.to_owned());
+                }
+                Err(error) => warnings.push(format!("Saved font was unavailable: {error}")),
+            }
+        }
         let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let files = collect_tree(&project_root);
         let collapsed_dirs = files
@@ -645,16 +844,35 @@ impl ScasApp {
             save_as_open: false,
             save_as_path: String::new(),
             allow_close: false,
-            auto_greek: DEFAULT_AUTO_GREEK,
+            auto_greek: preferences.auto_greek,
             run_result: None,
-            status: "Ready".to_owned(),
+            status: if warnings.is_empty() {
+                "Ready".to_owned()
+            } else {
+                warnings.join("; ")
+            },
             themes,
-            selected_theme: 0,
+            theme_paths,
+            selected_theme,
             startup_maximize_pending: true,
-            editor_font_size: 27.0,
+            editor_font_size: preferences.editor_font_size,
             settings_open: false,
-            theme_path: "themes/dark-modern.toml".to_owned(),
-            font_path: "assets/fonts/JetBrainsMono-Regular.ttf".to_owned(),
+            theme_path: preferences
+                .custom_theme_path
+                .as_deref()
+                .unwrap_or_else(|| Path::new("themes/dark-modern.toml"))
+                .display()
+                .to_string(),
+            font_path: preferences
+                .custom_font_path
+                .as_deref()
+                .unwrap_or_else(|| Path::new("assets/fonts/JetBrainsMono-Regular.ttf"))
+                .display()
+                .to_string(),
+            active_font_path,
+            preferences_path,
+            saved_preferences: GuiPreferences::default(),
+            preferences_save_due: None,
             preview: String::new(),
             preview_document: None,
             preview_error: None,
@@ -684,6 +902,11 @@ impl ScasApp {
             latex_render: None,
             latex_pending: None,
             last_latex_key: None,
+            last_latex_source_key: None,
+            latex_render_zoom: 1.0,
+            latex_texture_zoom: 1.0,
+            latex_observed_zoom: 1.0,
+            latex_zoom_due: None,
             latex_textures: Vec::new(),
             latex_render_error: None,
             repl_math_receiver: None,
@@ -692,7 +915,8 @@ impl ScasApp {
             repl_math_cache: HashMap::new(),
             repl_math_error: None,
             repl_input_math_due: None,
-            line_numbers: LineNumberMode::Absolute,
+            line_numbers: LineNumberMode::from_key(&preferences.line_numbers)
+                .unwrap_or(LineNumberMode::Absolute),
             current_line: 0,
             cursor_char_index: 0,
             diagnostics_revision: 0,
@@ -723,8 +947,50 @@ impl ScasApp {
             graph_new_input: String::new(),
             graph_probe: None,
         };
+        app.saved_preferences = app.preference_snapshot();
         app.start_analysis();
         app
+    }
+
+    fn preference_snapshot(&self) -> GuiPreferences {
+        GuiPreferences {
+            theme: self.themes[self.selected_theme].name.clone(),
+            custom_theme_path: self.theme_paths[self.selected_theme].clone(),
+            editor_font_size: self.editor_font_size,
+            custom_font_path: self.active_font_path.clone(),
+            line_numbers: self.line_numbers.key().to_owned(),
+            auto_greek: self.auto_greek,
+        }
+    }
+
+    fn persist_preferences(&mut self) {
+        let preferences = self.preference_snapshot();
+        self.preferences_save_due = None;
+        if preferences == self.saved_preferences {
+            return;
+        }
+        if let Some(path) = self.preferences_path.as_deref() {
+            if let Err(error) = save_preferences(path, &preferences) {
+                self.status = format!("Could not save preferences: {error}");
+            }
+        }
+        self.saved_preferences = preferences;
+    }
+
+    fn queue_preferences_save(&mut self, context: &egui::Context) {
+        if self.preference_snapshot() == self.saved_preferences {
+            self.preferences_save_due = None;
+            return;
+        }
+        let due = *self
+            .preferences_save_due
+            .get_or_insert_with(|| Instant::now() + Duration::from_millis(250));
+        let now = Instant::now();
+        if now >= due {
+            self.persist_preferences();
+        } else {
+            context.request_repaint_after(due - now);
+        }
     }
 
     fn reset_repl(&mut self) {
@@ -1575,6 +1841,7 @@ impl ScasApp {
             PendingAction::NewFile => self.new_file_unchecked(),
             PendingAction::Open(path) => self.open_unchecked(path),
             PendingAction::Close => {
+                self.persist_preferences();
                 self.allow_close = true;
                 if let Some(context) = context {
                     context.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1897,6 +2164,16 @@ impl ScasApp {
         let mut hasher = DefaultHasher::new();
         body.hash(&mut hasher);
         color.hash(&mut hasher);
+        let source_key = hasher.finish();
+        if self.last_latex_source_key != Some(source_key) {
+            // A texture from another document must never be shown as its preview.
+            self.latex_textures.clear();
+            self.last_latex_source_key = Some(source_key);
+            self.latex_render_zoom = 1.0;
+            self.latex_texture_zoom = 1.0;
+            self.latex_zoom_due = Some(Instant::now() + Duration::from_millis(250));
+        }
+        self.latex_render_zoom.to_bits().hash(&mut hasher);
         let key = hasher.finish();
         if self.last_latex_key == Some(key)
             || self
@@ -1910,17 +2187,14 @@ impl ScasApp {
             self.latex_pending = Some((body, color, key));
             return;
         }
-        // Never display a texture belonging to a different source document.
-        // The structured renderer remains visible while the replacement is
-        // typeset, and is also the reliable fallback if LaTeX fails.
-        self.latex_textures.clear();
         self.last_latex_key = None;
+        let zoom = self.latex_render_zoom;
         let (sender, receiver) = mpsc::channel();
         self.latex_render = Some(receiver);
         self.latex_render_error = None;
         std::thread::spawn(move || {
-            let result = render_latex_document_pngs(&body, color);
-            let _ = sender.send((key, result));
+            let result = render_latex_document_pngs(&body, color, zoom);
+            let _ = sender.send((key, zoom, result));
         });
     }
 
@@ -2021,36 +2295,47 @@ impl ScasApp {
         };
         let event = receiver.try_recv();
         match event {
-            Ok((key, Ok(renders))) => {
-                if self.last_latex_key.is_some_and(|expected| expected != key) {
+            Ok((key, zoom, Ok(renders))) => {
+                if self.last_latex_key.is_some_and(|expected| expected != key)
+                    || self
+                        .latex_pending
+                        .as_ref()
+                        .is_some_and(|(_, _, pending_key)| *pending_key != key)
+                {
                     self.latex_render = None;
-                    return;
+                } else {
+                    self.latex_textures = renders
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, render)| {
+                            let image =
+                                egui::ColorImage::from_rgba_unmultiplied(render.size, &render.rgba);
+                            context.load_texture(
+                                format!("latex-preview-{index}"),
+                                image,
+                                egui::TextureOptions::LINEAR,
+                            )
+                        })
+                        .collect();
+                    self.last_latex_key = Some(key);
+                    self.latex_texture_zoom = zoom;
+                    self.latex_render_error = None;
+                    self.latex_render = None;
                 }
-                self.latex_textures = renders
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, render)| {
-                        let image =
-                            egui::ColorImage::from_rgba_unmultiplied(render.size, &render.rgba);
-                        context.load_texture(
-                            format!("latex-preview-{index}"),
-                            image,
-                            egui::TextureOptions::LINEAR,
-                        )
-                    })
-                    .collect();
-                self.last_latex_key = Some(key);
-                self.latex_render_error = None;
-                self.latex_render = None;
             }
-            Ok((key, Err(error))) => {
-                if self.last_latex_key.is_some_and(|expected| expected != key) {
+            Ok((key, _, Err(error))) => {
+                if self.last_latex_key.is_some_and(|expected| expected != key)
+                    || self
+                        .latex_pending
+                        .as_ref()
+                        .is_some_and(|(_, _, pending_key)| *pending_key != key)
+                {
                     self.latex_render = None;
-                    return;
+                } else {
+                    self.latex_render_error = Some(error);
+                    self.last_latex_key = Some(key);
+                    self.latex_render = None;
                 }
-                self.latex_render_error = Some(error);
-                self.last_latex_key = Some(key);
-                self.latex_render = None;
             }
             Err(TryRecvError::Empty) => context.request_repaint_after(Duration::from_millis(100)),
             Err(TryRecvError::Disconnected) => {
@@ -2079,8 +2364,10 @@ impl ScasApp {
         let path = PathBuf::from(self.theme_path.trim());
         match Theme::load(&path) {
             Ok(theme) => {
+                let saved_path = fs::canonicalize(&path).unwrap_or(path);
                 self.status = format!("Loaded theme {}", theme.name);
                 self.themes.push(theme);
+                self.theme_paths.push(Some(saved_path));
                 self.selected_theme = self.themes.len() - 1;
                 self.themes[self.selected_theme].apply(context);
                 if let Some(document) = &self.preview_document {
@@ -2094,26 +2381,14 @@ impl ScasApp {
 
     fn load_font(&mut self, context: &egui::Context) {
         let path = PathBuf::from(self.font_path.trim());
-        match fs::read(&path) {
-            Ok(bytes) => {
-                let name = path
-                    .file_stem()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("custom-editor-font")
-                    .to_owned();
-                let mut fonts = default_font_definitions();
-                fonts
-                    .font_data
-                    .insert(name.clone(), FontData::from_owned(bytes));
-                fonts
-                    .families
-                    .entry(FontFamily::Monospace)
-                    .or_default()
-                    .insert(0, name.clone());
+        match font_definitions_from_path(&path) {
+            Ok((fonts, name)) => {
                 context.set_fonts(fonts);
+                self.active_font_path = Some(fs::canonicalize(&path).unwrap_or(path));
+                self.highlight_cache = None;
                 self.status = format!("Loaded font {name}");
             }
-            Err(error) => self.status = format!("Could not load {}: {error}", path.display()),
+            Err(error) => self.status = error,
         }
     }
 
@@ -3128,6 +3403,7 @@ impl ScasApp {
                             ui.selectable_value(&mut self.line_numbers, mode, mode.label());
                         }
                     });
+                ui.checkbox(&mut self.auto_greek, "Expand LaTeX-style Greek shortcuts");
                 ui.separator();
                 ui.label("Editor font");
                 ui.horizontal(|ui| {
@@ -3140,6 +3416,7 @@ impl ScasApp {
                     load_font = ui.button("Load").clicked();
                 });
                 ui.small("JetBrains Mono is the default. Font files may be .ttf or .otf.");
+                ui.small("Changes are saved automatically for the next launch.");
             });
         self.settings_open = open;
         if let Some(index) = chosen_theme {
@@ -3982,6 +4259,7 @@ impl eframe::App for ScasApp {
                 context.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 self.request_action(PendingAction::Close, Some(context));
             } else {
+                self.persist_preferences();
                 self.allow_close = true;
             }
         }
@@ -4810,23 +5088,95 @@ impl eframe::App for ScasApp {
                     } else {
                         let preview_width = ui.available_width();
                         let preview_view_rect = ui.available_rect_before_wrap();
-                        let gesture_zoom = ui.input(|input| {
-                            input.pointer.hover_pos().map_or(1.0, |position| {
-                                if preview_view_rect.contains(position) {
-                                    input.zoom_delta()
-                                } else {
-                                    1.0
-                                }
-                            })
+                        let (gesture_zoom, wheel_zoom) = ui.input(|input| {
+                            let over_preview = input
+                                .pointer
+                                .hover_pos()
+                                .is_some_and(|position| preview_view_rect.contains(position));
+                            if !over_preview {
+                                return (1.0, false);
+                            }
+                            let pinch = input.zoom_delta();
+                            if (pinch - 1.0).abs() > f32::EPSILON {
+                                (pinch, input.raw_scroll_delta.y != 0.0)
+                            } else if input.raw_scroll_delta.y != 0.0 {
+                                ((input.raw_scroll_delta.y / 300.0).exp(), true)
+                            } else {
+                                (1.0, false)
+                            }
                         });
+                        if wheel_zoom {
+                            // The trackpad gesture belongs to the document, not
+                            // the surrounding ScrollArea's vertical scrollbar.
+                            ui.input_mut(|input| input.smooth_scroll_delta.y = 0.0);
+                        }
                         if (gesture_zoom - 1.0).abs() > f32::EPSILON {
                             self.document_preview_zoom = adjusted_document_preview_zoom(
                                 self.document_preview_zoom,
                                 gesture_zoom,
                             );
                         }
+                        if self.document_preview_zoom.to_bits()
+                            != self.latex_observed_zoom.to_bits()
+                        {
+                            self.latex_observed_zoom = self.document_preview_zoom;
+                            self.latex_zoom_due =
+                                Some(Instant::now() + Duration::from_millis(250));
+                        }
+                        if let Some(due) = self.latex_zoom_due {
+                            let now = Instant::now();
+                            if now >= due {
+                                if self.latex_textures.is_empty() {
+                                    if self.latex_render_error.is_some() {
+                                        self.latex_zoom_due = None;
+                                    } else {
+                                        self.latex_zoom_due =
+                                            Some(now + Duration::from_millis(100));
+                                        ui.ctx().request_repaint_after(Duration::from_millis(100));
+                                    }
+                                } else {
+                                    self.latex_zoom_due = None;
+                                    // Respect the GPU texture limit while using as
+                                    // much resolution as the current view permits.
+                                    let largest = self
+                                        .latex_textures
+                                        .iter()
+                                        .flat_map(|texture| texture.size())
+                                        .max()
+                                        .unwrap_or(1) as f32;
+                                    let pixels = self
+                                        .latex_textures
+                                        .iter()
+                                        .map(|texture| {
+                                            let [width, height] = texture.size();
+                                            width.saturating_mul(height)
+                                        })
+                                        .fold(0usize, usize::saturating_add)
+                                        .max(1) as f32;
+                                    let max_side = ui.input(|input| input.max_texture_side) as f32;
+                                    let side_limit = max_side * 0.9 / largest;
+                                    let memory_limit = (16_000_000.0 / pixels).sqrt();
+                                    let supported_zoom =
+                                        (side_limit.min(memory_limit) * self.latex_texture_zoom)
+                                            .max(1.0);
+                                    self.latex_render_zoom = self
+                                        .document_preview_zoom
+                                        .min(supported_zoom)
+                                        .max(1.0);
+                                }
+                            } else {
+                                ui.ctx().request_repaint_after(due.duration_since(now));
+                            }
+                        }
                         let preview_scale = (preview_width / 280.0).clamp(1.0, 2.8)
                             * self.document_preview_zoom;
+                        let preview_zoom = self.document_preview_zoom;
+                        if let Some(document) = &self.preview_document {
+                            self.start_latex_render(
+                                document.body(),
+                                [theme.ui.text.0.r(), theme.ui.text.0.g(), theme.ui.text.0.b()],
+                            );
+                        }
                         egui::ScrollArea::both()
                             .auto_shrink([false, false])
                             .show(ui, |ui| {
@@ -4839,7 +5189,7 @@ impl eframe::App for ScasApp {
                                             .map(|texture| texture.size_vec2().x)
                                             .fold(1.0, f32::max);
                                         let image_scale = (page_width / widest_chunk).min(4.5)
-                                            * self.document_preview_zoom;
+                                            * preview_zoom;
                                         ui.with_layout(
                                             egui::Layout::top_down(egui::Align::Min),
                                             |ui| {
@@ -5493,6 +5843,7 @@ impl eframe::App for ScasApp {
                 }
             });
         self.show_quick_open(context);
+        self.queue_preferences_save(context);
     }
 }
 
@@ -6688,30 +7039,35 @@ fn split_top_level_alignment_rows(rows: &str) -> Vec<&str> {
     result
 }
 
-fn latex_render_cache_key(body: &str, color: [u8; 3]) -> u64 {
+fn latex_render_cache_key(body: &str, color: [u8; 3], zoom: f32) -> u64 {
     let mut hasher = DefaultHasher::new();
     body.hash(&mut hasher);
     color.hash(&mut hasher);
+    zoom.to_bits().hash(&mut hasher);
     hasher.finish()
 }
 
-fn render_latex_png_cached(body: &str, color: [u8; 3]) -> Result<Arc<LatexRender>, String> {
+fn render_latex_png_cached(
+    body: &str,
+    color: [u8; 3],
+    zoom: f32,
+) -> Result<Arc<LatexRender>, String> {
     const MAX_CACHE_ENTRIES: usize = 32;
     const MAX_CACHE_BYTES: usize = 64 * 1024 * 1024;
-    let key = latex_render_cache_key(body, color);
+    let key = latex_render_cache_key(body, color, zoom);
     let cache = LATEX_RENDER_CACHE.get_or_init(|| Mutex::new(LatexRenderCache::default()));
     {
         let cache = cache
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some((cached_body, cached_color, render)) = cache.entries.get(&key) {
-            if cached_body == body && *cached_color == color {
+        if let Some((cached_body, cached_color, cached_zoom, render)) = cache.entries.get(&key) {
+            if cached_body == body && *cached_color == color && *cached_zoom == zoom.to_bits() {
                 return Ok(Arc::clone(render));
             }
         }
     }
 
-    let render = Arc::new(render_latex_png(body, color)?);
+    let render = Arc::new(render_latex_png(body, color, zoom)?);
     let render_bytes = render.rgba.len();
     if render_bytes > MAX_CACHE_BYTES {
         return Ok(render);
@@ -6724,7 +7080,7 @@ fn render_latex_png_cached(body: &str, color: [u8; 3]) -> Result<Arc<LatexRender
             || cache.bytes.saturating_add(render_bytes) > MAX_CACHE_BYTES
         {
             if let Some(oldest) = cache.order.pop_front() {
-                if let Some((_, _, removed)) = cache.entries.remove(&oldest) {
+                if let Some((_, _, _, removed)) = cache.entries.remove(&oldest) {
                     cache.bytes = cache.bytes.saturating_sub(removed.rgba.len());
                 }
             } else {
@@ -6732,32 +7088,37 @@ fn render_latex_png_cached(body: &str, color: [u8; 3]) -> Result<Arc<LatexRender
             }
         }
         cache.order.push_back(key);
-    } else if let Some((_, _, previous)) = cache.entries.get(&key) {
+    } else if let Some((_, _, _, previous)) = cache.entries.get(&key) {
         cache.bytes = cache.bytes.saturating_sub(previous.rgba.len());
     }
     cache.bytes += render_bytes;
-    cache
-        .entries
-        .insert(key, (body.to_owned(), color, Arc::clone(&render)));
+    cache.entries.insert(
+        key,
+        (body.to_owned(), color, zoom.to_bits(), Arc::clone(&render)),
+    );
     Ok(render)
 }
 
 fn render_repl_math_png(latex: &str, color: [u8; 3]) -> Result<LatexRender, String> {
-    render_latex_png(&format!("${latex}$"), color)
+    render_latex_png(&format!("${latex}$"), color, 1.0)
 }
 
-fn render_latex_document_pngs(body: &str, color: [u8; 3]) -> Result<Vec<Arc<LatexRender>>, String> {
+fn render_latex_document_pngs(
+    body: &str,
+    color: [u8; 3],
+    zoom: f32,
+) -> Result<Vec<Arc<LatexRender>>, String> {
     latex_preview_chunks(body)
         .into_iter()
         .enumerate()
         .map(|(index, chunk)| {
-            render_latex_png_cached(&chunk, color)
+            render_latex_png_cached(&chunk, color, zoom)
                 .map_err(|error| format!("LaTeX preview chunk {}: {error}", index + 1))
         })
         .collect()
 }
 
-fn render_latex_png(body: &str, color: [u8; 3]) -> Result<LatexRender, String> {
+fn render_latex_png(body: &str, color: [u8; 3], zoom: f32) -> Result<LatexRender, String> {
     let directory = std::env::temp_dir().join(format!(
         "scas-latex-{}-{}",
         std::process::id(),
@@ -6796,23 +7157,32 @@ fn render_latex_png(body: &str, color: [u8; 3]) -> Result<LatexRender, String> {
                 "LaTeX could not typeset the current document: {detail}"
             ));
         }
-        let dvipng = Command::new("dvipng")
+        let vector = Command::new("dvisvgm")
             .args([
-                "-T",
-                "tight",
-                "-D",
-                "180",
-                "-bg",
-                "Transparent",
-                "-o",
-                "preview.png",
+                "--no-fonts",
+                "--bbox=min",
+                "--output=preview.svg",
                 "preview.dvi",
             ])
             .current_dir(&directory)
             .output()
-            .map_err(|error| format!("could not start dvipng: {error}"))?;
-        if !dvipng.status.success() {
-            return Err("dvipng could not rasterize the LaTeX preview".to_owned());
+            .map_err(|error| format!("could not start dvisvgm: {error}"))?;
+        if !vector.status.success() {
+            return Err("dvisvgm could not convert the LaTeX preview to SVG".to_owned());
+        }
+        let raster = Command::new("rsvg-convert")
+            .args([
+                "--zoom",
+                &format!("{}", 2.5 * zoom),
+                "--output",
+                "preview.png",
+                "preview.svg",
+            ])
+            .current_dir(&directory)
+            .output()
+            .map_err(|error| format!("could not start rsvg-convert: {error}"))?;
+        if !raster.status.success() {
+            return Err("rsvg-convert could not rasterize the SVG preview".to_owned());
         }
         let bytes = fs::read(directory.join("preview.png"))
             .map_err(|error| format!("could not read LaTeX preview: {error}"))?;
@@ -6951,14 +7321,18 @@ mod tests {
     #[test]
     fn mit_session_document_renders_in_gui_preview() {
         if Command::new("latex").arg("--version").output().is_err()
-            || Command::new("dvipng").arg("--version").output().is_err()
+            || Command::new("dvisvgm").arg("--version").output().is_err()
+            || Command::new("rsvg-convert")
+                .arg("--version")
+                .output()
+                .is_err()
         {
             return;
         }
         let source = include_str!("../../examples/mit-18-06-session-22.scas");
         let document = scas::document::build_live_with_limits(source, live_preview_limits())
             .expect("MIT source should build in the live preview");
-        let renders = render_latex_document_pngs(&document.body(), [220, 220, 220])
+        let renders = render_latex_document_pngs(&document.body(), [220, 220, 220], 1.0)
             .expect("MIT document should typeset in the GUI preview");
         assert!(!renders.is_empty());
         assert!(renders
@@ -7625,9 +7999,54 @@ mod tests {
     }
 
     #[test]
+    fn preferences_round_trip_all_editor_choices() {
+        let directory =
+            std::env::temp_dir().join(format!("scas-preferences-test-{}", std::process::id()));
+        let path = directory.join("preferences.toml");
+        let expected = GuiPreferences {
+            theme: "Nord".to_owned(),
+            custom_theme_path: Some(PathBuf::from("/tmp/custom-theme.toml")),
+            editor_font_size: 18.5,
+            custom_font_path: Some(PathBuf::from("/tmp/custom-font.ttf")),
+            line_numbers: LineNumberMode::Hybrid.key().to_owned(),
+            auto_greek: false,
+        };
+        save_preferences(&path, &expected).unwrap();
+        let (actual, warning) = load_preferences(Some(&path));
+        assert_eq!(actual, expected);
+        assert!(warning.is_none());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn preferences_use_each_platforms_config_directory() {
+        let home = Path::new("/users/ada");
+        let xdg = Path::new("/settings");
+        let app_data = Path::new("C:/Users/Ada/AppData/Roaming");
+        assert_eq!(
+            preferences_path_for("linux", Some(xdg), None, Some(home)),
+            Some(PathBuf::from("/settings/scas/preferences.toml"))
+        );
+        assert_eq!(
+            preferences_path_for("macos", None, None, Some(home)),
+            Some(PathBuf::from(
+                "/users/ada/Library/Application Support/SCAS/preferences.toml"
+            ))
+        );
+        assert_eq!(
+            preferences_path_for("windows", None, Some(app_data), None),
+            Some(app_data.join("SCAS/preferences.toml"))
+        );
+    }
+
+    #[test]
     fn system_latex_produces_a_real_computer_modern_preview_when_available() {
         if Command::new("latex").arg("--version").output().is_err()
-            || Command::new("dvipng").arg("--version").output().is_err()
+            || Command::new("dvisvgm").arg("--version").output().is_err()
+            || Command::new("rsvg-convert")
+                .arg("--version")
+                .output()
+                .is_err()
         {
             return;
         }
@@ -7638,7 +8057,7 @@ solve(z^2-z, z) =>;
 \}"#,
         )
         .unwrap();
-        let rendered = render_latex_png(&document.body(), [20, 20, 20]).unwrap();
+        let rendered = render_latex_png(&document.body(), [20, 20, 20], 1.0).unwrap();
         assert!(rendered.size[0] > 20);
         assert!(rendered.size[1] > 20);
         assert_eq!(rendered.rgba.len(), rendered.size[0] * rendered.size[1] * 4);
@@ -7650,7 +8069,7 @@ solve(z^2-z, z) =>;
         assert!(repl.size[1] > 10);
 
         let plot_document = scas::document::build(r"\[ plot(sin(x), x, -pi, pi) \]").unwrap();
-        let plot = render_latex_png(&plot_document.body(), [20, 20, 20]).unwrap();
+        let plot = render_latex_png(&plot_document.body(), [20, 20, 20], 1.0).unwrap();
         assert!(plot.size[0] > 100);
         assert!(plot.size[1] > 50);
 
@@ -7659,7 +8078,7 @@ solve(z^2-z, z) =>;
             live_preview_limits(),
         )
         .unwrap();
-        let pages = render_latex_document_pngs(&gallery.body(), [20, 20, 20]).unwrap();
+        let pages = render_latex_document_pngs(&gallery.body(), [20, 20, 20], 1.0).unwrap();
         assert!(pages.len() > 2);
         assert!(pages
             .iter()
@@ -7668,8 +8087,11 @@ solve(z^2-z, z) =>;
         // The complete all-steps gallery may intentionally exceed the bounded
         // texture cache. Verify caching with a normal-sized page instead of
         // requiring an unusually large document to remain resident in full.
-        let cached_page = render_latex_png_cached(r"\[x^2+1\]", [20, 20, 20]).unwrap();
-        let cached_again = render_latex_png_cached(r"\[x^2+1\]", [20, 20, 20]).unwrap();
+        let cached_page = render_latex_png_cached(r"\[x^2+1\]", [20, 20, 20], 1.0).unwrap();
+        let cached_again = render_latex_png_cached(r"\[x^2+1\]", [20, 20, 20], 1.0).unwrap();
         assert!(Arc::ptr_eq(&cached_page, &cached_again));
+        let zoomed_page = render_latex_png_cached(r"\[x^2+1\]", [20, 20, 20], 2.0).unwrap();
+        assert!(zoomed_page.size[0] > cached_page.size[0]);
+        assert!(zoomed_page.size[1] > cached_page.size[1]);
     }
 }

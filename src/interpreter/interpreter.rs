@@ -89,6 +89,8 @@ const MAX_BY_PARTS_DEGREE: u32 = 8;
 /// product to before giving up on the by-parts rule.
 const MAX_POLYNOMIAL_TERMS: usize = 16;
 
+type RewriteRule = (Rc<SymbolicExpr>, Rc<SymbolicExpr>, Option<(String, Symbol)>);
+
 pub struct Interpreter<W: Write> {
     globals: Env,
     /// Owned so error messages can resolve a `Symbol` back to its
@@ -367,10 +369,9 @@ impl<W: Write> Interpreter<W> {
             .map_err(|flow| self.describe_top_level(flow))
     }
 
-    /// Evaluate an expression for a dynamic document result. Every builtin
-    /// produces renderer-visible work: operations with specialized traces use
-    /// them, while the rest show argument evaluation and the mathematical rule
-    /// being applied. Ordinary execution remains concise.
+    /// Evaluate a dynamic document result. Explicit `_steps` calls retain their
+    /// derivations; ordinary builtin calls produce a concise mathematical
+    /// result unless calculus has useful intermediate work to show.
     pub fn evaluate_documented_expression(
         &mut self,
         expression: &Expr,
@@ -437,20 +438,7 @@ impl<W: Write> Interpreter<W> {
             ) {
                 return self.documented_calculus_steps(builtin, &values, result);
             }
-            let mut steps = Vec::with_capacity(2);
-            if !values.is_empty() {
-                steps.push(DerivationStep {
-                    value: Value::Nil,
-                    operation: StepOperation::EvaluateArguments { values },
-                });
-            }
-            steps.push(DerivationStep {
-                value: result.clone(),
-                operation: StepOperation::Explanation(
-                    Self::builtin_derivation_explanation(builtin).to_owned(),
-                ),
-            });
-            Ok(Self::derivation(result, steps))
+            Ok(result)
         });
         value.map_err(|flow| self.describe_top_level(flow))
     }
@@ -537,14 +525,6 @@ impl<W: Write> Interpreter<W> {
                                 });
                             }
                         }
-                        let check = self.derivative_symbolic(&antiderivative, variable);
-                        let check = self.simplify_symbolic_tree(&check)?;
-                        steps.push(DerivationStep {
-                            value: Self::symbolic_value(check),
-                            operation: StepOperation::Explanation(
-                                "differentiate to check".to_owned(),
-                            ),
-                        });
                     }
                 }
             }
@@ -1297,11 +1277,11 @@ impl<W: Write> Interpreter<W> {
             | Builtin::DotSteps
             | Builtin::CrossSteps => (2, 2),
             Builtin::Subs
-            | Builtin::Rewrite
             | Builtin::SolvePeriodic
             | Builtin::Resultant
             | Builtin::PolynomialGcd
             | Builtin::PolynomialDivRem => (3, 3),
+            Builtin::Rewrite => (2, 3),
             Builtin::Gradient | Builtin::Jacobian | Builtin::Hessian => (2, 2),
             Builtin::DefiniteIntegral | Builtin::Sum | Builtin::Product => (4, 4),
             Builtin::Limit => (3, 4),
@@ -1422,7 +1402,9 @@ impl<W: Write> Interpreter<W> {
                     Builtin::Svd => "svd(matrix)",
                     Builtin::Assert => "assert(condition[, message])",
                     Builtin::VerifyChain => "verify_chain([step1, step2, ...])",
-                    Builtin::Rewrite => "rewrite(expression, pattern, replacement)",
+                    Builtin::Rewrite => {
+                        "rewrite(expression, pattern, replacement) or rewrite(expression, rules)"
+                    }
                     Builtin::SolvePeriodic => "solve_periodic(expression, variable, parameter)",
                     Builtin::DsolveSeparable => "dsolve_separable(f, g, x, y, constant)",
                     Builtin::TypeOf => "type_of(value)",
@@ -1470,9 +1452,60 @@ impl<W: Write> Interpreter<W> {
             }
             Builtin::Rewrite => {
                 let expression = self.value_to_symbolic(args[0].clone())?;
-                let pattern = self.value_to_symbolic(args[1].clone())?;
-                let replacement = self.value_to_symbolic(args[2].clone())?;
-                let rewritten = self.rewrite_symbolic(&expression, &pattern, &replacement)?;
+                let mut rules = Vec::new();
+                if args.len() == 3 {
+                    rules.push((
+                        self.value_to_symbolic(args[1].clone())?,
+                        self.value_to_symbolic(args[2].clone())?,
+                        None,
+                    ));
+                } else {
+                    let Value::Array(collection) = &args[1] else {
+                        return Err(self.error("rewrite rules must be an array"));
+                    };
+                    for rule in collection.iter() {
+                        let Value::Array(parts) = rule else {
+                            return Err(self.error(
+                                "rewrite rule must be [pattern, replacement, optional guard]",
+                            ));
+                        };
+                        if !(2..=3).contains(&parts.len()) {
+                            return Err(self.error(
+                                "rewrite rule must be [pattern, replacement, optional guard]",
+                            ));
+                        }
+                        let guard = if let Some(guard) = parts.get(2) {
+                            let Value::Array(condition) = guard else {
+                                return Err(
+                                    self.error("rewrite guard must be [predicate, wildcard]")
+                                );
+                            };
+                            let [Value::Str(predicate), variable] = condition.as_slice() else {
+                                return Err(
+                                    self.error("rewrite guard must be [predicate, wildcard]")
+                                );
+                            };
+                            if !matches!(
+                                predicate.as_str(),
+                                "positive" | "negative" | "nonnegative" | "nonzero"
+                            ) {
+                                return Err(self.error("rewrite guard expects positive, negative, nonnegative, or nonzero"));
+                            }
+                            Some((
+                                predicate.clone(),
+                                self.calculus_variable(variable, "rewrite guard")?,
+                            ))
+                        } else {
+                            None
+                        };
+                        rules.push((
+                            self.value_to_symbolic(parts[0].clone())?,
+                            self.value_to_symbolic(parts[1].clone())?,
+                            guard,
+                        ));
+                    }
+                }
+                let rewritten = self.rewrite_symbolic(&expression, &rules)?;
                 return Ok(Self::symbolic_value(rewritten));
             }
             Builtin::SolvePeriodic => {
@@ -2567,28 +2600,44 @@ impl<W: Write> Interpreter<W> {
     fn rewrite_symbolic(
         &self,
         expression: &Rc<SymbolicExpr>,
-        pattern: &Rc<SymbolicExpr>,
-        replacement: &Rc<SymbolicExpr>,
+        rules: &[RewriteRule],
     ) -> ExecResult<Rc<SymbolicExpr>> {
-        let mut bindings = Vec::new();
-        if Self::match_rewrite_pattern(pattern, expression, &mut bindings) {
-            return self.instantiate_rewrite(replacement, &bindings);
+        for (pattern, replacement, guard) in rules {
+            let mut bindings = Vec::new();
+            if !Self::match_rewrite_pattern(pattern, expression, &mut bindings) {
+                continue;
+            }
+            let allowed = guard.as_ref().map_or(true, |(predicate, symbol)| {
+                let Some((_, bound)) = bindings.iter().find(|(name, _)| name == symbol) else {
+                    return false;
+                };
+                match predicate.as_str() {
+                    "positive" => self.symbolic_positive(bound),
+                    "negative" => self.symbolic_negative(bound),
+                    "nonnegative" => self.symbolic_nonnegative(bound),
+                    "nonzero" => self.symbolic_nonzero(bound),
+                    _ => false,
+                }
+            });
+            if allowed {
+                return self.instantiate_rewrite(replacement, &bindings);
+            }
         }
         Ok(match expression.as_ref() {
             SymbolicExpr::Unary { op, expr } => Rc::new(SymbolicExpr::Unary {
                 op: *op,
-                expr: self.rewrite_symbolic(expr, pattern, replacement)?,
+                expr: self.rewrite_symbolic(expr, rules)?,
             }),
             SymbolicExpr::Binary { left, op, right } => Rc::new(SymbolicExpr::Binary {
-                left: self.rewrite_symbolic(left, pattern, replacement)?,
+                left: self.rewrite_symbolic(left, rules)?,
                 op: *op,
-                right: self.rewrite_symbolic(right, pattern, replacement)?,
+                right: self.rewrite_symbolic(right, rules)?,
             }),
             SymbolicExpr::Call { function, args } => Rc::new(SymbolicExpr::Call {
                 function: *function,
                 args: args
                     .iter()
-                    .map(|arg| self.rewrite_symbolic(arg, pattern, replacement))
+                    .map(|arg| self.rewrite_symbolic(arg, rules))
                     .collect::<ExecResult<Vec<_>>>()?,
             }),
             _ => Rc::clone(expression),
@@ -4178,6 +4227,11 @@ impl<W: Write> Interpreter<W> {
                     {
                         return Ok(Self::symbolic_value(result));
                     }
+                    if let Some(result) =
+                        self.weighted_geometric_sum(&expression, variable, &lower, &upper)?
+                    {
+                        return Ok(Self::symbolic_value(result));
+                    }
                     if let SymbolicExpr::Binary {
                         left: base,
                         op: BinaryOp::Pow,
@@ -5209,6 +5263,92 @@ impl<W: Write> Interpreter<W> {
             Self::symbolic_value(top[top_degree].clone()),
             Self::symbolic_value(bottom[bottom_degree].clone()),
         )
+    }
+
+    /// Finite hypergeometric family with term ratio r(k+1)/k: k*r^k.
+    /// A numeric rational base avoids an unproved division by 1-r.
+    fn weighted_geometric_sum(
+        &self,
+        expression: &Rc<SymbolicExpr>,
+        variable: Symbol,
+        lower: &Rc<SymbolicExpr>,
+        upper: &Rc<SymbolicExpr>,
+    ) -> ExecResult<Option<Rc<SymbolicExpr>>> {
+        use BinaryOp::{Add, Div, Mul, Pow, Sub};
+        let SymbolicExpr::Binary {
+            left,
+            op: Mul,
+            right,
+        } = expression.as_ref()
+        else {
+            return Ok(None);
+        };
+        let base = match (left.as_ref(), right.as_ref()) {
+            (
+                SymbolicExpr::Variable(found),
+                SymbolicExpr::Binary {
+                    left: base,
+                    op: Pow,
+                    right: exponent,
+                },
+            ) if *found == variable
+                && matches!(exponent.as_ref(), SymbolicExpr::Variable(index) if *index == variable) =>
+            {
+                base
+            }
+            (
+                SymbolicExpr::Binary {
+                    left: base,
+                    op: Pow,
+                    right: exponent,
+                },
+                SymbolicExpr::Variable(found),
+            ) if *found == variable
+                && matches!(exponent.as_ref(), SymbolicExpr::Variable(index) if *index == variable) =>
+            {
+                base
+            }
+            _ => return Ok(None),
+        };
+        let SymbolicExpr::Number(number) = base.as_ref() else {
+            return Ok(None);
+        };
+        let Some(base_value) = number.try_to_rational() else {
+            return Ok(None);
+        };
+        if base_value.is_zero() || base_value.is_one() {
+            return Ok(None);
+        }
+        let endpoint = |bound: Rc<SymbolicExpr>| {
+            let next = Self::symbolic_binary_raw(Rc::clone(&bound), Add, Self::symbolic_integer(1));
+            let next_next =
+                Self::symbolic_binary_raw(Rc::clone(&bound), Add, Self::symbolic_integer(2));
+            let first = Self::symbolic_binary_raw(
+                next.clone(),
+                Mul,
+                Self::symbolic_binary_raw(Rc::clone(base), Pow, next),
+            );
+            let second = Self::symbolic_binary_raw(
+                bound,
+                Mul,
+                Self::symbolic_binary_raw(Rc::clone(base), Pow, next_next),
+            );
+            Self::symbolic_binary_raw(
+                Self::symbolic_binary_raw(Rc::clone(base), Sub, first),
+                Add,
+                second,
+            )
+        };
+        let before_lower =
+            Self::symbolic_binary_raw(Rc::clone(lower), Sub, Self::symbolic_integer(1));
+        let numerator =
+            Self::symbolic_binary_raw(endpoint(Rc::clone(upper)), Sub, endpoint(before_lower));
+        let difference = BigRational::one() - base_value;
+        let denominator = Rc::new(SymbolicExpr::Number(Number::from_rational(
+            &difference * &difference,
+        )));
+        let result = Self::symbolic_binary_raw(numerator, Div, denominator);
+        Ok(Some(self.simplify_symbolic_tree(&result)?))
     }
 
     fn faulhaber_sum(
@@ -7270,7 +7410,11 @@ impl<W: Write> Interpreter<W> {
                 } else if let Some(decomposed) =
                     Polynomial::partial_fraction_expression(expression, &self.symbols)
                 {
-                    self.integral_symbolic(&decomposed, variable)
+                    if decomposed.equals(expression) {
+                        self.unevaluated_calculus(Builtin::Integral, expression, variable)
+                    } else {
+                        self.integral_symbolic(&decomposed, variable)
+                    }
                 } else {
                     self.unevaluated_calculus(Builtin::Integral, expression, variable)
                 }
@@ -7641,15 +7785,15 @@ impl<W: Write> Interpreter<W> {
         total
     }
 
-    /// Integrates `c / (a*x^2 + b)` for positive rational `a` and `b` via
-    /// the tangent substitution `x = sqrt(b/a) * tan(t)`:
-    /// `∫ c/(a*x^2 + b) dx = c * atan(x / sqrt(b/a)) / (a * sqrt(b/a))`.
+    /// Integrates (A*x+B)/q(x)^m for a positive definite rational quadratic
+    /// q and bounded positive m. Completing the square reduces this to the
+    /// standard arctangent recurrence and a direct power substitution.
     fn integrate_quadratic_reciprocal(
         &self,
         expression: &Rc<SymbolicExpr>,
         variable: Symbol,
     ) -> Option<Rc<SymbolicExpr>> {
-        use BinaryOp::{Div, Mul};
+        use BinaryOp::{Add, Div, Mul, Pow, Sub};
         let SymbolicExpr::Binary {
             left,
             op: BinaryOp::Div,
@@ -7658,44 +7802,144 @@ impl<W: Write> Interpreter<W> {
         else {
             return None;
         };
-        if Self::contains_variable(left, variable) {
+        let (quadratic_expression, power) = match right.as_ref() {
+            SymbolicExpr::Binary {
+                left: base,
+                op: Pow,
+                right: exponent,
+            } => {
+                let SymbolicExpr::Number(Number::Integer(power)) = exponent.as_ref() else {
+                    return None;
+                };
+                (base, power.to_u32()?)
+            }
+            _ => (right, 1),
+        };
+        if !(1..=8).contains(&power) {
             return None;
         }
-        let mut quadratic = None;
-        let mut constant = None;
-        for (coefficient, power) in Self::polynomial_terms(right, variable)? {
-            let value = Self::positive_rational_number(&coefficient)?;
-            match power {
-                2 if quadratic.is_none() => quadratic = Some(value),
-                0 if constant.is_none() => constant = Some(value),
+        let mut quadratic = BigRational::zero();
+        let mut linear = BigRational::zero();
+        let mut constant = BigRational::zero();
+        for (coefficient, degree) in Self::polynomial_terms(quadratic_expression, variable)? {
+            let value = Self::exact_rational_value(&coefficient)?.to_rational();
+            match degree {
+                2 => quadratic += value,
+                1 => linear += value,
+                0 => constant += value,
                 _ => return None,
             }
         }
-        let (quadratic, constant) = (quadratic?, constant?);
-        let ratio = constant.to_rational() / quadratic.to_rational();
-        let root = Self::symbolic_call(
-            Builtin::Sqrt,
-            Rc::new(SymbolicExpr::Number(Number::from_rational(ratio))),
-        );
-        let angle = Self::symbolic_binary_raw(
+        if !quadratic.is_positive() {
+            return None;
+        }
+        let two = BigRational::from_integer(BigInt::from(2));
+        let shift = &linear / (&two * &quadratic);
+        let ratio = &constant / &quadratic - &shift * &shift;
+        if !ratio.is_positive() {
+            return None;
+        }
+        let number =
+            |value: BigRational| Rc::new(SymbolicExpr::Number(Number::from_rational(value)));
+        let translated = Self::symbolic_binary_raw(
             Rc::new(SymbolicExpr::Variable(variable)),
+            Add,
+            number(shift.clone()),
+        );
+        let normalized_quadratic = Self::symbolic_binary_raw(
+            Self::symbolic_binary_raw(Rc::clone(&translated), Pow, Self::symbolic_integer(2)),
+            Add,
+            number(ratio.clone()),
+        );
+        let root = Self::symbolic_call(Builtin::Sqrt, number(ratio.clone()));
+        let angle = Self::symbolic_binary_raw(Rc::clone(&translated), Div, Rc::clone(&root));
+        if power == 1 && linear.is_zero() && !Self::contains_variable(left, variable) {
+            return Some(Self::symbolic_binary_raw(
+                Self::symbolic_binary_raw(
+                    Rc::clone(left),
+                    Mul,
+                    Self::symbolic_call(Builtin::Atan, angle),
+                ),
+                Div,
+                Self::symbolic_binary_raw(number(quadratic), Mul, root),
+            ));
+        }
+        let mut inverse_power =
+            Self::symbolic_binary_raw(Self::symbolic_call(Builtin::Atan, angle), Div, root);
+        for degree in 2..=power {
+            let factor = BigRational::from_integer(BigInt::from(2 * (degree - 1)));
+            let first = Self::symbolic_binary_raw(
+                Rc::clone(&translated),
+                Div,
+                Self::symbolic_binary_raw(
+                    number(&factor * &ratio),
+                    Mul,
+                    Self::symbolic_binary_raw(
+                        Rc::clone(&normalized_quadratic),
+                        Pow,
+                        Self::symbolic_integer(i64::from(degree - 1)),
+                    ),
+                ),
+            );
+            let second = Self::symbolic_binary_raw(
+                number(
+                    BigRational::from_integer(BigInt::from(2 * degree - 3)) / (&factor * &ratio),
+                ),
+                Mul,
+                inverse_power,
+            );
+            inverse_power = Self::symbolic_binary_raw(first, Add, second);
+        }
+        let mut slope = None;
+        let mut offset = None;
+        for (coefficient, degree) in Self::polynomial_terms(left, variable)? {
+            match degree {
+                1 if slope.is_none() => slope = Some(coefficient),
+                0 if offset.is_none() => offset = Some(coefficient),
+                _ => return None,
+            }
+        }
+        let slope = slope.unwrap_or_else(|| Self::symbolic_integer(0));
+        let offset = offset.unwrap_or_else(|| Self::symbolic_integer(0));
+        let shifted_offset = Self::symbolic_binary_raw(
+            offset,
+            Sub,
+            Self::symbolic_binary_raw(Rc::clone(&slope), Mul, number(shift)),
+        );
+        let mut result = Self::symbolic_binary_raw(shifted_offset, Mul, inverse_power);
+        if !Self::symbolic_is_zero(&slope) {
+            let slope_primitive = if power == 1 {
+                Self::symbolic_binary_raw(
+                    Rc::clone(&slope),
+                    Mul,
+                    Self::symbolic_binary_raw(
+                        Self::symbolic_call(Builtin::Ln, normalized_quadratic),
+                        Div,
+                        Self::symbolic_integer(2),
+                    ),
+                )
+            } else {
+                Self::symbolic_binary_raw(
+                    Rc::clone(&slope),
+                    Mul,
+                    Self::symbolic_binary_raw(
+                        Self::symbolic_binary_raw(
+                            Rc::clone(&normalized_quadratic),
+                            Pow,
+                            Self::symbolic_integer(1 - i64::from(power)),
+                        ),
+                        Div,
+                        Self::symbolic_integer(2 * (1 - i64::from(power))),
+                    ),
+                )
+            };
+            result = Self::symbolic_binary_raw(result, Add, slope_primitive);
+        }
+        Some(Self::symbolic_binary_raw(
+            result,
             Div,
-            Rc::clone(&root),
-        );
-        let numerator = Self::symbolic_binary_raw(
-            Rc::clone(left),
-            Mul,
-            Self::symbolic_call(Builtin::Atan, angle),
-        );
-        let denominator =
-            Self::symbolic_binary_raw(Rc::new(SymbolicExpr::Number(quadratic)), Mul, root);
-        Some(Self::symbolic_binary_raw(numerator, Div, denominator))
-    }
-
-    /// The exact positive rational value of a numeric coefficient, if any.
-    fn positive_rational_number(expression: &Rc<SymbolicExpr>) -> Option<Number> {
-        let value = Self::exact_rational_value(expression)?;
-        (value.to_rational().numer() > &BigInt::from(0)).then_some(value)
+            number(quadratic.pow(power as i32)),
+        ))
     }
 
     /// The exact rational value of a numeric-only expression — products,

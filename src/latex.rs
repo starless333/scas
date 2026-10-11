@@ -569,13 +569,19 @@ impl<'a> LatexRenderer<'a> {
     }
 
     fn write_function_name(&self, name: &str, output: &mut String) {
-        let base = name.split_once('_').map_or(name, |(base, _)| base);
+        let name = name.strip_suffix("_steps").unwrap_or(name);
+        let (base, subscript) = name.split_once('_').unwrap_or((name, ""));
         if base.chars().count() == 1 {
-            self.write_identifier(name, output);
+            output.push_str(base);
         } else {
             output.push_str(r"\operatorname{");
-            self.write_identifier(name, output);
+            output.push_str(base);
             output.push('}');
+        }
+        if !subscript.is_empty() {
+            output.push_str(r"_{\mathrm{");
+            output.push_str(subscript);
+            output.push_str("}}");
         }
     }
 
@@ -815,9 +821,7 @@ impl<'a> LatexRenderer<'a> {
                     if let Some(command) = unary_command(name).filter(|_| args.len() == 1) {
                         output.push_str(command);
                     } else {
-                        output.push_str(r"\operatorname{");
-                        output.push_str(name);
-                        output.push('}');
+                        self.write_function_name(name, output);
                     }
                     output.push_str(r"\left(");
                     for (index, argument) in args.iter().enumerate() {

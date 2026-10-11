@@ -20,7 +20,7 @@ terminal, persistent REPL, project tree, or PDF pipeline.
 
 SCAS already has a reusable language library (src/lib.rs) and an egui UI.
 The current GUI is a native executable, however. It reads and writes project
-files with std::fs, starts worker threads, invokes latex/dvipng and pdflatex,
+files with std::fs, starts worker threads, invokes latex/dvisvgm/rsvg-convert and pdflatex,
 loads themes and fonts from the host, and uses native window controls. Those
 boundaries determine the port.
 
@@ -85,7 +85,7 @@ native-only commands absent from the web interface.
   download their source and generated .tex/.svg, and recover drafts from
   IndexedDB. Add project-folder import only after single-file workflows are
   sound.
-- Keep local Computer Modern bitmap rendering on desktop. The browser's
+- Keep local Computer Modern SVG-backed rendering on desktop. The browser's
   MathJax preview is the rendering path; a browser PDF compiler
   needs its own size, startup-time, and licensing review.
 - Move expensive analysis and graph sampling into a Web Worker. Preserve the

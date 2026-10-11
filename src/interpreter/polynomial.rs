@@ -605,8 +605,8 @@ impl Polynomial {
                 roots.push((root, multiplicity));
             }
         }
-        // A final irreducible quadratic contributes one linear numerator.
-        if remaining.len() != 1 && remaining.len() != 3 {
+        // The unfactored portion may be a power of one irreducible quadratic.
+        if remaining.len() != 1 && Self::quadratic_power(&remaining, &variable).is_none() {
             return None;
         }
 
@@ -697,7 +697,8 @@ impl Polynomial {
                 });
             }
         }
-        if remaining.len() == 3 {
+        if remaining.len() > 1 {
+            let (quadratic, multiplicity) = Self::quadratic_power(&remaining, &variable)?;
             let (linear_product, remainder) =
                 Self::divide_coefficients(denominator_coefficients, &remaining)?;
             if remainder.iter().any(|coefficient| !coefficient.is_zero()) {
@@ -708,14 +709,29 @@ impl Polynomial {
             if remainder.iter().any(|coefficient| !coefficient.is_zero()) {
                 return None;
             }
-            if quadratic_numerator
-                .iter()
-                .any(|coefficient| !coefficient.is_zero())
-            {
-                let numerator =
-                    Self::from_univariate(variable.clone(), quadratic_numerator).to_expression();
-                let denominator =
-                    Self::from_univariate(variable.clone(), remaining).to_expression();
+            let leading = remaining.last()?;
+            let mut pending = quadratic_numerator
+                .into_iter()
+                .map(|coefficient| coefficient / leading)
+                .collect::<Vec<_>>();
+            let quadratic_expression =
+                Self::from_univariate(variable.clone(), quadratic.clone()).to_expression();
+            for power in (1..=multiplicity).rev() {
+                let (quotient, remainder) = Self::divide_coefficients(pending, &quadratic)?;
+                pending = quotient;
+                if remainder.iter().all(Zero::is_zero) {
+                    continue;
+                }
+                let numerator = Self::from_univariate(variable.clone(), remainder).to_expression();
+                let denominator = if power == 1 {
+                    Rc::clone(&quadratic_expression)
+                } else {
+                    Self::binary(
+                        Rc::clone(&quadratic_expression),
+                        BinaryOp::Pow,
+                        Self::integer_expression(power as u32),
+                    )
+                };
                 let fraction = Self::binary(numerator, BinaryOp::Div, denominator);
                 result = Some(match result {
                     None => fraction,
@@ -733,6 +749,38 @@ impl Polynomial {
             }
             (None, result) => result,
         }
+    }
+
+    /// Detects a rational multiple of a monic quadratic power. This keeps
+    /// partial fractions exact without guessing factors numerically.
+    fn quadratic_power(
+        coefficients: &[BigRational],
+        variable: &Variable,
+    ) -> Option<(Vec<BigRational>, usize)> {
+        let degree = coefficients.len().checked_sub(1)?;
+        if degree < 2 || degree % 2 != 0 {
+            return None;
+        }
+        let multiplicity = degree / 2;
+        if multiplicity > 64 {
+            return None;
+        }
+        let leading = coefficients.last()?.clone();
+        if leading.is_zero() {
+            return None;
+        }
+        let count = BigRational::from_integer(BigInt::from(multiplicity));
+        let linear = &coefficients[degree - 1] / &leading / &count;
+        let pair_count =
+            BigRational::from_integer(BigInt::from(multiplicity * (multiplicity - 1) / 2));
+        let constant =
+            (&coefficients[degree - 2] / &leading - pair_count * &linear * &linear) / count;
+        let quadratic = vec![constant, linear, BigRational::one()];
+        let expanded = Self::from_univariate(variable.clone(), quadratic.clone())
+            .pow(multiplicity as u32)
+            .scaled(leading)
+            .coefficients_for(variable)?;
+        (expanded == coefficients).then_some((quadratic, multiplicity))
     }
 
     /// Combines a sum of fractions into a single fraction (`together`),

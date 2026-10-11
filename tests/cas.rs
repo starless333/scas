@@ -20,6 +20,14 @@ fn symbolic_geometric_sum_closes_over_symbolic_bounds() {
 }
 
 #[test]
+fn weighted_geometric_sum_is_a_closed_hypergeometric_family() {
+    let result = output("print(sum(k*2^k, k, 0, n));");
+    assert!(!result.contains("sum("), "{result}");
+    assert!(result.contains("2 ^ (n + 1)"), "{result}");
+    assert_eq!(output("print(sum(k*2^k, k, 0, 3));"), "34\n");
+}
+
+#[test]
 fn assertions_introspection_and_paired_eigenvectors() {
     assert_eq!(
         output(r#"
@@ -71,6 +79,29 @@ fn user_rewrite_rules_match_consistent_subexpressions_once() {
 }
 
 #[test]
+fn stored_rewrite_rules_use_first_match_and_assumption_guards() {
+    assert_eq!(
+        output(
+            r#"
+            let rules = [[sin(t), t^2, ["positive", t]], [cos(t), t]];
+            print(rewrite(sin(x)+cos(y), rules));
+            assume_positive(x);
+            print(rewrite(sin(x)+cos(y), rules));
+        "#
+        ),
+        "y + sin(x)\ny + x ^ 2\n"
+    );
+    assert_eq!(
+        runtime_error("rewrite(sin(x), [[sin(t), t, [\"unknown\", t]]]);"),
+        "rewrite guard expects positive, negative, nonnegative, or nonzero"
+    );
+    assert_eq!(
+        output("let rules=[[sin(t),t^2,[\"positive\",t]],[sin(t),t^3]]; print(rewrite(sin(x),rules)); assume_positive(x); print(rewrite(sin(x),rules));"),
+        "x ^ 3\nx ^ 2\n"
+    );
+}
+
+#[test]
 fn partial_fractions_support_repeated_rational_poles() {
     let decomposition = output("print(apart((x+1)/(x-1)^2));");
     assert!(decomposition.contains("(x - 1) ^ 2"), "{decomposition}");
@@ -86,6 +117,28 @@ fn partial_fractions_support_repeated_rational_poles() {
     assert_eq!(
         output("print(subs(apart((2*x+3)/((x-1)^2*(x^2+1))), x, 2));"),
         "7/5\n"
+    );
+}
+
+#[test]
+fn repeated_quadratic_poles_decompose_and_integrate() {
+    let decomposed = output("print(apart((x^3+x+1)/(x^2+1)^2));");
+    assert!(decomposed.contains("(x ^ 2 + 1) ^ 2"), "{decomposed}");
+    assert!(decomposed.contains("x / (x ^ 2 + 1)"), "{decomposed}");
+    assert_eq!(
+        output("print(subs(together(apart((x^3+x+1)/(x^2+1)^2)), x, 2));"),
+        "11/25\n"
+    );
+    let primitive = output("print(integral(1/(x^2+1)^2, x));");
+    assert!(primitive.contains("atan(x)"), "{primitive}");
+    assert!(!primitive.contains("integral("), "{primitive}");
+    assert_eq!(
+        output("print(integral((x+1)/(x^2+2*x+2)^2, x));"),
+        "-((x ^ 2 + 2 * x + 2) ^ -1) / 2\n"
+    );
+    assert!(
+        output("print(integral(1/(x^2-2)^2, x));").contains("integral("),
+        "unsupported branch must remain explicit"
     );
 }
 

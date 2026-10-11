@@ -24,9 +24,10 @@ These decisions close the open items in `DOCUMENTER.md`.
   buffer can replace it when profiling shows that large files require one.
   Execution runs on a worker thread so evaluation never blocks painting.
 - The live preview debounces edits and renders the generated source with the
-  system `latex` and `dvipng` commands, producing genuine Computer Modern
-  output. A small native structured-math renderer remains the fallback when a
-  TeX installation is unavailable. The export path remains canonical LaTeX.
+  system `latex`, `dvisvgm`, and `rsvg-convert` commands, producing genuine
+  Computer Modern output from SVG at the selected zoom. A small native
+  structured-math renderer remains the fallback when those tools are
+  unavailable. The export path remains canonical LaTeX.
 - Greek editor shortcuts are stored as Unicode source, not merely painted as
   alternate glyphs. `π` and `τ` are executable aliases for the corresponding
   constants, and `Γ` is an alias for the Gamma function. Other Greek letters

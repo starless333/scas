@@ -41,7 +41,7 @@ python3 -m http.server --directory web
 
 The browser build runs SCAS in a Web Worker and offers source editing, a live math preview, a persistent REPL, zoomable and pannable graphing, virtual file import/download, and shareable source links. The Pages URL above is configured but has not yet been verified from a public deployment.
 
-Prebuilt releases are available on the [Releases page](https://github.com/starless333/scas/releases). Building from source requires Rust and Cargo. The IDE’s LaTeX preview uses `latex` and `dvipng` when installed and falls back to a structured renderer otherwise.
+Prebuilt releases are available on the [Releases page](https://github.com/starless333/scas/releases). Building from source requires Rust and Cargo. The IDE’s LaTeX preview uses `latex`, `dvisvgm`, and `rsvg-convert` when installed, rerendering SVG math at the selected zoom. A structured renderer is available when those tools are absent.
 
 Documentation: [overview](docs/index.html) · [getting started](docs/getting-started.html) · [language](docs/language.html) · [mathematical documents](docs/documenter.html) · [math functions](docs/math-functions.html) · [IDE](docs/ide.html).
 

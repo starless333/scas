@@ -5,6 +5,8 @@ SCAS follows Semantic Versioning. User-visible changes accumulate under
 
 ## Unreleased
 
+- The native GUI now restores the selected theme, custom theme and font files,
+  editor font size, line-number mode, and Greek-shortcut setting across launches.
 - Made the GUI graphing canvas dynamic like Desmos: pan and zoom re-sample
   curves over a padded window that always covers the visible region, dots
   mark zeros and local extrema of every curve, and clicking the canvas pins

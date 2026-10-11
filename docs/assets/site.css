@@ -1,21 +1,29 @@
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("JetBrainsMono-Regular.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
 :root {
   color-scheme: dark;
-  --canvas: #111416;
-  --rail: #171b1e;
-  --surface: #1d2226;
-  --surface-2: #242a2f;
-  --ink: #e7edf1;
-  --muted: #a9b4bc;
-  --faint: #7c8992;
-  --rule: #343c42;
-  --accent: #55a7ff;
-  --accent-hover: #78b9ff;
-  --accent-contrast: #07131e;
-  --accent-soft: #173d61;
-  --success: #7bdca7;
-  --warning: #f4c56a;
-  --danger: #ff8a8a;
-  --code: #0c0f11;
+  --canvas: #111b29;
+  --rail: #0a1422;
+  --surface: #19283a;
+  --surface-2: #22364c;
+  --ink: #f2f7fb;
+  --muted: #b9cad8;
+  --faint: #9bb0c1;
+  --rule: #34506a;
+  --accent: #59e4d1;
+  --accent-hover: #a2f9ec;
+  --accent-contrast: #06251f;
+  --accent-soft: #174e56;
+  --success: #8ff1ac;
+  --warning: #ffd180;
+  --danger: #ff9d9d;
+  --code: #08111e;
   --content: 74ch;
   --rail-width: 17rem;
 }
@@ -23,22 +31,22 @@
 @media (prefers-color-scheme: light) {
   :root {
     color-scheme: light;
-    --canvas: #f5f7f8;
-    --rail: #ffffff;
+    --canvas: #f3f7fa;
+    --rail: #e7f0f5;
     --surface: #ffffff;
-    --surface-2: #eaf0f4;
-    --ink: #182128;
-    --muted: #53616b;
-    --faint: #65727b;
-    --rule: #cdd6dc;
-    --accent: #075fae;
-    --accent-hover: #064f91;
+    --surface-2: #dceaf1;
+    --ink: #14283b;
+    --muted: #415a6d;
+    --faint: #526b7d;
+    --rule: #bbd0dc;
+    --accent: #006e75;
+    --accent-hover: #005259;
     --accent-contrast: #ffffff;
-    --accent-soft: #dbeeff;
-    --success: #146d3d;
-    --warning: #7a5000;
+    --accent-soft: #c9eeea;
+    --success: #13683c;
+    --warning: #795000;
     --danger: #a52b2b;
-    --code: #edf1f3;
+    --code: #e8f0f5;
   }
 }
 
@@ -48,7 +56,7 @@ body {
   margin: 0;
   background: var(--canvas);
   color: var(--ink);
-  font: 16px/1.68 system-ui, -apple-system, "Segoe UI", sans-serif;
+  font: 15px/1.78 "JetBrains Mono", "Ubuntu Mono", ui-monospace, monospace;
   text-rendering: optimizeLegibility;
 }
 ::selection { background: var(--accent); color: var(--canvas); }
@@ -60,7 +68,7 @@ a:focus-visible, button:focus-visible, input:focus-visible {
 }
 .skip-link { position: fixed; z-index: 100; top: .6rem; left: .6rem; padding: .55rem .8rem; transform: translateY(-160%); background: var(--ink); color: var(--canvas); font-weight: 700; text-decoration: none; }
 .skip-link:focus { transform: translateY(0); }
-code, pre, kbd { font-family: ui-monospace, monospace; font-variant-ligatures: none; }
+code, pre, kbd { font-family: "JetBrains Mono", "Ubuntu Mono", ui-monospace, monospace; font-variant-ligatures: none; }
 code { overflow-wrap: anywhere; }
 
 .layout { min-height: 100vh; display: grid; grid-template-columns: var(--rail-width) minmax(0, 1fr); }
@@ -72,23 +80,26 @@ code { overflow-wrap: anywhere; }
   padding: 1.35rem 1rem 2rem;
   background: var(--rail);
   border-right: 1px solid var(--rule);
+  border-top: 4px solid var(--accent);
   scrollbar-color: var(--faint) transparent;
 }
 .brand { display: flex; align-items: baseline; justify-content: space-between; margin: 0 .55rem 1.35rem; }
 .brand a { color: var(--ink); text-decoration: none; font-size: 1.3rem; font-weight: 760; letter-spacing: -.03em; }
-.brand span { color: var(--faint); font: .7rem ui-monospace, monospace; }
+.brand a::before { content: ""; display: inline-block; width: .24rem; height: 1rem; margin-right: .55rem; background: var(--accent); vertical-align: -.08rem; }
+.brand span { color: var(--faint); font: .7rem "JetBrains Mono", "Ubuntu Mono", ui-monospace, monospace; }
 .nav-group { margin: 1rem 0; }
 .nav-group > span { display: block; margin: 0 .55rem .38rem; color: var(--faint); font-size: .7rem; font-weight: 750; letter-spacing: .11em; text-transform: uppercase; }
 .rail nav a { display: block; padding: .38rem .55rem; border-radius: 2px; color: var(--muted); text-decoration: none; font-size: .88rem; }
 .rail nav a:hover { background: var(--surface-2); color: var(--ink); }
-.rail nav a[aria-current="page"] { background: var(--accent-soft); color: var(--ink); font-weight: 680; }
+.rail nav a[aria-current="page"] { background: var(--accent-soft); color: var(--ink); font-weight: 680; box-shadow: inset 3px 0 var(--accent); }
 
 .mobile-bar { display: none; }
 .document { width: min(100%, 86rem); padding: clamp(2rem, 5vw, 5.5rem) clamp(1.35rem, 5vw, 5.5rem) 6rem; }
-.masthead { max-width: 62rem; margin-bottom: 4rem; }
-.masthead h1 { max-width: 16ch; margin: 0 0 1.15rem; font-size: clamp(2.65rem, 6vw, 5.6rem); line-height: .98; letter-spacing: -.04em; }
+.masthead { max-width: 62rem; margin-bottom: 3rem; padding-bottom: 2rem; border-bottom: 1px solid var(--rule); }
+.masthead h1 { max-width: 16ch; margin: 0 0 1.15rem; color: var(--ink); font-size: clamp(2.65rem, 5vw, 4.5rem); line-height: 1.12; letter-spacing: -.04em; }
+.masthead h1::first-line { color: var(--accent); }
 .masthead p { max-width: 62ch; margin: 0; color: var(--muted); font-size: clamp(1.05rem, 2vw, 1.28rem); line-height: 1.55; }
-.version { display: inline-block; margin-top: 1.4rem; padding: .25rem .5rem; border: 1px solid var(--rule); border-radius: 2px; color: var(--muted); font: .75rem ui-monospace, monospace; }
+.version { display: inline-block; margin-top: 1.4rem; padding: .25rem .5rem; border: 1px solid var(--rule); border-radius: 2px; color: var(--muted); font-size: .75rem; }
 
 .content { max-width: var(--content); }
 section { margin: 0 0 4.75rem; }
@@ -129,7 +140,7 @@ tbody tr:target, tbody tr:hover { background: color-mix(in srgb, var(--accent-so
 td:first-child { white-space: nowrap; }
 th:first-child, td:first-child { position: sticky; left: 0; z-index: 1; background: var(--surface); border-right: 1px solid var(--rule); }
 th:first-child { background: var(--surface-2); }
-.status { font: .72rem ui-monospace, monospace; text-transform: uppercase; letter-spacing: .05em; }
+.status { font: .72rem "JetBrains Mono", "Ubuntu Mono", ui-monospace, monospace; text-transform: uppercase; letter-spacing: .05em; }
 .status.exact { color: var(--success); }
 .status.bounded { color: var(--warning); }
 
@@ -139,8 +150,9 @@ th:first-child { background: var(--surface-2); }
 .path-grid strong { display: block; margin-bottom: .45rem; font-size: 1.15rem; }
 .path-grid span { color: var(--muted); font-size: .9rem; }
 .path-grid .path-feature { grid-column: 1 / -1; min-height: 7rem; background: var(--accent-soft); }
+.path-grid .path-feature strong { color: var(--accent); }
 .path-grid .path-feature strong { font-size: 1.35rem; }
-.signature { color: var(--ink); font-family: ui-monospace, monospace; font-weight: 500; }
+.signature { color: var(--ink); font-family: "JetBrains Mono", "Ubuntu Mono", ui-monospace, monospace; font-weight: 500; }
 .meta { color: var(--muted); font-size: .86rem; }
 .footer { max-width: var(--content); margin-top: 6rem; padding-top: 1.2rem; border-top: 1px solid var(--rule); color: var(--faint); font-size: .82rem; }
 
@@ -158,8 +170,8 @@ th:first-child { background: var(--surface-2); }
 .demo-workbench { display: grid; grid-template-columns: minmax(22rem, .88fr) minmax(31rem, 1.12fr); height: min(74rem, calc(100vh - 5rem)); min-height: 43rem; margin: 0 0 6rem; overflow: hidden; border: 1px solid var(--rule); border-radius: 4px; background: var(--rule); gap: 1px; }
 .demo-pane { min-width: 0; min-height: 0; background: var(--surface); }
 .demo-pane-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; height: 3.25rem; padding: .8rem 1rem; border-bottom: 1px solid var(--rule); }
-.demo-pane-head strong { font: 700 .82rem ui-monospace, monospace; }
-.demo-pane-head span { color: var(--faint); font: .7rem ui-monospace, monospace; text-align: right; }
+.demo-pane-head strong { font: 700 .82rem "JetBrains Mono", "Ubuntu Mono", ui-monospace, monospace; }
+.demo-pane-head span { color: var(--faint); font: .7rem "JetBrains Mono", "Ubuntu Mono", ui-monospace, monospace; text-align: right; }
 .source-pane { display: grid; grid-template-rows: auto minmax(0, 1fr); }
 .demo-source { height: 100%; margin: 0; padding: 1.15rem 1.25rem 4rem; border: 0; border-radius: 0; font-size: clamp(.72rem, .84vw, .86rem); line-height: 1.72; }
 .source-comment { color: var(--muted); }
@@ -185,7 +197,7 @@ th:first-child { background: var(--surface-2); }
 .page-gallery figure { margin: 0; }
 .page-link { display: block; }
 .page-gallery img { display: block; width: 100%; height: auto; background: white; box-shadow: 0 10px 28px rgba(0, 0, 0, .26); }
-.page-gallery figcaption { padding: .5rem 0; color: var(--faint); font: .72rem ui-monospace, monospace; text-align: right; }
+.page-gallery figcaption { padding: .5rem 0; color: var(--faint); font: .72rem "JetBrains Mono", "Ubuntu Mono", ui-monospace, monospace; text-align: right; }
 .accessible-results { max-width: var(--content); margin: 0 0 5rem; }
 .accessible-results details { padding: 1rem 1.1rem; border: 1px solid var(--rule); border-radius: 4px; background: var(--surface); }
 .accessible-results summary { cursor: pointer; font-weight: 720; }

@@ -85,9 +85,9 @@ Legend: `[ ]` todo, `[x]` done.
       then partial fractions of the remainder. (Done: `apart((x^2 + 1) /
       (x + 1))` now yields `x - 1 + 2 / (x + 1)`, and `integral(x / (x + 1),
       x)` evaluates to `x - ln(x + 1)` through the same division.)
-- [ ] Partial fractions over repeated linear factors and irreducible
-      quadratic factors (currently distinct rational linear factors only —
-      see "Current boundaries").
+- [x] Partial fractions over repeated rational linear factors and powers of
+      one irreducible quadratic factor. Multiple distinct irreducible
+      quadratics remain a separate extension.
 - [ ] Gröbner-basis style normalization for systems of polynomial relations
       (long term; foundation for `solve` of multivariate systems).
 
@@ -177,10 +177,12 @@ Legend: `[ ]` todo, `[x]` done.
       Path-sensitive assumptions and general change-of-variables automation
       remain future extensions.
 - [x] Exact finite `sum` and `product` over integer ranges, plus symbolic
-      Faulhaber forms through cubes. General telescoping and additional known
+      Faulhaber forms through eighth powers, geometric sums, and `k*r^k` for
+      supported rational bases. General telescoping and additional known
       infinite/symbolic products remain future extensions.
 - [x] `dsolve` for first-order linear ODEs and homogeneous
-      constant-coefficient ODEs through second order. General separable forms
+      constant-coefficient ODEs through second order; `dsolve_separable`
+      returns supported implicit separable solutions. Broader separable forms
       and higher-order characteristic polynomials remain future extensions.
 - [ ] Risch-style structure theorems eventually; until then grow the rule
       table (rational functions, erf/Gaussian forms, by-parts families).

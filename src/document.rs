@@ -492,6 +492,9 @@ fn render_evaluation(
 
     let renderer = LatexRenderer::new(interpreter.symbols());
     let result = renderer.value(value);
+    if source == result {
+        return source.to_owned();
+    }
     let ExprKind::Call { callee, args } = &expression.kind else {
         return format!("{source} = {result}");
     };
@@ -531,32 +534,28 @@ fn render_evaluation(
         );
     }
     if name == "integral" && args.len() == 2 {
-        let integrand = renderer.expression(&args[0]);
-        let variable = renderer.expression(&args[1]);
-        return format!(
-            r"\begin{{aligned}}{source}&={result}+C \\ \frac{{d}}{{d{variable}}}\left({result}\right)&={integrand}\end{{aligned}}"
-        );
+        return format!(r"{source} = {result}+C");
     }
 
     if matches!(
         name,
-        "simplify"
-            | "expand"
-            | "factor"
-            | "apart"
-            | "horner"
-            | "collect"
-            | "subs"
-            | "rref"
-            | "inverse"
-            | "transpose"
-            | "solve_linear"
-            | "gradient"
-            | "jacobian"
-            | "hessian"
-            | "definite_integral"
-    ) {
-        return format!(r"{source} \implies {result}");
+        "simplify" | "expand" | "factor" | "apart" | "together" | "horner" | "collect" | "rewrite"
+    ) && !args.is_empty()
+    {
+        let original = renderer.expression(&args[0]);
+        return if original == result {
+            original
+        } else {
+            format!("{original} = {result}")
+        };
+    }
+    if name == "subs" && args.len() == 3 {
+        return format!(
+            r"\left.{}\right|_{{{}={}}} = {result}",
+            renderer.expression(&args[0]),
+            renderer.expression(&args[1]),
+            renderer.expression(&args[2])
+        );
     }
     format!("{source} = {result}")
 }
@@ -622,9 +621,6 @@ fn render_derivation(
                     r"\int {}\,d{variable} &= {rendered_result}+C",
                     renderer.expression(expression)
                 ));
-                if let Some(check) = steps.iter().find(|step| matches!(&step.operation, StepOperation::Explanation(rule) if rule == "differentiate to check")) {
-                    rows.push(format!(r"\frac{{d}}{{d{variable}}}\left({rendered_result}\right) &= {} && \text{{check}}", renderer.value(&check.value)));
-                }
             }
             ("solve", [equation, variable]) => {
                 rows.push(format!(r"{} &= 0", renderer.expression(equation)));
@@ -651,7 +647,7 @@ fn render_derivation(
             ("limit", _) => {
                 rows.push(format!(r"{source} &= {rendered_result}"));
                 if let Some(step) = steps.iter().find(|step| matches!(&step.operation, StepOperation::Explanation(rule) if rule == "direct substitution")) {
-                    rows.insert(0, format!(r"&\to {} && \text{{direct substitution}}", renderer.value(&step.value)));
+                    rows.insert(1, format!(r"&\to {} && \text{{direct substitution}}", renderer.value(&step.value)));
                 }
                 if let Some(step) = steps.iter().find(|step| matches!(&step.operation, StepOperation::Explanation(rule) if rule == "L'Hopital")) {
                     rows.insert(rows.len() - 1, format!(r"&\to {} && \text{{L'Hopital's rule}}", renderer.value(&step.value)));
@@ -1167,13 +1163,77 @@ det_steps([1, 2; 3, 4]) =>;
         .unwrap();
         let body = document.body();
         assert!(body.contains(r"\text{product rule}"), "{body}");
-        assert!(body.contains(r"\text{check}"), "{body}");
+        assert!(!body.contains(r"\text{check}"), "{body}");
+        let integral = &document.fragments[1].latex;
+        assert!(
+            integral.starts_with(r"\[\begin{aligned}\int 2 \cdot x\,dx &"),
+            "{integral}"
+        );
         assert!(body.contains(r"\text{by parts: u}"), "{body}");
         assert!(body.contains(r"\int u\,dv"), "{body}");
         assert!(body.contains(r"\text{substitution: u}"), "{body}");
         assert!(body.contains(r"\text{factor}"), "{body}");
         assert!(body.contains(r"\text{direct substitution}"), "{body}");
         assert!(body.contains(r"\text{L'Hopital's rule}"), "{body}");
+    }
+
+    #[test]
+    fn builtin_derivations_begin_with_the_requested_operation() {
+        let document = build(
+            r"\[ integral(x*exp(x), x) => \]
+\[ det_steps([1, 2; 3, 4]) => \]
+\[ sin(0) => \]",
+        )
+        .unwrap();
+        for fragment in &document.fragments[..2] {
+            assert!(
+                fragment.latex.contains(r"\begin{aligned}"),
+                "{}",
+                fragment.latex
+            );
+            assert!(!fragment.latex.contains(r"& \\"), "{}", fragment.latex);
+        }
+        assert!(
+            document.fragments[0].latex.contains(r"\int")
+                && document.fragments[0].latex.contains(r"\,dx &"),
+            "{}",
+            document.fragments[0].latex
+        );
+        assert!(!document.fragments[0].latex.contains(r"\text{check}"));
+        assert_eq!(document.fragments[2].latex, r"\[\sin\left(0\right) = 0\]");
+    }
+
+    #[test]
+    fn ordinary_builtins_render_as_single_human_readable_equations() {
+        let document = build(
+            r"let angle = pi / 6;
+\[ sin(angle) => \]
+\[ sin(x) => \]
+\[ sqrt(4) => \]
+\[ gcd(84, 30) => \]
+\[ factor(x^2 - 1) => \]
+\[ subs(x^2 + y, x, 3) => \]
+\[ det([1, 2; 3, 4]) => \]",
+        )
+        .unwrap();
+        assert_eq!(
+            document.fragments[0].latex,
+            r"\[\sin\left(\mathrm{angle}\right) = \frac{1}{2}\]"
+        );
+        assert_eq!(document.fragments[1].latex, r"\[\sin\left(x\right)\]");
+        assert_eq!(document.fragments[2].latex, r"\[\sqrt{4} = 2\]");
+        assert_eq!(
+            document.fragments[3].latex,
+            r"\[\operatorname{gcd}\left(84, 30\right) = 6\]"
+        );
+        assert!(document.fragments[4].latex.starts_with(r"\[x^{2} - 1 = "));
+        assert!(document.fragments[5]
+            .latex
+            .starts_with(r"\[\left.x^{2} + y\right|_{x=3} = "));
+        assert!(document.fragments[6].latex.contains(r"\begin{aligned}"));
+        assert!(!document.fragments[6]
+            .latex
+            .contains(r"\det\left(\begin{pmatrix}1 & 2 \\ 3 & 4\end{pmatrix}\right) & \\"));
     }
 
     #[test]

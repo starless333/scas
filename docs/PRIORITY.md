@@ -64,24 +64,24 @@ Design IO as an abstraction layer so the same code runs natively and in wasm.
 2. [x] **Paired, ordered spectral decomposition and SVD.** `eigenpairs` pairs exact values and vectors through 2×2 and for triangular matrices with available eigenvectors. Larger real symmetric matrices use numeric Jacobi; general numeric matrices through 6×6 use residual-checked complex eigenpairs. `natural`, `ascending`, and `descending` ordering preserve pairings, with numeric ordering restricted to real eigenvalues. `svd` returns `[U, Sigma, Vt]` for real or complex numeric rectangular matrices; 1×1 and 2×2 real square cases retain exact arithmetic. Larger defective eigensystems and high-precision numeric SVD remain future work.
 3. [x] **Integer polynomial factoring for small degrees.** Rational roots, square-free parts, exact quadratic and monic cubic divisor searches, and approximate root-subset reconstruction cover many degree 4–10 integer polynomials, including nonmonic quartic products. Every proposed factor is verified by exact division over the rationals. Higher degrees and ill-conditioned cases may remain unfactored; general Zassenhaus/Hensel factoring is future work.
 4. [x] **Periodic trigonometric solution families**: `solve_periodic(expr, x, n)` returns sine, cosine, and tangent families for affine arguments with `n` explicitly in `Z`.
-5. [ ] **Summation and products** (closed forms for polynomial, geometric, and simple hypergeometric sums) and **basic ODEs** (separable, first-order linear, constant-coefficient). Polynomial sums now cover powers through eight; geometric sums, separable implicit solutions, first-order linear ODEs, and constant-coefficient cases are implemented. Hypergeometric sums and broader ODE families remain open.
-6. [ ] **A user-writable rewrite-rule system**: `rewrite(expr, pattern, replacement)` performs one finite top-down pass with repeated wildcard bindings checked for consistency. Persistent rule collections and conditional rules remain open.
-7. [ ] **Broader partial fractions**: repeated rational linear factors and one remaining irreducible quadratic factor now decompose exactly. Integration by parts and several substitution and rational cases are implemented; repeated quadratic factors, wider substitution search, and general rational integration remain open.
+5. [x] **Summation and products** (closed forms for polynomial, geometric, and simple hypergeometric sums) and **basic ODEs** (separable, first-order linear, constant-coefficient). Polynomial sums cover powers through eight; geometric and `k*r^k` sums close over symbolic integer bounds for supported rational bases. Finite products evaluate exactly. Separable implicit solutions, first-order linear ODEs, and homogeneous constant-coefficient equations through second order are implemented. More general hypergeometric and ODE families remain future work.
+6. [x] **A user-writable rewrite-rule system**: `rewrite(expr, pattern, replacement)` or `rewrite(expr, rules)` applies one finite top-down pass with consistent wildcard bindings. Rule arrays can be stored in variables and reused across a session, use first-match order, and accept positive, negative, nonnegative, or nonzero guards on a wildcard. Associative-commutative matching and arbitrary predicate guards remain future work.
+7. [x] **Broader partial fractions**: repeated rational linear factors and powers of one remaining irreducible quadratic factor decompose exactly. Positive definite quadratic powers with linear numerators integrate through a bounded recurrence; integration by parts and several other substitution and rational cases are also implemented. Multiple distinct irreducible quadratics, wider substitution search, and general rational integration remain future work.
 8. [x] **Complex extensions** of `gamma`, `lgamma`, `erf`, `erfc`. Complex `gamma` uses reflection, recurrence, and a Stirling expansion; `lgamma` takes the principal logarithm. Complex `erf` and `erfc` use a series near the origin and an asymptotic expansion for larger arguments, reporting a convergence error when the requested precision cannot be met.
 
 ## 5. Features only SCAS can offer
 
 These differentiate SCAS from black-box CAS tools.
 
-- [x] **Step-by-step output beyond linear algebra**: document results now show derivative rules, integration by parts and substitution setup with derivative checks, direct limit substitution, and factoring before equation roots. Deeper recursive traces remain open.
+- [x] **Step-by-step output beyond linear algebra**: every builtin derivation starts with the requested expression. Calculus results show derivative rules, integration by parts and substitution setup, direct limit substitution, and factoring before equation roots. Integral traces end at the antiderivative plus constant.
 - [x] **`assert` / `verify` primitive** so documents check their own claims, e.g. `assert(matmul(Q, Lambda, inverse(Q)) == B)`, and fail the build loudly if wrong.
 - [x] **Equation-chain checking**: `verify_chain([step1, step2, ...])` checks every adjacent pair by exact polynomial arithmetic or structural equality and fails at the first unproved link.
 
 ## 6. Proof of correctness
 
-- [ ] **Differential testing against SymPy**: generate random expressions, compare results, and publish the pass rate.
-- [ ] **Benchmark page** comparing SCAS and SymPy on a fixed set (polynomial GCD, large determinant, high-precision `gamma`, resultants). Publish honest numbers.
-- [ ] **Keep the existing strengths visible**: fuzz targets, golden fixtures, reference vectors, deterministic limits, CI with provenance.
+- [x] **Differential testing against SymPy**: seeded generated polynomial cases pass 100/100 across four families; method, scope, and rerun command are in [correctness evidence](proof-of-correctness.md).
+- [x] **Benchmark page** comparing SCAS and SymPy on a fixed set (polynomial GCD, determinant, high-precision `gamma`, resultants), with measured numbers and limits in [SymPy benchmarks](sympy-benchmarks.md).
+- [x] **Keep the existing strengths visible**: [correctness evidence](proof-of-correctness.md) links fuzz targets, fixtures, reference vectors, deterministic limits, CI, and release provenance.
 - [x] **Update `project-capabilities.md`** to match the current state (IDE, linear algebra, plotter, browser preview) and remove stale boundaries as they are closed.
 
 ## 7. Presentation
@@ -110,13 +110,12 @@ SCAS source → lexer → parser → AST → interpreter → exact numeric + sym
 4. `assert`/`verify` and calculus step output (section 5).
 5. IO abstraction, modules, maps, string formatting (section 3).
 6. SymPy comparison and benchmarks (section 6).
-7. Integer factoring, ODEs, summation, rewrite rules as stretch goals.
+7. Extend the completed bounded factoring, ODE, summation, rewrite, and rational integration families where new use cases justify it.
 
 ## Current boundaries (from the capability inventory)
 
 - Complex `gamma`, `lgamma`, `erf`, and `erfc` have numerical paths; difficult arguments can still produce a convergence error.
 - `solve` returns principal trigonometric solutions; `solve_periodic` returns integer-parameter families for affine sine, cosine, and tangent equations.
-- Partial fractions handle repeated rational linear factors and one remaining irreducible quadratic factor.
+- Partial fractions handle repeated rational linear factors and powers of one remaining irreducible quadratic factor.
 - Symbolic integration is rule-based and returns an unevaluated integral when no safe rule exists.
-- Basic limits, series, sums, and products are implemented. General branch-sensitive
-  limits, big-O series, and broader ODEs remain open.
+- Basic limits, Taylor/Laurent series with optional big-O terms, sums, and products are implemented. General branch-sensitive limits, unrestricted symbolic summation, and broader ODEs remain open.
