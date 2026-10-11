@@ -491,6 +491,8 @@ fn calculus_handles_general_derivatives_and_linear_substitution() {
             print(integral(1 / (2x + 1), x));
             print(integral(sin(3x), x));
             print(integral(tan(2x), x));
+            print(integral(e^x, x));
+            print(integral(e^(2x + 1), x));
             "#,
         ),
         concat!(
@@ -502,6 +504,8 @@ fn calculus_handles_general_derivatives_and_linear_substitution() {
             "ln(2 * x + 1) / 2\n",
             "-cos(3 * x) / 3\n",
             "-ln(cos(2 * x)) / 2\n",
+            "e ^ x\n",
+            "e ^ (2 * x + 1) / 2\n",
         ),
     );
 }

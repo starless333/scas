@@ -48,6 +48,7 @@ const DEFAULT_CODE_FONT_BYTES: &[u8] =
     include_bytes!("../../assets/fonts/JetBrainsMono-Regular.ttf");
 const CODICON_FONT_NAME: &str = "VS Code Codicons";
 const CODICON_FONT_BYTES: &[u8] = include_bytes!("../../assets/icons/codicon.ttf");
+const PREVIEW_UI_FONT_NAME: &str = "Segoe UI";
 const INTERFACE_FONT_SIZE: f32 = 13.0;
 const EXPLORER_FOOTER_HEIGHT: f32 = 112.0;
 
@@ -64,6 +65,9 @@ const MAX_VIEW_SPAN: f64 = 1.0e12;
 /// dragging its splitter must never crush the primary work surface.
 const MIN_EDITOR_WORKSPACE_WIDTH: f32 = 420.0;
 const MIN_PREVIEW_WIDTH: f32 = 220.0;
+const MIN_DOCUMENT_PREVIEW_ZOOM: f32 = 0.5;
+const MAX_DOCUMENT_PREVIEW_ZOOM: f32 = 4.0;
+const DOCUMENT_PREVIEW_ZOOM_STEP: f32 = 1.25;
 /// Keeps a long document name from crowding the workspace tabs and tools.
 /// The complete name remains available from the tab tooltip.
 const MAX_DOCUMENT_TAB_CHARS: usize = 18;
@@ -388,6 +392,7 @@ struct ScasApp {
     preview_document: Option<Document>,
     preview_error: Option<String>,
     preview_open: bool,
+    document_preview_zoom: f32,
     output_open: bool,
     files_open: bool,
     quick_open: bool,
@@ -500,7 +505,7 @@ fn platform_ui_font_spec(
         "windows" => {
             let root = system_root.unwrap_or_else(|| Path::new(r"C:\Windows"));
             PlatformUiFontSpec {
-                name: "Segoe WPC",
+                name: PREVIEW_UI_FONT_NAME,
                 candidates: vec![root.join("Fonts").join("segoeui.ttf")],
             }
         }
@@ -573,6 +578,17 @@ fn default_font_definitions() -> FontDefinitions {
             .or_default()
             .insert(0, ui_font.name.to_owned());
     }
+    if cfg!(windows) {
+        let preview_family = fonts
+            .families
+            .get(&FontFamily::Proportional)
+            .cloned()
+            .unwrap_or_default();
+        fonts.families.insert(
+            FontFamily::Name(PREVIEW_UI_FONT_NAME.into()),
+            preview_family,
+        );
+    }
     fonts
 }
 
@@ -580,11 +596,23 @@ fn install_default_fonts(context: &egui::Context) {
     context.set_fonts(default_font_definitions());
 }
 
+fn preview_ui_font(size: f32) -> FontId {
+    if cfg!(windows) {
+        FontId::new(size, FontFamily::Name(PREVIEW_UI_FONT_NAME.into()))
+    } else {
+        FontId::proportional(size)
+    }
+}
+
 fn preview_widths(screen_width: f32, explorer_width: f32) -> (f32, f32) {
     let usable_width = (screen_width - 48.0 - explorer_width).max(0.0);
     let max_width = (usable_width - MIN_EDITOR_WORKSPACE_WIDTH).max(MIN_PREVIEW_WIDTH);
     let default_width = (usable_width * 0.46).clamp(MIN_PREVIEW_WIDTH, max_width);
     (default_width, max_width)
+}
+
+fn adjusted_document_preview_zoom(current: f32, factor: f32) -> f32 {
+    (current * factor).clamp(MIN_DOCUMENT_PREVIEW_ZOOM, MAX_DOCUMENT_PREVIEW_ZOOM)
 }
 
 impl ScasApp {
@@ -631,6 +659,7 @@ impl ScasApp {
             preview_document: None,
             preview_error: None,
             preview_open: true,
+            document_preview_zoom: 1.0,
             output_open: false,
             files_open: true,
             quick_open: false,
@@ -4681,7 +4710,7 @@ impl eframe::App for ScasApp {
                         ui.label(
                             RichText::new("DOCUMENT PREVIEW")
                                 .strong()
-                                .font(FontId::proportional(11.0))
+                                .font(preview_ui_font(11.0))
                                 .color(self.themes[self.selected_theme].ui.text.0),
                         );
                         let state = if self.analysis_due.is_some() || self.analysis_result.is_some()
@@ -4692,30 +4721,78 @@ impl eframe::App for ScasApp {
                         };
                         ui.label(
                             RichText::new(state)
-                                .font(FontId::proportional(10.5))
+                                .font(preview_ui_font(10.5))
                                 .color(self.themes[self.selected_theme].ui.accent.0),
                         );
                     });
                     ui.horizontal_wrapped(|ui| {
-                        ui.label(
-                            RichText::new("Computer Modern")
-                                .font(FontId::proportional(10.5))
-                                .color(theme.ui.muted.0),
-                        );
                         if ui
                             .small_button(
                                 RichText::new("Copy TeX")
-                                    .font(FontId::proportional(INTERFACE_FONT_SIZE)),
+                                    .font(preview_ui_font(INTERFACE_FONT_SIZE)),
                             )
                             .clicked()
                         {
                             ui.output_mut(|output| output.copied_text.clone_from(&self.preview));
                         }
+                        ui.add_space(4.0);
+                        if ui
+                            .add_enabled(
+                                self.document_preview_zoom > MIN_DOCUMENT_PREVIEW_ZOOM,
+                                egui::Button::new(
+                                    RichText::new("−")
+                                        .font(preview_ui_font(INTERFACE_FONT_SIZE)),
+                                )
+                                .frame(false)
+                                .min_size(egui::vec2(24.0, 0.0)),
+                            )
+                            .on_hover_text("Zoom out of rendered document")
+                            .clicked()
+                        {
+                            self.document_preview_zoom = adjusted_document_preview_zoom(
+                                self.document_preview_zoom,
+                                1.0 / DOCUMENT_PREVIEW_ZOOM_STEP,
+                            );
+                        }
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new(format!(
+                                        "{:.0}%",
+                                        self.document_preview_zoom * 100.0
+                                    ))
+                                    .font(preview_ui_font(INTERFACE_FONT_SIZE)),
+                                )
+                                .frame(false),
+                            )
+                            .on_hover_text("Reset rendered document to 100%")
+                            .clicked()
+                        {
+                            self.document_preview_zoom = 1.0;
+                        }
+                        if ui
+                            .add_enabled(
+                                self.document_preview_zoom < MAX_DOCUMENT_PREVIEW_ZOOM,
+                                egui::Button::new(
+                                    RichText::new("+")
+                                        .font(preview_ui_font(INTERFACE_FONT_SIZE)),
+                                )
+                                .frame(false)
+                                .min_size(egui::vec2(24.0, 0.0)),
+                            )
+                            .on_hover_text("Zoom in to rendered document")
+                            .clicked()
+                        {
+                            self.document_preview_zoom = adjusted_document_preview_zoom(
+                                self.document_preview_zoom,
+                                DOCUMENT_PREVIEW_ZOOM_STEP,
+                            );
+                        }
                     });
                     if let Some(error) = &self.preview_error {
                         ui.label(
                             RichText::new(format!("Editing: {error} (showing last good preview)"))
-                                .font(FontId::proportional(INTERFACE_FONT_SIZE))
+                                .font(preview_ui_font(INTERFACE_FONT_SIZE))
                                 .color(self.themes[self.selected_theme].syntax.operator.0),
                         );
                     }
@@ -4727,12 +4804,29 @@ impl eframe::App for ScasApp {
                     {
                         ui.label(
                             RichText::new("Add a render line, for example:")
-                                .font(FontId::proportional(INTERFACE_FONT_SIZE)),
+                                .font(preview_ui_font(INTERFACE_FONT_SIZE)),
                         );
                         ui.monospace(r"\[ (x + 1) / (2x^2) \]");
                     } else {
                         let preview_width = ui.available_width();
-                        let preview_scale = (preview_width / 280.0).clamp(1.0, 2.8);
+                        let preview_view_rect = ui.available_rect_before_wrap();
+                        let gesture_zoom = ui.input(|input| {
+                            input.pointer.hover_pos().map_or(1.0, |position| {
+                                if preview_view_rect.contains(position) {
+                                    input.zoom_delta()
+                                } else {
+                                    1.0
+                                }
+                            })
+                        });
+                        if (gesture_zoom - 1.0).abs() > f32::EPSILON {
+                            self.document_preview_zoom = adjusted_document_preview_zoom(
+                                self.document_preview_zoom,
+                                gesture_zoom,
+                            );
+                        }
+                        let preview_scale = (preview_width / 280.0).clamp(1.0, 2.8)
+                            * self.document_preview_zoom;
                         egui::ScrollArea::both()
                             .auto_shrink([false, false])
                             .show(ui, |ui| {
@@ -4744,7 +4838,8 @@ impl eframe::App for ScasApp {
                                             .iter()
                                             .map(|texture| texture.size_vec2().x)
                                             .fold(1.0, f32::max);
-                                        let image_scale = (page_width / widest_chunk).min(4.5);
+                                        let image_scale = (page_width / widest_chunk).min(4.5)
+                                            * self.document_preview_zoom;
                                         ui.with_layout(
                                             egui::Layout::top_down(egui::Align::Min),
                                             |ui| {
@@ -4752,13 +4847,13 @@ impl eframe::App for ScasApp {
                                                 ui.label(
                                                     RichText::new("Rendered document")
                                                         .strong()
-                                                        .font(FontId::proportional(15.0)),
+                                                        .font(preview_ui_font(15.0)),
                                                 );
                                                 ui.label(
                                                     RichText::new(
                                                         "Live output from the current SCAS source",
                                                     )
-                                                    .font(FontId::proportional(11.0))
+                                                    .font(preview_ui_font(11.0))
                                                     .color(theme.ui.muted.0),
                                                 );
                                                 ui.add_space(8.0);
@@ -4809,9 +4904,9 @@ impl eframe::App for ScasApp {
                                             ui.spinner();
                                             ui.label(
                                                 RichText::new(
-                                                    "Typesetting Computer Modern preview…",
+                                                    "Typesetting preview…",
                                                 )
-                                                .font(FontId::proportional(11.0))
+                                                .font(preview_ui_font(11.0))
                                                 .color(theme.ui.muted.0),
                                             );
                                         });
@@ -4821,7 +4916,7 @@ impl eframe::App for ScasApp {
                                             RichText::new(format!(
                                                 "{error}; showing structured fallback"
                                             ))
-                                            .font(FontId::proportional(INTERFACE_FONT_SIZE))
+                                            .font(preview_ui_font(INTERFACE_FONT_SIZE))
                                             .color(
                                                 self.themes[self.selected_theme].syntax.operator.0,
                                             ),
@@ -4830,7 +4925,7 @@ impl eframe::App for ScasApp {
                                     for diagnostic in &document.diagnostics {
                                         ui.label(
                                             RichText::new(&diagnostic.message)
-                                                .font(FontId::proportional(INTERFACE_FONT_SIZE))
+                                                .font(preview_ui_font(INTERFACE_FONT_SIZE))
                                                 .color(
                                                     self.themes[self.selected_theme]
                                                         .syntax
@@ -4843,7 +4938,7 @@ impl eframe::App for ScasApp {
                                 ui.add_space(12.0);
                                 egui::CollapsingHeader::new(
                                     RichText::new("LaTeX source")
-                                        .font(FontId::proportional(INTERFACE_FONT_SIZE)),
+                                        .font(preview_ui_font(INTERFACE_FONT_SIZE)),
                                 )
                                 .id_source("latex-preview-source")
                                 .show(ui, |ui| {
@@ -5143,7 +5238,7 @@ impl eframe::App for ScasApp {
                     TextEdit::store_state(context, editor_id, state);
                 }
                 prepare_editor_line_cut(context, editor_id, &self.source, editor_focused);
-                let output = egui::ScrollArea::vertical()
+                let scroll_output = egui::ScrollArea::vertical()
                     .id_source("source-editor-scroll")
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
@@ -5163,8 +5258,9 @@ impl eframe::App for ScasApp {
                             .layouter(&mut layouter)
                             .desired_rows(total_lines.max(1))
                             .show(ui)
-                    })
-                    .inner;
+                    });
+                let editor_viewport = scroll_output.inner_rect;
+                let output = scroll_output.inner;
                 if let Some(cursor) = output.cursor_range {
                     self.cursor_char_index = cursor.primary.ccursor.index;
                     if output.response.has_focus()
@@ -5314,6 +5410,7 @@ impl eframe::App for ScasApp {
                         &self.themes[self.selected_theme],
                         self.editor_font_size,
                         gutter_width,
+                        editor_viewport,
                     );
                 }
                 paint_inline_diagnostics(
@@ -5322,6 +5419,7 @@ impl eframe::App for ScasApp {
                     &self.diagnostics,
                     &self.themes[self.selected_theme],
                     gutter_width,
+                    editor_viewport,
                 );
                 if let Some(pointer) = output.response.hover_pos() {
                     let cursor = output.galley.cursor_from_pos(pointer - output.galley_pos);
@@ -5744,6 +5842,7 @@ fn paint_line_numbers(
     theme: &Theme,
     font_size: f32,
     gutter_width: f32,
+    editor_viewport: egui::Rect,
 ) {
     // TextEdit clips its galley to the editable text area. The gutter occupies
     // the left margin, so explicitly extend the paint clip across that margin.
@@ -5752,6 +5851,7 @@ fn paint_line_numbers(
         egui::pos2(gutter_left, output.response.rect.top()),
         output.response.rect.right_bottom(),
     )
+    .intersect(editor_viewport)
     .intersect(ui.clip_rect());
     let painter = ui.painter().with_clip_rect(editor_clip);
     let separator_x = output.galley_pos.x - 9.0;
@@ -5827,6 +5927,7 @@ fn paint_inline_diagnostics(
     diagnostics: &[EditorDiagnostic],
     theme: &Theme,
     gutter_width: f32,
+    editor_viewport: egui::Rect,
 ) {
     if diagnostics.is_empty() {
         return;
@@ -5838,6 +5939,7 @@ fn paint_inline_diagnostics(
         ),
         output.response.rect.right_bottom(),
     )
+    .intersect(editor_viewport)
     .intersect(ui.clip_rect());
     let painter = ui.painter().with_clip_rect(clip);
     let mut source_line = 1usize;
@@ -5865,15 +5967,15 @@ fn paint_inline_diagnostics(
                 let color = diagnostic_color(diagnostic.severity, theme);
                 let y = output.galley_pos.y + row.rect.center().y;
                 let x = output.galley_pos.x - gutter_width + 8.0;
-                paint_codicon(
-                    ui,
+                painter.text(
                     egui::pos2(x, y),
+                    egui::Align2::CENTER_CENTER,
                     if diagnostic.severity == DiagnosticSeverity::Error {
                         '\u{ea87}'
                     } else {
                         '\u{ea74}'
                     },
-                    12.0,
+                    codicon_font(12.0),
                     color,
                 );
                 let text_x = output.galley_pos.x + row.rect.right() + 16.0;
@@ -6796,6 +6898,20 @@ mod tests {
     }
 
     #[test]
+    fn document_preview_zoom_steps_and_stays_bounded() {
+        assert_eq!(adjusted_document_preview_zoom(1.0, 1.25), 1.25);
+        assert_eq!(adjusted_document_preview_zoom(1.25, 0.8), 1.0);
+        assert_eq!(
+            adjusted_document_preview_zoom(1.0, 0.01),
+            MIN_DOCUMENT_PREVIEW_ZOOM
+        );
+        assert_eq!(
+            adjusted_document_preview_zoom(1.0, 100.0),
+            MAX_DOCUMENT_PREVIEW_ZOOM
+        );
+    }
+
+    #[test]
     fn highlights_lexer_tokens_and_distinguishes_render_markers() {
         let theme = Theme::bundled_themes().remove(0);
         let source = "let x = 42; \\[ x =>; \\]";
@@ -7226,7 +7342,7 @@ mod tests {
     #[test]
     fn platform_font_defaults_match_each_desktop_os() {
         let windows = platform_ui_font_spec("windows", Some(Path::new(r"D:\Windows")), None);
-        assert_eq!(windows.name, "Segoe WPC");
+        assert_eq!(windows.name, "Segoe UI");
         assert!(windows.candidates[0].ends_with("Fonts/segoeui.ttf"));
 
         let macos = platform_ui_font_spec("macos", None, None);

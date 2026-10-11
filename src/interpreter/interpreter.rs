@@ -7178,6 +7178,20 @@ impl<W: Write> Interpreter<W> {
                 Div,
                 Rc::clone(right),
             ),
+            // `e^u` is the operator form of `exp(u)`. Keep the user's
+            // notation in the primitive while applying the same affine
+            // substitution rule as the `exp` builtin.
+            SymbolicExpr::Binary {
+                left,
+                op: Pow,
+                right,
+            } if matches!(left.as_ref(), SymbolicExpr::Constant(MathConstant::E)) => {
+                if let Some(coefficient) = Self::linear_coefficient(right, variable) {
+                    Self::symbolic_binary_raw(Rc::clone(expression), Div, coefficient)
+                } else {
+                    self.unevaluated_calculus(Builtin::Integral, expression, variable)
+                }
+            }
             SymbolicExpr::Binary {
                 left,
                 op: Pow,
