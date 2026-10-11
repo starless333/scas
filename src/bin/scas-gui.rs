@@ -456,6 +456,8 @@ struct ScasApp {
     preview_error: Option<String>,
     preview_open: bool,
     document_preview_zoom: f32,
+    document_preview_scroll_offset: egui::Vec2,
+    latex_texture_rects: Vec<egui::Rect>,
     output_open: bool,
     files_open: bool,
     quick_open: bool,
@@ -683,6 +685,31 @@ fn adjusted_document_preview_zoom(current: f32, factor: f32) -> f32 {
     (current * factor).clamp(MIN_DOCUMENT_PREVIEW_ZOOM, MAX_DOCUMENT_PREVIEW_ZOOM)
 }
 
+fn zoom_scroll_offset_about_pointer(
+    offset: egui::Vec2,
+    pointer: egui::Pos2,
+    page_rects: &[egui::Rect],
+    factor: f32,
+) -> egui::Vec2 {
+    if !factor.is_finite() || (factor - 1.0).abs() <= f32::EPSILON {
+        return offset;
+    }
+    let Some((page_index, page_rect)) = page_rects
+        .iter()
+        .enumerate()
+        .find(|(_, rect)| rect.contains(pointer))
+    else {
+        return offset;
+    };
+    let preceding_page_height = page_rects[..page_index]
+        .iter()
+        .map(egui::Rect::height)
+        .sum::<f32>();
+    let local = pointer - page_rect.min;
+    let delta = egui::vec2(local.x, preceding_page_height + local.y) * (factor - 1.0);
+    egui::vec2((offset.x + delta.x).max(0.0), (offset.y + delta.y).max(0.0))
+}
+
 fn preferences_path_for(
     os: &str,
     xdg_config_home: Option<&Path>,
@@ -878,6 +905,8 @@ impl ScasApp {
             preview_error: None,
             preview_open: true,
             document_preview_zoom: 1.0,
+            document_preview_scroll_offset: egui::Vec2::ZERO,
+            latex_texture_rects: Vec::new(),
             output_open: false,
             files_open: true,
             quick_open: false,
@@ -2168,6 +2197,7 @@ impl ScasApp {
         if self.last_latex_source_key != Some(source_key) {
             // A texture from another document must never be shown as its preview.
             self.latex_textures.clear();
+            self.latex_texture_rects.clear();
             self.last_latex_source_key = Some(source_key);
             self.latex_render_zoom = 1.0;
             self.latex_texture_zoom = 1.0;
@@ -2317,6 +2347,7 @@ impl ScasApp {
                             )
                         })
                         .collect();
+                    self.latex_texture_rects.clear();
                     self.last_latex_key = Some(key);
                     self.latex_texture_zoom = zoom;
                     self.latex_render_error = None;
@@ -5088,21 +5119,25 @@ impl eframe::App for ScasApp {
                     } else {
                         let preview_width = ui.available_width();
                         let preview_view_rect = ui.available_rect_before_wrap();
-                        let (gesture_zoom, wheel_zoom) = ui.input(|input| {
-                            let over_preview = input
+                        let (gesture_zoom, wheel_zoom, zoom_pointer) = ui.input(|input| {
+                            let Some(pointer) = input
                                 .pointer
                                 .hover_pos()
-                                .is_some_and(|position| preview_view_rect.contains(position));
-                            if !over_preview {
-                                return (1.0, false);
-                            }
+                                .filter(|position| preview_view_rect.contains(*position))
+                            else {
+                                return (1.0, false, None);
+                            };
                             let pinch = input.zoom_delta();
                             if (pinch - 1.0).abs() > f32::EPSILON {
-                                (pinch, input.raw_scroll_delta.y != 0.0)
+                                (pinch, input.raw_scroll_delta.y != 0.0, Some(pointer))
                             } else if input.raw_scroll_delta.y != 0.0 {
-                                ((input.raw_scroll_delta.y / 300.0).exp(), true)
+                                (
+                                    (input.raw_scroll_delta.y / 300.0).exp(),
+                                    true,
+                                    Some(pointer),
+                                )
                             } else {
-                                (1.0, false)
+                                (1.0, false, None)
                             }
                         });
                         if wheel_zoom {
@@ -5111,10 +5146,19 @@ impl eframe::App for ScasApp {
                             ui.input_mut(|input| input.smooth_scroll_delta.y = 0.0);
                         }
                         if (gesture_zoom - 1.0).abs() > f32::EPSILON {
-                            self.document_preview_zoom = adjusted_document_preview_zoom(
-                                self.document_preview_zoom,
-                                gesture_zoom,
-                            );
+                            let previous_zoom = self.document_preview_zoom;
+                            let next_zoom =
+                                adjusted_document_preview_zoom(previous_zoom, gesture_zoom);
+                            if let Some(pointer) = zoom_pointer {
+                                self.document_preview_scroll_offset =
+                                    zoom_scroll_offset_about_pointer(
+                                        self.document_preview_scroll_offset,
+                                        pointer,
+                                        &self.latex_texture_rects,
+                                        next_zoom / previous_zoom,
+                                    );
+                            }
+                            self.document_preview_zoom = next_zoom;
                         }
                         if self.document_preview_zoom.to_bits()
                             != self.latex_observed_zoom.to_bits()
@@ -5177,7 +5221,10 @@ impl eframe::App for ScasApp {
                                 [theme.ui.text.0.r(), theme.ui.text.0.g(), theme.ui.text.0.b()],
                             );
                         }
-                        egui::ScrollArea::both()
+                        let mut next_texture_rects = Vec::new();
+                        let scroll_output = egui::ScrollArea::both()
+                            .id_source("document-preview-scroll")
+                            .scroll_offset(self.document_preview_scroll_offset)
                             .auto_shrink([false, false])
                             .show(ui, |ui| {
                                 if let Some(document) = &self.preview_document {
@@ -5222,6 +5269,7 @@ impl eframe::App for ScasApp {
                                                                     )
                                                                     .sense(egui::Sense::click()),
                                                             );
+                                                            next_texture_rects.push(response.rect);
                                                             if let Some((_, range)) = chunks.get(index) {
                                                                 if let Some(fragment) = document.fragments.get(range.start) {
                                                                     let response = response.on_hover_text(format!("Go to source near line {}", fragment.span.line));
@@ -5300,6 +5348,8 @@ impl eframe::App for ScasApp {
                                     );
                                 });
                             });
+                        self.document_preview_scroll_offset = scroll_output.state.offset;
+                        self.latex_texture_rects = next_texture_rects;
                     }
                 });
             self.preview_scroll_target = preview_scroll_target;
@@ -7160,7 +7210,7 @@ fn render_latex_png(body: &str, color: [u8; 3], zoom: f32) -> Result<LatexRender
         let vector = Command::new("dvisvgm")
             .args([
                 "--no-fonts",
-                "--bbox=min",
+                "--bbox=preview",
                 "--output=preview.svg",
                 "preview.dvi",
             ])
@@ -7278,6 +7328,41 @@ mod tests {
         assert_eq!(
             adjusted_document_preview_zoom(1.0, 100.0),
             MAX_DOCUMENT_PREVIEW_ZOOM
+        );
+    }
+
+    #[test]
+    fn document_preview_zoom_keeps_the_pointer_anchored_to_its_page() {
+        let pages = [
+            egui::Rect::from_min_max(egui::pos2(100.0, 100.0), egui::pos2(500.0, 300.0)),
+            egui::Rect::from_min_max(egui::pos2(100.0, 320.0), egui::pos2(500.0, 520.0)),
+        ];
+        assert_eq!(
+            zoom_scroll_offset_about_pointer(
+                egui::vec2(40.0, 60.0),
+                egui::pos2(250.0, 420.0),
+                &pages,
+                1.5,
+            ),
+            egui::vec2(115.0, 210.0)
+        );
+        assert_eq!(
+            zoom_scroll_offset_about_pointer(
+                egui::vec2(10.0, 10.0),
+                egui::pos2(300.0, 200.0),
+                &pages,
+                0.5,
+            ),
+            egui::Vec2::ZERO
+        );
+        assert_eq!(
+            zoom_scroll_offset_about_pointer(
+                egui::vec2(40.0, 60.0),
+                egui::pos2(20.0, 20.0),
+                &pages,
+                2.0,
+            ),
+            egui::vec2(40.0, 60.0)
         );
     }
 
@@ -8061,6 +8146,28 @@ solve(z^2-z, z) =>;
         assert!(rendered.size[0] > 20);
         assert!(rendered.size[1] > 20);
         assert_eq!(rendered.rgba.len(), rendered.size[0] * rendered.size[1] * 4);
+
+        // Preserve the preview package's page bounds so display math stays
+        // centered even when short prose establishes the left edge above it.
+        for zoom in [0.5, 1.0, 2.0] {
+            let mixed =
+                render_latex_png("a\n\n\\[\\sin(x) = \\frac{1}{2}\\]", [20, 20, 20], zoom).unwrap();
+            let [width, height] = mixed.size;
+            let mut formula_min_x = width;
+            let mut formula_max_x = 0;
+            for y in height / 2..height {
+                for x in 0..width {
+                    if mixed.rgba[(y * width + x) * 4 + 3] != 0 {
+                        formula_min_x = formula_min_x.min(x);
+                        formula_max_x = formula_max_x.max(x);
+                    }
+                }
+            }
+            assert!(formula_min_x < formula_max_x);
+            let formula_center = (formula_min_x + formula_max_x) as f32 / 2.0;
+            let page_center = width as f32 / 2.0;
+            assert!((formula_center - page_center).abs() <= width as f32 * 0.05);
+        }
 
         // REPL snippets are rendered in math mode via the same system LaTeX
         // pipeline, so fractions and symbols use actual Computer Modern glyphs.
