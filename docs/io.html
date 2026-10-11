@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Read and write text, import CSV and JSON, request input, and access arguments with SCAS on native and browser hosts.">
+  <title>Input &amp; Output · SCAS</title>
+  <link rel="stylesheet" href="assets/site.css">
+  <script defer src="assets/site.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <div class="mobile-bar">
+    <a href="index.html">SCAS docs</a>
+    <button type="button" data-nav-toggle aria-expanded="false" aria-controls="documentation-nav" aria-label="Open documentation navigation">Menu</button>
+  </div>
+  <div class="layout">
+    <aside class="rail" id="documentation-nav">
+      <div class="brand"><a href="index.html">SCAS</a><span>0.1.0</span></div>
+      <nav aria-label="Documentation">
+        <div class="nav-group"><span>Start</span><a href="index.html">Overview</a><a href="getting-started.html">Getting started</a><a href="language.html">Language</a></div>
+        <div class="nav-group"><span>Mathematics</span><a href="math-functions.html">Functions &amp; precision</a><a href="builtins.html">Builtin reference</a><a href="calculus.html">Calculus</a><a href="linear-algebra.html">Linear algebra</a></div>
+        <div class="nav-group"><span>Workflow</span><a href="documenter.html">Executable documents</a><a href="ide.html">Desktop IDE &amp; CLI</a><a aria-current="page" href="io.html">Input &amp; output</a><a href="internals.html">Architecture &amp; limits</a><a href="correctness.html">Correctness &amp; performance</a></div>
+        <div class="nav-group"><span>On this page</span><a href="#functions">Functions</a><a href="#hosts">Native and browser</a><a href="#text">Text files</a><a href="#structured">CSV and JSON</a><a href="#interactive">Input and arguments</a><a href="#errors">Errors and limits</a><a href="#embedding">Embedding</a></div>
+        <div class="nav-group"><span>Demos</span><a href="demo-mit-diagonalization.html">MIT diagonalization</a></div>
+      </nav>
+    </aside>
+
+    <main class="document" id="main-content" tabindex="-1">
+      <header class="masthead">
+        <h1>Files in. Exact values out.</h1>
+        <p>SCAS programs use one I/O vocabulary across the CLI, desktop IDE, tests, and browser. The host decides where files and input come from; the language keeps the same calls.</p>
+        <span class="version">UTF-8 text · exact JSON numbers · host-independent runtime</span>
+      </header>
+
+      <div class="content">
+        <section id="functions">
+          <h2>The complete I/O surface</h2>
+          <p class="lede">Six builtins cover text, structured data, interactive input, and process arguments. All file paths are strings; I/O failures stop execution with a source diagnostic.</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Function</th><th>Returns</th><th>Purpose</th></tr></thead>
+              <tbody>
+                <tr><td><a href="builtins.html#read_text"><code>read_text(path)</code></a></td><td>string</td><td>Read an entire UTF-8 text file.</td></tr>
+                <tr><td><a href="builtins.html#write_text"><code>write_text(path, content)</code></a></td><td><code>nil</code></td><td>Create or replace a UTF-8 text file.</td></tr>
+                <tr><td><a href="builtins.html#read_csv"><code>read_csv(path)</code></a></td><td>array of rows</td><td>Parse comma-separated text; every field remains a string.</td></tr>
+                <tr><td><a href="builtins.html#read_json"><code>read_json(path)</code></a></td><td>SCAS value</td><td>Convert JSON arrays, objects, scalars, and exact numbers.</td></tr>
+                <tr><td><a href="builtins.html#input"><code>input([prompt])</code></a></td><td>string</td><td>Request one line of user input.</td></tr>
+                <tr><td><a href="builtins.html#args"><code>args()</code></a></td><td>array of strings</td><td>Inspect native process arguments; empty in the browser.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="callout good"><strong>One source, multiple hosts</strong>The evaluator calls a small runtime interface rather than the filesystem directly. The native host supplies real files and standard input; the browser and tests supply an in-memory workspace and queued answers.</div>
+        </section>
+
+        <section id="hosts">
+          <h2 class="rule-heading">Native and browser behavior</h2>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Capability</th><th>CLI and desktop</th><th>Browser IDE</th></tr></thead>
+              <tbody>
+                <tr><td>Read</td><td>Reads a real UTF-8 file through the operating system.</td><td>Reads an uploaded, bundled, or session-created virtual file.</td></tr>
+                <tr><td>Write</td><td>Creates or replaces a real file. Existing content is overwritten without a confirmation prompt.</td><td>Creates or replaces a file in session memory.</td></tr>
+                <tr><td>Relative paths</td><td>Resolve from the process working directory.</td><td>Resolve inside the virtual workspace.</td></tr>
+                <tr><td>Absolute paths</td><td>Accepted when the operating system permits access.</td><td>Rejected.</td></tr>
+                <tr><td>Parent traversal</td><td>Handled by the operating system.</td><td><code>..</code> is rejected so paths cannot escape the virtual workspace.</td></tr>
+                <tr><td>Interactive input</td><td>Prints the prompt to standard error and reads one line from standard input.</td><td>Requests an answer through the browser interface.</td></tr>
+                <tr><td>Arguments</td><td>Returns the arguments passed to the SCAS process after the executable name.</td><td>Returns <code>[]</code>.</td></tr>
+                <tr><td>Lifetime</td><td>Files persist according to the host filesystem.</td><td>Virtual writes last for the current browser session; download anything that must leave it.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="callout warning"><strong>Native writes are real writes</strong><code>write_text</code> uses the path exactly as supplied and replaces an existing file. Inspect unfamiliar programs before running them, and write generated output into a dedicated project directory.</div>
+        </section>
+
+        <section id="text">
+          <h2 class="rule-heading">Read and write UTF-8 text</h2>
+          <p><code>read_text</code> returns the complete file as one string. <code>write_text</code> accepts only string content and returns <code>nil</code> after a successful write.</p>
+          <pre><code>let report = read_text("notes/introduction.txt");
+print(report);
+
+let result = factor(x^4 - 1);
+let line = format("factorization: {}\n", result);
+write_text("build/result.txt", line);</code></pre>
+          <p>Reading and writing are whole-file operations. SCAS does not currently expose binary files, append mode, directory creation, directory listing, deletion, or streaming handles.</p>
+
+          <h3>Modules use the same file service</h3>
+          <p><code>import</code> reads module source through the active host. Imported definitions share the caller's module scope, and the same path is executed only once by an interpreter session.</p>
+          <pre><code>// lib/geometry.scas
+fn circle_area(radius) = pi * radius^2;
+
+// analysis.scas
+import "lib/geometry.scas";
+print(circle_area(5));</code></pre>
+          <p>On native hosts, relative import and file paths are relative to the directory from which SCAS was launched—not automatically to the importing source file.</p>
+        </section>
+
+        <section id="structured">
+          <h2 class="rule-heading">Turn files into SCAS values</h2>
+
+          <h3>JSON preserves numeric notation</h3>
+          <p><code>read_json</code> parses the complete file and recursively converts it. Integer tokens become arbitrary-size integers; other JSON numbers become arbitrary-precision decimals instead of binary floating-point values.</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>JSON</th><th>SCAS</th></tr></thead>
+              <tbody>
+                <tr><td><code>null</code></td><td><code>nil</code></td></tr>
+                <tr><td><code>true</code>, <code>false</code></td><td>boolean</td></tr>
+                <tr><td>string</td><td>string</td></tr>
+                <tr><td>integer</td><td>arbitrary-size exact integer</td></tr>
+                <tr><td>decimal or exponent form</td><td>arbitrary-precision decimal</td></tr>
+                <tr><td>array</td><td>array</td></tr>
+                <tr><td>object</td><td>map with string keys</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <pre><code>// data.json
+// {"experiment":"A-17","samples":[1,2.5],"exact":12345678901234567890}
+
+let data = read_json("data.json");
+print(data["experiment"]);  // A-17
+print(data["samples"][1]);  // 2.5
+print(data["exact"]);       // exact integer</code></pre>
+
+          <h3>CSV is deliberately literal</h3>
+          <p><code>read_csv</code> returns an array of row arrays. It supports comma delimiters, quoted fields, commas inside quoted fields, doubled quote escapes, and LF or CRLF line endings. It does not interpret a header, infer types, or require equal row widths.</p>
+          <pre><code>// measurements.csv
+// name,value
+// "Ada, A.",42
+
+let rows = read_csv("measurements.csv");
+print(rows[0]);     // [name, value]
+print(rows[1][0]);  // Ada, A.
+print(rows[1][1]);  // 42 (a string)</code></pre>
+          <div class="callout"><strong>Current data boundary</strong>CSV fields remain strings, and SCAS does not yet provide a table value, schema inference, or string-to-number parsing API. JSON is the better interchange format when numeric types must survive import.</div>
+        </section>
+
+        <section id="interactive">
+          <h2 class="rule-heading">Interactive input and arguments</h2>
+          <p><code>input</code> accepts zero arguments or one string prompt. It always returns a string with the native line ending removed.</p>
+          <pre><code>let name = input("Name: ");
+print(format("Hello, {}", name));</code></pre>
+          <p>In batch automation, prefer files or arguments so the run does not pause for a person. Browser evaluation reports that input is required and lets the interface collect an answer for the run.</p>
+
+          <h3>Arguments expose the host invocation</h3>
+          <pre><code>let invocation = args();
+if invocation != [] {
+    print(invocation[0]);
+}</code></pre>
+          <p>Native <code>args()</code> returns every process argument after the executable name. This can include SCAS options and the source path; there is not yet a separate application-argument delimiter. Browser sessions return an empty array.</p>
+        </section>
+
+        <section id="errors">
+          <h2 class="rule-heading">Errors, limits, and recovery</h2>
+          <p>I/O errors are ordinary runtime errors with source locations. Execution stops rather than returning a partial sentinel value.</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Failure</th><th>Typical diagnostic</th><th>Recovery</th></tr></thead>
+              <tbody>
+                <tr><td>Missing file</td><td><code>could not read …</code> or <code>file '…' was not found</code></td><td>Check the working directory or upload the browser file.</td></tr>
+                <tr><td>Invalid virtual path</td><td><code>virtual paths must be relative</code></td><td>Use a relative path without <code>..</code>.</td></tr>
+                <tr><td>Write denied</td><td><code>could not write …</code></td><td>Choose a writable directory and check permissions.</td></tr>
+                <tr><td>Invalid JSON</td><td><code>invalid JSON in '…'</code></td><td>Fix the reported JSON line and column.</td></tr>
+                <tr><td>Invalid CSV quote</td><td><code>unexpected quote</code> or <code>unterminated quoted CSV field</code></td><td>Quote the whole field and double embedded quotes.</td></tr>
+                <tr><td>No queued answer</td><td><code>input required: …</code></td><td>Answer the prompt or remove interactive input from the batch run.</td></tr>
+                <tr><td>File too large</td><td>JSON or CSV source-size limit</td><td>Reduce or split the file; browser limits are intentionally bounded.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p>The browser applies its source-size budget to CSV and JSON before parsing. All hosts continue to enforce the active evaluation, recursion, precision, exponent, shift, and number-size limits after values enter the interpreter.</p>
+        </section>
+
+        <section id="embedding">
+          <h2 class="rule-heading">Embed SCAS with a controlled host</h2>
+          <p>Rust callers can implement <code>RuntimeIo</code> and construct an interpreter with that service. This makes file access, prompts, and arguments explicit capabilities instead of global assumptions.</p>
+          <pre><code>pub trait RuntimeIo {
+    fn read_text(&amp;self, path: &amp;str) -&gt; Result&lt;String, IoFailure&gt;;
+    fn write_text(&amp;self, path: &amp;str, content: &amp;str) -&gt; Result&lt;(), IoFailure&gt;;
+    fn input(&amp;self, prompt: &amp;str) -&gt; Result&lt;String, IoFailure&gt;;
+    fn args(&amp;self) -&gt; Vec&lt;String&gt;;
+}</code></pre>
+          <p><code>MemoryIo</code> is suitable for deterministic tests, sandboxes, and applications that provide their own persistence. It normalizes slash direction, rejects absolute paths and parent traversal, stores files in memory, queues prompt answers, and accepts an explicit argument list.</p>
+          <pre><code>let io = Rc::new(MemoryIo::new());
+io.insert_file("data/input.json", "{\"n\":42}".to_owned())?;
+io.queue_input("Ada".to_owned());
+io.set_args(vec!["analysis.scas".to_owned()]);</code></pre>
+          <div class="callout good"><strong>Testing payoff</strong>The same SCAS program can be exercised without touching disk or blocking on standard input. Tests can inspect virtual output files and supply prompt answers deterministically.</div>
+        </section>
+      </div>
+
+      <footer class="footer">Continue with the <a href="builtins.html#read_text">builtin signatures</a> or inspect <a href="internals.html">architecture and limits</a>.</footer>
+    </main>
+  </div>
+</body>
+</html>

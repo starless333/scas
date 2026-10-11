@@ -8,7 +8,7 @@
   <title>SCAS · Browser IDE</title>
   <link rel="stylesheet" href="./site.css">
   <script>window.MathJax = { tex: { inlineMath: { '[+]': [['$', '$']] } }, startup: { typeset: false } };</script>
-  <script defer src="https://cdn.jsdelivr.net/npm/mathjax@4.0.0/tex-chtml.js"></script>
+  <script async src="https://cdn.jsdelivr.net/npm/mathjax@4.0.0/tex-chtml.js"></script>
   <script type="module" src="./app.js"></script>
 </head>
 <body>
@@ -21,13 +21,23 @@
           <button id="math-preview-close" type="button" aria-label="Close preview">×</button>
         </div>
       </div>
-      <div class="preview-caption"><span>Computer Modern</span><button id="math-preview-copy" type="button">Copy TeX</button></div>
+      <div class="preview-caption">
+        <button id="math-preview-copy" type="button">Copy TeX</button>
+        <div class="preview-zoom" aria-label="Document preview zoom controls">
+          <button id="math-preview-zoom-out" type="button" aria-label="Zoom out of rendered document">−</button>
+          <button id="math-preview-zoom-reset" type="button" aria-label="Reset rendered document zoom">100%</button>
+          <button id="math-preview-zoom-in" type="button" aria-label="Zoom in to rendered document">+</button>
+        </div>
+      </div>
       <div class="preview-intro"><strong>Rendered document</strong><span>Live output from the current SCAS source</span></div>
       <div id="math-preview-content"></div>
     </section>
+    <div id="math-preview-resizer" role="separator" aria-label="Resize document preview" aria-orientation="vertical" tabindex="0" hidden></div>
     <div id="loading" role="status" aria-live="polite">
       <span class="mark">SCAS</span>
       <span id="loading-message">Loading the mathematical workbench…</span>
+      <span id="loading-detail"></span>
+      <button id="loading-retry" type="button" hidden>Try again</button>
     </div>
   </main>
   <noscript>SCAS requires JavaScript and WebAssembly to run in your browser.</noscript>

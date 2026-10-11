@@ -152,7 +152,13 @@ impl Scanner {
             ']' => self.add_token(TokenType::RightBracket),
             ';' => self.add_token(TokenType::Semicolon),
             ',' => self.add_token(TokenType::Comma),
-            '.' => self.add_token(TokenType::Dot),
+            '.' => {
+                if Self::is_digit(self.peek()) {
+                    self.number();
+                } else {
+                    self.add_token(TokenType::Dot);
+                }
+            }
             '\'' => self.add_token(TokenType::Apostrophe),
             ':' => self.add_token(TokenType::Colon),
             '=' => {
@@ -556,5 +562,20 @@ mod tests {
         assert_eq!(tokens[1].token_type, TokenType::Apostrophe);
         assert_eq!((tokens[1].column, tokens[1].length), (2, 1));
         assert_eq!(tokens[2].token_type, TokenType::Star);
+    }
+
+    #[test]
+    fn scans_leading_dot_decimals_as_numbers() {
+        let mut scanner = Scanner::new(".8 .25e+2 .");
+        let tokens = scanner.scan_tokens().clone();
+
+        assert!(scanner.errors().is_empty());
+        assert_eq!(tokens[0].token_type, TokenType::Number);
+        assert_eq!(tokens[0].literal, Some(Literal::Str(".8".to_owned())));
+        assert_eq!((tokens[0].column, tokens[0].length), (1, 2));
+        assert_eq!(tokens[1].token_type, TokenType::Number);
+        assert_eq!(tokens[1].literal, Some(Literal::Str(".25e+2".to_owned())));
+        assert_eq!((tokens[1].column, tokens[1].length), (4, 6));
+        assert_eq!(tokens[2].token_type, TokenType::Dot);
     }
 }

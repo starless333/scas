@@ -314,6 +314,14 @@ fn numeric_promotion_exactness_and_decimal_precision_are_stable() {
 }
 
 #[test]
+fn decimal_literals_may_omit_the_leading_zero() {
+    assert_eq!(
+        output("print(.8); print(.25e2); print(1 + .05);"),
+        "0.8\n25\n1.05\n"
+    );
+}
+
+#[test]
 fn resource_limits_stop_runaway_and_expensive_programs() {
     let limits = Limits {
         max_steps: 30,
