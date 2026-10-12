@@ -1,0 +1,56 @@
+/// \begin{center}{\Large\bfseries Matrices from Rules}\\[0.35em]{\large Exact construction, symbolic algebra, and limits}\end{center}
+/// \vspace{0.25em}\hrule\vspace{1em}
+/// A matrix rule evaluates one expression over one-based row and column indices.
+
+/// \section*{An exact Hilbert matrix}
+/// Define the \(n\times n\) Hilbert matrix by
+/// \[H(n)=\left(\frac{1}{i+j-1}\right)_{i,j}.\]
+let H(n) = (1 / (i + j - 1))_(i,j);
+
+/// At \(n=3\), the rule expands to
+\[
+    H(3) =>
+\]
+/// Its determinant stays exact:
+\[
+    det_steps(H(3)) =>
+\]
+/// Gauss--Jordan elimination gives an integer inverse:
+\[
+    inverse_steps(H(3)) =>
+\]
+
+/// \section*{Symbolic entries and matrix-valued functions}
+/// An explicit dimension lets the function parameter remain inside the entries:
+/// \[S(t)=\left(t^{i+j-2}\right)_{i,j=1}^{2}.\]
+let S(t) = (t^(i + j - 2))_(i,j,2);
+\[
+    S(t) =>
+\]
+/// The rows are symbolically dependent, so the determinant vanishes:
+\[
+    det(S(t)) =>
+\]
+/// Matrix limits are taken entry by entry:
+\[
+    limit(S(t), t, 0) =>
+\]
+
+/// A rectangular rule supplies both dimensions explicitly:
+\[
+    (10i + j)_(i,j,2,3) =>
+\]
+
+/// \section*{Limits through linear algebra}
+/// For the averaging matrix \(P\), powers converge to projection onto the steady state.
+let P = [3/4, 1/4; 1/4, 3/4];
+\[
+    limit(P^n, n, "infinity") =>
+\]
+/// Continuous linear-algebra operations consume the same symbolic sequence:
+\{
+    limit(trace(P^n), n, "infinity") =>;
+    limit(det(P^n), n, "infinity") =>;
+\}
+
+/// The source definition, exact calculations, and displayed matrices above are all evaluated by SCAS while the document is built.

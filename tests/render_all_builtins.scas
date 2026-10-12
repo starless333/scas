@@ -42,6 +42,9 @@
     degrees(pi) =>;
     radians(180) =>;
     evalf(pi) =>;
+    int("42") =>;
+    double("2.5") =>;
+    rational("7/9") =>;
     simplify(x + x) =>;
     expand((x + 1)^3) =>;
     factor(x^2 - 1) =>;
@@ -75,6 +78,7 @@
     assume_real(a_real) =>;
     assume(a_general > 0) =>;
     forget_assumptions() =>;
+    (i + j)_(i,j,2) =>;
     transpose([1, 2; 3, 4]) =>;
     trace([1, 2; 3, 4]) =>;
     det([1, 2; 3, 4]) =>;

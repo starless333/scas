@@ -26,6 +26,10 @@ use std::collections::HashSet;
 use std::io::Write;
 use std::num::NonZeroU64;
 use std::rc::Rc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 type Matrix = Vec<Vec<Value>>;
 type Reduction = (Matrix, Vec<DerivationStep>, usize);
@@ -118,6 +122,7 @@ pub struct Interpreter<W: Write> {
     io: Rc<dyn RuntimeIo>,
     importing: RefCell<HashSet<String>>,
     imported: RefCell<HashSet<String>>,
+    cancellation: Option<Arc<AtomicBool>>,
 }
 
 impl<W: Write> Interpreter<W> {
@@ -154,6 +159,7 @@ impl<W: Write> Interpreter<W> {
             io,
             importing: RefCell::new(HashSet::new()),
             imported: RefCell::new(HashSet::new()),
+            cancellation: None,
         };
         interpreter.install_standard_library();
         interpreter
@@ -213,6 +219,12 @@ impl<W: Write> Interpreter<W> {
 
     pub fn output_mut(&mut self) -> &mut W {
         &mut self.output
+    }
+
+    /// Installs a cooperative cancellation flag. The evaluator checks it at
+    /// every statement and expression step, including loop iterations.
+    pub fn set_cancellation_flag(&mut self, flag: Arc<AtomicBool>) {
+        self.cancellation = Some(flag);
     }
 
     /// Runs a whole program (as produced by `Parser::parse`) in the
@@ -392,6 +404,9 @@ impl<W: Write> Interpreter<W> {
         let Some(Value::Builtin(builtin)) = Environment::get(&self.globals, symbol) else {
             return self.evaluate_expression(expression);
         };
+        if builtin == Builtin::MatrixRule {
+            return self.evaluate_expression(expression);
+        }
         if builtin == Builtin::Limit && args.len() == 3 {
             if let (ExprKind::Variable(variable), ExprKind::String(point)) =
                 (&args[1].kind, &args[2].kind)
@@ -667,6 +682,9 @@ impl<W: Write> Interpreter<W> {
             Builtin::Degrees => r"\text{multiply radians by }180/\pi",
             Builtin::Radians => r"\text{multiply degrees by }\pi/180",
             Builtin::Evalf => r"\text{evaluate numerically at the active precision}",
+            Builtin::Int => r"\text{convert to an integer by truncating toward zero}",
+            Builtin::Double => r"\text{convert to an arbitrary-precision decimal}",
+            Builtin::Rational => r"\text{convert to an exact reduced rational}",
             Builtin::Simplify => r"\text{apply exact simplification identities}",
             Builtin::Expand => r"\text{distribute products and powers}",
             Builtin::Factor => r"\text{factor over the exact polynomial domain}",
@@ -686,6 +704,7 @@ impl<W: Write> Interpreter<W> {
             | Builtin::AssumeReal
             | Builtin::Assume => r"\text{record the domain assumption}",
             Builtin::ForgetAssumptions => r"\text{clear the active assumptions}",
+            Builtin::MatrixRule => r"\text{evaluate the entry rule over the matrix indices}",
             Builtin::Transpose | Builtin::TransposeSteps => {
                 r"\text{exchange row and column indices}"
             }
@@ -797,6 +816,16 @@ impl<W: Write> Interpreter<W> {
     }
 
     fn tick(&mut self) -> ExecResult<()> {
+        if self
+            .cancellation
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Relaxed))
+        {
+            return Err(Flow::Error(RuntimeError::new(
+                "execution cancelled",
+                self.current_span,
+            )));
+        }
         self.steps = self.steps.saturating_add(1);
         if self.steps > self.limits.max_steps {
             Err(self.limit_error(format!(
@@ -1137,6 +1166,41 @@ impl<W: Write> Interpreter<W> {
 
             ExprKind::Call { callee, args } => {
                 let callee_val = self.evaluate(env, callee)?;
+                // Matrix rules are a small special form: their index names
+                // must stay symbolic while the entry expression is read.
+                // This also lets the conventional row name `i` shadow the
+                // predefined imaginary unit inside `(entry)_(i,j,...)`.
+                if matches!(callee_val, Value::Builtin(Builtin::MatrixRule)) {
+                    if !(4..=5).contains(&args.len()) {
+                        return Err(self.error(
+                            "matrix rule expects (row, column, size) or (row, column, rows, columns)",
+                        ));
+                    }
+                    let (ExprKind::Variable(row), ExprKind::Variable(column)) =
+                        (&args[1].kind, &args[2].kind)
+                    else {
+                        return Err(self.error("matrix rule indices must be variable names"));
+                    };
+                    let rule_env = Environment::child(env);
+                    rule_env.borrow_mut().define(
+                        *row,
+                        Self::symbolic_value(Rc::new(SymbolicExpr::Variable(*row))),
+                    );
+                    rule_env.borrow_mut().define(
+                        *column,
+                        Self::symbolic_value(Rc::new(SymbolicExpr::Variable(*column))),
+                    );
+                    let mut values = Vec::with_capacity(args.len());
+                    values.push(self.evaluate(&rule_env, &args[0])?);
+                    values.push(Self::symbolic_value(Rc::new(SymbolicExpr::Variable(*row))));
+                    values.push(Self::symbolic_value(Rc::new(SymbolicExpr::Variable(
+                        *column,
+                    ))));
+                    for dimension in &args[3..] {
+                        values.push(self.evaluate(env, dimension)?);
+                    }
+                    return self.call_builtin(Builtin::MatrixRule, values);
+                }
                 if matches!(callee_val, Value::Builtin(Builtin::Limit)) && args.len() == 3 {
                     if let (ExprKind::Variable(variable), ExprKind::String(point)) =
                         (&args[1].kind, &args[2].kind)
@@ -1324,6 +1388,7 @@ impl<W: Write> Interpreter<W> {
             Builtin::Rewrite => (2, 3),
             Builtin::Gradient | Builtin::Jacobian | Builtin::Hessian => (2, 2),
             Builtin::DefiniteIntegral | Builtin::Sum | Builtin::Product => (4, 4),
+            Builtin::MatrixRule => (4, 5),
             Builtin::Limit => (3, 4),
             Builtin::Series => (4, 5),
             Builtin::MultipleIntegral => (2, 2),
@@ -1421,6 +1486,10 @@ impl<W: Write> Interpreter<W> {
                 return Self::csv_to_value(&source).map_err(|error| self.error(error));
             }
             Builtin::TypeOf => return Ok(Value::Str(args[0].type_name().to_owned())),
+            Builtin::Int | Builtin::Double | Builtin::Rational => {
+                return self.cast_numeric(builtin, &args[0]);
+            }
+            Builtin::MatrixRule => return self.matrix_from_rule(&args),
             Builtin::Help => {
                 let name = match &args[0] {
                     Value::Builtin(builtin) => builtin.name(),
@@ -1435,6 +1504,7 @@ impl<W: Write> Interpreter<W> {
                 };
                 let signature = match found {
                     Builtin::Limit => "limit(expression, variable, point[, side])",
+                    Builtin::MatrixRule => "(expression)_(row, column, size[, columns])",
                     Builtin::Series => "series(expression, variable, point, order[, \"O\"])",
                     Builtin::Eigenvalues | Builtin::Eigenvectors | Builtin::Eigenpairs => {
                         "(matrix[, order])"
@@ -1451,6 +1521,9 @@ impl<W: Write> Interpreter<W> {
                     Builtin::ReadText => "read_text(path)",
                     Builtin::WriteText => "write_text(path, content)",
                     Builtin::Input => "input([prompt])",
+                    Builtin::Int => "int(value)",
+                    Builtin::Double => "double(value)",
+                    Builtin::Rational => "rational(value)",
                     Builtin::Args => "args()",
                     Builtin::ReadJson => "read_json(path)",
                     Builtin::ReadCsv => "read_csv(path)",
@@ -4408,6 +4481,58 @@ impl<W: Write> Interpreter<W> {
         integer
             .to_i64()
             .ok_or_else(|| self.limit_error(format!("{function} bound is too large")))
+    }
+
+    /// Materialize `(entry)_(i,j)` rules as ordinary nested arrays. The rule
+    /// uses one-based mathematical indices; once built, normal SCAS indexing
+    /// remains zero-based like every other array operation.
+    fn matrix_from_rule(&self, args: &[Value]) -> ExecResult<Value> {
+        let entry = self.value_to_symbolic(args[0].clone())?;
+        let row_variable = self.calculus_variable(&args[1], "matrix rule row index")?;
+        let column_variable = self.calculus_variable(&args[2], "matrix rule column index")?;
+        if row_variable == column_variable {
+            return Err(self.error("matrix rule row and column indices must be distinct"));
+        }
+
+        let rows = self.integer_argument(&args[3], "matrix rule dimension")?;
+        let columns = if args.len() == 5 {
+            self.integer_argument(&args[4], "matrix rule dimension")?
+        } else {
+            rows
+        };
+        if rows <= 0 || columns <= 0 {
+            return Err(self.error("matrix rule dimensions must be positive integers"));
+        }
+        let rows = usize::try_from(rows)
+            .map_err(|_| self.limit_error("matrix rule row count is too large"))?;
+        let columns = usize::try_from(columns)
+            .map_err(|_| self.limit_error("matrix rule column count is too large"))?;
+        let elements = rows
+            .checked_mul(columns)
+            .ok_or_else(|| self.limit_error("matrix rule dimensions are too large"))?;
+        let maximum = self.limits.max_matrix_elements;
+        if elements > maximum {
+            return Err(self.limit_error(format!(
+                "matrix rule exceeds the {maximum} element execution limit"
+            )));
+        }
+
+        let mut matrix = Vec::with_capacity(rows);
+        for row in 1..=rows {
+            let mut values = Vec::with_capacity(columns);
+            let row_value = Self::symbolic_integer(row as i64);
+            let row_expression = Self::substitute_symbolic(&entry, row_variable, &row_value);
+            for column in 1..=columns {
+                let column_value = Self::symbolic_integer(column as i64);
+                let expression =
+                    Self::substitute_symbolic(&row_expression, column_variable, &column_value);
+                values.push(Self::symbolic_value(
+                    self.simplify_symbolic_tree(&expression)?,
+                ));
+            }
+            matrix.push(values);
+        }
+        Ok(Self::matrix_value(matrix))
     }
 
     fn nonnegative_integer(&self, value: &Value, name: &str) -> ExecResult<u32> {
@@ -9989,6 +10114,67 @@ impl<W: Write> Interpreter<W> {
 
     // ---- number parsing ----------------------------------------------
 
+    fn cast_numeric(&self, builtin: Builtin, value: &Value) -> ExecResult<Value> {
+        let number = match value {
+            Value::Number(number) => number.clone(),
+            Value::Str(text) => self.parse_cast_number(text, builtin.name())?,
+            value => {
+                return Err(self.error(format!(
+                    "{} expects a number or numeric string, got {}",
+                    builtin.name(),
+                    value.type_name()
+                )))
+            }
+        };
+        match builtin {
+            Builtin::Int => number
+                .try_to_rational()
+                .map(|value| Value::Number(Number::Integer(value.to_integer())))
+                .ok_or_else(|| self.error("int cannot convert a complex number")),
+            Builtin::Double => number
+                .as_decimal(&self.decimal_context)
+                .map(|value| Value::Number(Number::Decimal(value)))
+                .ok_or_else(|| self.error("double cannot convert a complex number")),
+            Builtin::Rational => number
+                .try_to_rational()
+                .map(Number::from_rational)
+                .map(Value::Number)
+                .ok_or_else(|| self.error("rational cannot convert a complex number")),
+            _ => unreachable!("numeric cast dispatched with a conversion builtin"),
+        }
+    }
+
+    fn parse_cast_number(&self, text: &str, function: &str) -> ExecResult<Number> {
+        let text = text.trim();
+        if let Some((numerator, denominator)) = text.split_once('/') {
+            if denominator.contains('/') {
+                return Err(self.error(format!(
+                    "{function} could not parse numeric string '{text}'"
+                )));
+            }
+            let numerator = BigInt::parse_bytes(numerator.trim().as_bytes(), 10);
+            let denominator = BigInt::parse_bytes(denominator.trim().as_bytes(), 10);
+            let (Some(numerator), Some(denominator)) = (numerator, denominator) else {
+                return Err(self.error(format!(
+                    "{function} could not parse numeric string '{text}'"
+                )));
+            };
+            if denominator.is_zero() {
+                return Err(self.error(format!(
+                    "{function} cannot convert a rational with denominator zero"
+                )));
+            }
+            return Ok(Number::from_rational(BigRational::new(
+                numerator,
+                denominator,
+            )));
+        }
+        match self.parse_number(text)? {
+            Value::Number(number) => Ok(number),
+            _ => unreachable!("number parser returned a non-number"),
+        }
+    }
+
     fn parse_number(&self, text: &str) -> ExecResult<Value> {
         let integer = if let Some(hex) = text.strip_prefix("0x") {
             BigInt::parse_bytes(hex.as_bytes(), 16)
@@ -11871,6 +12057,23 @@ impl<W: Write> Interpreter<W> {
                     "{}[{}]",
                     self.format_expr(target, 13),
                     self.format_expr(index, 0)
+                )
+            }
+            ExprKind::Call { callee, args }
+                if matches!(&callee.kind, ExprKind::Variable(symbol) if self.symbols.resolve(*symbol) == "_")
+                    && (4..=5).contains(&args.len()) =>
+            {
+                format!(
+                    "({})_({})",
+                    match &args[0].kind {
+                        ExprKind::Group(inner) => self.format_expr(inner, 0),
+                        _ => self.format_expr(&args[0], 0),
+                    },
+                    args[1..]
+                        .iter()
+                        .map(|arg| self.format_expr(arg, 0))
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 )
             }
             ExprKind::Call { callee, args } => format!(

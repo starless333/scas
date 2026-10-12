@@ -21,11 +21,18 @@ pub struct ParseReport {
 pub struct Parser {
     tokens: Vec<Token>,
     current: usize,
+    /// A one-parameter expression-bodied function supplies that parameter as
+    /// the square size for `(entry)_(i,j)` matrix rules.
+    matrix_rule_dimension: Option<crate::lexer::symbol::Symbol>,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Parser { tokens, current: 0 }
+        Parser {
+            tokens,
+            current: 0,
+            matrix_rule_dimension: None,
+        }
     }
 
     /// Parses the entire program into a sequence of statements.
@@ -137,6 +144,15 @@ impl Parser {
             });
         }
         if self.match_token(&[TokenType::Let]) {
+            if self.check(TokenType::Identifier)
+                && self
+                    .tokens
+                    .get(self.current + 1)
+                    .map(|token| token.token_type)
+                    == Some(TokenType::LeftParen)
+            {
+                return self.function_declaration();
+            }
             return self.variable_declaration();
         }
         if self.match_token(&[TokenType::Fn]) {
@@ -245,7 +261,14 @@ impl Parser {
         }
         self.consume(TokenType::RightParen, "expected `)` after parameters")?;
         let body = if self.match_token(&[TokenType::Equal]) {
+            let previous_dimension = self.matrix_rule_dimension;
+            self.matrix_rule_dimension = if params.len() == 1 {
+                Some(params[0])
+            } else {
+                None
+            };
             let expression = self.expression()?;
+            self.matrix_rule_dimension = previous_dimension;
             self.consume(TokenType::Semicolon, "expected `;` after function body")?;
             FunctionBody::Expression(expression)
         } else if self.match_token(&[TokenType::LeftBrace]) {
@@ -649,6 +672,43 @@ impl Parser {
                         expr: Box::new(expr),
                     },
                 );
+            } else if self.match_token(&[TokenType::Subscript]) {
+                let subscript = self.previous().clone();
+                self.consume(
+                    TokenType::LeftParen,
+                    "expected `(` after matrix-rule subscript `_`",
+                )?;
+                let row = self.expression()?;
+                self.consume(TokenType::Comma, "expected `,` after the row index")?;
+                let column = self.expression()?;
+                let mut args = vec![expr, row, column];
+                while self.match_token(&[TokenType::Comma]) {
+                    args.push(self.expression()?);
+                }
+                let end = SourceSpan::from_token(
+                    self.consume(TokenType::RightParen, "expected `)` after matrix rule")?,
+                );
+                if args.len() == 3 {
+                    if let Some(dimension) = self.matrix_rule_dimension {
+                        args.push(Expr::new(end, ExprKind::Variable(dimension)));
+                    }
+                }
+                if !(4..=5).contains(&args.len()) {
+                    return Err(self.error(
+                        "matrix rule expects (row, column, size) or (row, column, rows, columns)",
+                    ));
+                }
+                let span = args[0].span.through(end);
+                expr = Expr::new(
+                    span,
+                    ExprKind::Call {
+                        callee: Box::new(Expr::new(
+                            SourceSpan::from_token(&subscript),
+                            ExprKind::Variable(subscript.symbol),
+                        )),
+                        args,
+                    },
+                );
             } else {
                 break;
             }
@@ -1011,5 +1071,23 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn matrix_rule_uses_the_single_function_parameter_as_its_size() {
+        let mut scanner = Scanner::new("let A(n) = (i + j)_(i,j);");
+        let tokens = scanner.scan_tokens().clone();
+        let program = Parser::new(tokens).parse().unwrap();
+        let StatementKind::Function { params, body, .. } = &program[0].kind else {
+            panic!("expected function declaration");
+        };
+        let FunctionBody::Expression(expression) = body else {
+            panic!("expected expression body");
+        };
+        let ExprKind::Call { args, .. } = &expression.kind else {
+            panic!("expected lowered matrix-rule call");
+        };
+        assert_eq!(args.len(), 4);
+        assert!(matches!(args[3].kind, ExprKind::Variable(symbol) if symbol == params[0]));
     }
 }

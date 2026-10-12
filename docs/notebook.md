@@ -382,29 +382,32 @@ within their documented platform limits.
 
 ### Phase 0 — decisions and shared contracts
 
-- [ ] Confirm `.scas` as the only canonical notebook source format.
-- [ ] Reserve `// %%` as an optional editor boundary that remains a comment.
-- [ ] Specify stable cell/source-span identifiers.
-- [ ] Specify typed output events and plain-text fallbacks.
-- [ ] Specify session reset, stale-state, cancellation, and input semantics.
-- [ ] Define notebook trust behavior for native and browser hosts.
-- [ ] Add representative notebook fixtures before building the UI.
+- [x] Confirm `.scas` as the only canonical notebook source format.
+- [x] Reserve `// %%` as an optional editor boundary that remains a comment.
+- [x] Specify stable cell/source-span identifiers.
+- [x] Specify typed output events and plain-text fallbacks.
+- [x] Specify session reset, stale-state, cancellation, and input semantics.
+- [x] Define notebook trust behavior for native and browser hosts.
+- [x] Add representative notebook fixtures before building the UI.
+
+The frozen schema-1 decisions are recorded in
+[`notebook-contract.md`](notebook-contract.md).
 
 **Exit goal:** the source model, event protocol, and execution semantics can be
 implemented without frontend-specific exceptions.
 
 ### Phase 1 — reproducible notebook kernel
 
-- [ ] Extract a shared `NotebookSession` around the symbol table, interpreter,
+- [x] Extract a shared `NotebookSession` around the symbol table, interpreter,
   assumptions, precision, I/O, and resource limits.
-- [ ] Parse source into conservative cells while preserving exact byte spans.
-- [ ] Implement Run cell, Run above, Run all, Interrupt, and Restart.
-- [ ] Mark downstream cells stale after edits or state changes.
-- [ ] Stream typed text, math, diagnostic, verification, and input events.
-- [ ] Preserve generation IDs and prevent stale result replacement.
-- [ ] Add true worker cancellation in the browser.
-- [ ] Generate a clean-run reproducibility manifest.
-- [ ] Provide a CLI command that executes notebook regions and emits JSON
+- [x] Parse source into conservative cells while preserving exact byte spans.
+- [x] Implement Run cell, Run above, Run all, Interrupt, and Restart.
+- [x] Mark downstream cells stale after edits or state changes.
+- [x] Stream typed text, math, diagnostic, verification, and input events.
+- [x] Preserve generation IDs and prevent stale result replacement.
+- [x] Add true worker cancellation in the browser.
+- [x] Generate a clean-run reproducibility manifest.
+- [x] Provide a CLI command that executes notebook regions and emits JSON
   events for testing and integrations.
 
 **Exit goal:** the same notebook fixture produces equivalent ordered events in

@@ -326,6 +326,26 @@ fn matrix_limits_and_matrix_valued_functions_are_entrywise() {
 }
 
 #[test]
+fn indexed_rules_generate_exact_symbolic_matrices() {
+    assert_eq!(
+        output(
+            r#"
+            let A(n) = (i + j)_(i,j);
+            print(A(3));
+            print(trace(A(3)));
+            print(det(A(2)));
+            let R() = (10i + j)_(i,j,2,3);
+            print(R());
+            let M(t) = (t^(i+j-2))_(i,j,2);
+            print(limit(M(t), t, 0));
+            print(det(M(t)));
+        "#
+        ),
+        "[[2, 3, 4], [3, 4, 5], [4, 5, 6]]\n12\n-1\n[[11, 12, 13], [21, 22, 23]]\n[[1, 0], [0, 0]]\n0\n"
+    );
+}
+
+#[test]
 fn exact_matrix_power_limits_cover_diagonal_and_nondiagonal_sequences() {
     assert_eq!(
         output(r#"

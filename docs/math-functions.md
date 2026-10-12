@@ -115,6 +115,14 @@ Matrix products are available through either operator syntax or the `matmul`
 builtin. `A * B` and `matmul(A, B)` perform matrix × matrix multiplication;
 `A * v` and `matmul(A, v)` treat the vector as a column vector. Inner
 dimensions must align.
+
+Matrices can also be generated from an indexed rule. `let A(n) =
+(i+j)_(i,j);` defines an `n` by `n` matrix-valued function, using one-based
+`i` and `j` while evaluating the rule. Explicit forms are
+`(expression)_(i,j,size)` and `(expression)_(i,j,rows,columns)`. Generated
+matrices are ordinary exact matrices, including when their entries contain
+symbols, so the same determinant, inverse, row-reduction, spectral, and
+calculus tools consume them directly.
 The postfix form `A'` is equivalent to `transpose(A)` and binds more tightly
 than exponentiation and multiplication.
 
@@ -336,6 +344,9 @@ inventory.
 | `gcd(a, b)`, `lcm(a, b)` | exact integer operations |
 | `degrees(x)`, `radians(x)` | angle conversion |
 | `evalf(expr)` | approximation at the active precision |
+| `int(value)` | integer cast; strings accepted, real values truncate toward zero |
+| `double(value)` | arbitrary-precision decimal cast; strings accepted |
+| `rational(value)` | exact reduced rational cast; accepts strings such as `"7/9"` |
 
 ### Elementary functions
 

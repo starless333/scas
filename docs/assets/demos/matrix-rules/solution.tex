@@ -1,0 +1,152 @@
+\documentclass[11pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{upgreek}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage[margin=1in]{geometry}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.65em}
+\setlength{\jot}{0.45em}
+\emergencystretch=2em
+\allowdisplaybreaks[4]
+\DeclareUnicodeCharacter{0393}{\ensuremath{\Gamma}}
+\DeclareUnicodeCharacter{0391}{A}
+\DeclareUnicodeCharacter{0392}{B}
+\DeclareUnicodeCharacter{0394}{\ensuremath{\Delta}}
+\DeclareUnicodeCharacter{0395}{E}
+\DeclareUnicodeCharacter{0396}{Z}
+\DeclareUnicodeCharacter{0397}{H}
+\DeclareUnicodeCharacter{0398}{\ensuremath{\Theta}}
+\DeclareUnicodeCharacter{0399}{I}
+\DeclareUnicodeCharacter{039A}{K}
+\DeclareUnicodeCharacter{039B}{\ensuremath{\Lambda}}
+\DeclareUnicodeCharacter{039C}{M}
+\DeclareUnicodeCharacter{039D}{N}
+\DeclareUnicodeCharacter{039E}{\ensuremath{\Xi}}
+\DeclareUnicodeCharacter{039F}{O}
+\DeclareUnicodeCharacter{03A0}{\ensuremath{\Pi}}
+\DeclareUnicodeCharacter{03A1}{P}
+\DeclareUnicodeCharacter{03A3}{\ensuremath{\Sigma}}
+\DeclareUnicodeCharacter{03A4}{T}
+\DeclareUnicodeCharacter{03A5}{Y}
+\DeclareUnicodeCharacter{03A6}{\ensuremath{\Phi}}
+\DeclareUnicodeCharacter{03A7}{X}
+\DeclareUnicodeCharacter{03A8}{\ensuremath{\Psi}}
+\DeclareUnicodeCharacter{03A9}{\ensuremath{\Omega}}
+\DeclareUnicodeCharacter{03B1}{\ensuremath{\alpha}}
+\DeclareUnicodeCharacter{03B2}{\ensuremath{\beta}}
+\DeclareUnicodeCharacter{03B3}{\ensuremath{\gamma}}
+\DeclareUnicodeCharacter{03B4}{\ensuremath{\delta}}
+\DeclareUnicodeCharacter{03B5}{\ensuremath{\epsilon}}
+\DeclareUnicodeCharacter{03B6}{\ensuremath{\zeta}}
+\DeclareUnicodeCharacter{03B7}{\ensuremath{\eta}}
+\DeclareUnicodeCharacter{03B8}{\ensuremath{\theta}}
+\DeclareUnicodeCharacter{03B9}{\ensuremath{\iota}}
+\DeclareUnicodeCharacter{03BA}{\ensuremath{\kappa}}
+\DeclareUnicodeCharacter{03BB}{\ensuremath{\lambda}}
+\DeclareUnicodeCharacter{03BC}{\ensuremath{\mu}}
+\DeclareUnicodeCharacter{03BD}{\ensuremath{\nu}}
+\DeclareUnicodeCharacter{03BE}{\ensuremath{\xi}}
+\DeclareUnicodeCharacter{03BF}{\ensuremath{o}}
+\DeclareUnicodeCharacter{03C0}{\ensuremath{\pi}}
+\DeclareUnicodeCharacter{03C1}{\ensuremath{\rho}}
+\DeclareUnicodeCharacter{03C2}{\ensuremath{\varsigma}}
+\DeclareUnicodeCharacter{03C3}{\ensuremath{\sigma}}
+\DeclareUnicodeCharacter{03C4}{\ensuremath{\tau}}
+\DeclareUnicodeCharacter{03C5}{\ensuremath{\upsilon}}
+\DeclareUnicodeCharacter{03C6}{\ensuremath{\phi}}
+\DeclareUnicodeCharacter{03C7}{\ensuremath{\chi}}
+\DeclareUnicodeCharacter{03C8}{\ensuremath{\psi}}
+\DeclareUnicodeCharacter{03C9}{\ensuremath{\omega}}
+\DeclareUnicodeCharacter{03D0}{\ensuremath{\beta}}
+\DeclareUnicodeCharacter{03D1}{\ensuremath{\vartheta}}
+\DeclareUnicodeCharacter{03D5}{\ensuremath{\varphi}}
+\DeclareUnicodeCharacter{03D6}{\ensuremath{\varpi}}
+\DeclareUnicodeCharacter{03F0}{\ensuremath{\kappa}}
+\DeclareUnicodeCharacter{03F1}{\ensuremath{\varrho}}
+\DeclareUnicodeCharacter{03F5}{\ensuremath{\varepsilon}}
+\DeclareUnicodeCharacter{00D7}{\ensuremath{\times}}
+\DeclareUnicodeCharacter{00B7}{\ensuremath{\cdot}}
+\DeclareUnicodeCharacter{2212}{\ensuremath{-}}
+\DeclareUnicodeCharacter{221E}{\ensuremath{\infty}}
+\DeclareUnicodeCharacter{2192}{\ensuremath{\to}}
+\DeclareUnicodeCharacter{2264}{\ensuremath{\leq}}
+\DeclareUnicodeCharacter{2265}{\ensuremath{\geq}}
+\DeclareUnicodeCharacter{2260}{\ensuremath{\neq}}
+\DeclareUnicodeCharacter{2013}{--}
+\DeclareUnicodeCharacter{2014}{---}
+\DeclareUnicodeCharacter{2018}{\textquoteleft}
+\DeclareUnicodeCharacter{2019}{\textquoteright}
+\DeclareUnicodeCharacter{201C}{\textquotedblleft}
+\DeclareUnicodeCharacter{201D}{\textquotedblright}
+\begin{document}
+\begin{center}{\Large\bfseries Matrices from Rules}\\[0.35em]{\large Exact construction, symbolic algebra, and limits}\end{center}
+\vspace{0.25em}\hrule\vspace{1em}
+A matrix rule evaluates one expression over one-based row and column indices.
+
+\section*{An exact Hilbert matrix}
+Define the \(n\times n\) Hilbert matrix by
+\[H(n)=\left(\frac{1}{i+j-1}\right)_{i,j}.\]
+
+At \(n=3\), the rule expands to
+
+\[H\left(3\right) = \begin{pmatrix}1 & \frac{1}{2} & \frac{1}{3} \\ \frac{1}{2} & \frac{1}{3} & \frac{1}{4} \\ \frac{1}{3} & \frac{1}{4} & \frac{1}{5}\end{pmatrix}\]
+
+Its determinant stays exact:
+
+\[\begin{aligned}H\left(3\right) &= \begin{pmatrix}1 & \frac{1}{2} & \frac{1}{3} \\ \frac{1}{2} & \frac{1}{3} & \frac{1}{4} \\ \frac{1}{3} & \frac{1}{4} & \frac{1}{5}\end{pmatrix} \\
+&\sim \begin{pmatrix}1 & \frac{1}{2} & \frac{1}{3} \\ 0 & \frac{\frac{1}{4}}{3} & \frac{\frac{1}{3}}{4} \\ \frac{1}{3} & \frac{1}{4} & \frac{1}{5}\end{pmatrix} && \left(R_{2}\leftarrow R_{2}-\left(\frac{1}{2}\right)R_{1}\right) \\
+&\sim \begin{pmatrix}1 & \frac{1}{2} & \frac{1}{3} \\ 0 & \frac{\frac{1}{4}}{3} & \frac{\frac{1}{3}}{4} \\ 0 & \frac{\frac{1}{3}}{4} & \frac{\frac{4}{9}}{5}\end{pmatrix} && \left(R_{3}\leftarrow R_{3}-\left(\frac{1}{3}\right)R_{1}\right) \\
+&\sim \begin{pmatrix}1 & \frac{1}{2} & \frac{1}{3} \\ 0 & \frac{\frac{1}{4}}{3} & \frac{\frac{1}{3}}{4} \\ 0 & 0 & \frac{\frac{1}{36}}{5}\end{pmatrix} && \left(R_{3}\leftarrow R_{3}-\left(\frac{\frac{\frac{1}{3}}{4}}{\frac{\frac{1}{4}}{3}}\right)R_{2}\right) \\
+\det\left(H\left(3\right)\right) &= 1\cdot \frac{\frac{1}{4}}{3}\cdot \frac{\frac{1}{36}}{5} \\
+&= \frac{1}{2160}\end{aligned}\]
+
+Gauss--Jordan elimination gives an integer inverse:
+
+\[\begin{aligned}\left[H\left(3\right)\mid I\right] &= \begin{pmatrix}1 & \frac{1}{2} & \frac{1}{3} & 1 & 0 & 0 \\ \frac{1}{2} & \frac{1}{3} & \frac{1}{4} & 0 & 1 & 0 \\ \frac{1}{3} & \frac{1}{4} & \frac{1}{5} & 0 & 0 & 1\end{pmatrix} \\
+&\sim \begin{pmatrix}1 & \frac{1}{2} & \frac{1}{3} & 1 & 0 & 0 \\ 0 & \frac{\frac{1}{4}}{3} & \frac{\frac{1}{3}}{4} & -\left(\frac{1}{2}\right) & 1 & 0 \\ \frac{1}{3} & \frac{1}{4} & \frac{1}{5} & 0 & 0 & 1\end{pmatrix} && \left(R_{2}\leftarrow R_{2}-\left(\frac{1}{2}\right)R_{1}\right) \\
+&\sim \begin{pmatrix}1 & \frac{1}{2} & \frac{1}{3} & 1 & 0 & 0 \\ 0 & \frac{\frac{1}{4}}{3} & \frac{\frac{1}{3}}{4} & -\left(\frac{1}{2}\right) & 1 & 0 \\ 0 & \frac{\frac{1}{3}}{4} & \frac{\frac{4}{9}}{5} & -\left(\frac{1}{3}\right) & 0 & 1\end{pmatrix} && \left(R_{3}\leftarrow R_{3}-\left(\frac{1}{3}\right)R_{1}\right) \\
+&\sim \begin{pmatrix}1 & \frac{1}{2} & \frac{1}{3} & 1 & 0 & 0 \\ 0 & 1 & \frac{\frac{\frac{1}{3}}{4}}{\frac{\frac{1}{4}}{3}} & \frac{-\left(\frac{1}{2}\right)}{\frac{\frac{1}{4}}{3}} & \frac{1}{\frac{\frac{1}{4}}{3}} & 0 \\ 0 & \frac{\frac{1}{3}}{4} & \frac{\frac{4}{9}}{5} & -\left(\frac{1}{3}\right) & 0 & 1\end{pmatrix} && \left(R_{2}\leftarrow \frac{1}{\frac{\frac{1}{4}}{3}}R_{2}\right) \\
+&\sim \begin{pmatrix}1 & 0 & \frac{-\frac{1}{2}}{3} & 4 & -6 & 0 \\ 0 & 1 & \frac{\frac{\frac{1}{3}}{4}}{\frac{\frac{1}{4}}{3}} & \frac{-\left(\frac{1}{2}\right)}{\frac{\frac{1}{4}}{3}} & \frac{1}{\frac{\frac{1}{4}}{3}} & 0 \\ 0 & \frac{\frac{1}{3}}{4} & \frac{\frac{4}{9}}{5} & -\left(\frac{1}{3}\right) & 0 & 1\end{pmatrix} && \left(R_{1}\leftarrow R_{1}-\left(\frac{1}{2}\right)R_{2}\right) \\
+&\sim \begin{pmatrix}1 & 0 & \frac{-\frac{1}{2}}{3} & 4 & -6 & 0 \\ 0 & 1 & \frac{\frac{\frac{1}{3}}{4}}{\frac{\frac{1}{4}}{3}} & \frac{-\left(\frac{1}{2}\right)}{\frac{\frac{1}{4}}{3}} & \frac{1}{\frac{\frac{1}{4}}{3}} & 0 \\ 0 & 0 & \frac{\frac{1}{36}}{5} & \frac{1}{6} & -1 & 1\end{pmatrix} && \left(R_{3}\leftarrow R_{3}-\left(\frac{\frac{1}{3}}{4}\right)R_{2}\right) \\
+&\sim \begin{pmatrix}1 & 0 & \frac{-\frac{1}{2}}{3} & 4 & -6 & 0 \\ 0 & 1 & \frac{\frac{\frac{1}{3}}{4}}{\frac{\frac{1}{4}}{3}} & \frac{-\left(\frac{1}{2}\right)}{\frac{\frac{1}{4}}{3}} & \frac{1}{\frac{\frac{1}{4}}{3}} & 0 \\ 0 & 0 & 1 & \frac{\frac{1}{6}}{\frac{\frac{1}{36}}{5}} & \frac{-1}{\frac{\frac{1}{36}}{5}} & \frac{1}{\frac{\frac{1}{36}}{5}}\end{pmatrix} && \left(R_{3}\leftarrow \frac{1}{\frac{\frac{1}{36}}{5}}R_{3}\right) \\
+&\sim \begin{pmatrix}1 & 0 & 0 & 9 & -36 & 30 \\ 0 & 1 & \frac{\frac{\frac{1}{3}}{4}}{\frac{\frac{1}{4}}{3}} & \frac{-\left(\frac{1}{2}\right)}{\frac{\frac{1}{4}}{3}} & \frac{1}{\frac{\frac{1}{4}}{3}} & 0 \\ 0 & 0 & 1 & \frac{\frac{1}{6}}{\frac{\frac{1}{36}}{5}} & \frac{-1}{\frac{\frac{1}{36}}{5}} & \frac{1}{\frac{\frac{1}{36}}{5}}\end{pmatrix} && \left(R_{1}\leftarrow R_{1}-\left(\frac{-\frac{1}{2}}{3}\right)R_{3}\right) \\
+&\sim \begin{pmatrix}1 & 0 & 0 & 9 & -36 & 30 \\ 0 & 1 & 0 & \frac{-3}{\frac{\frac{1}{4}}{3}} & \frac{16}{\frac{\frac{1}{4}}{3}} & -180 \\ 0 & 0 & 1 & \frac{\frac{1}{6}}{\frac{\frac{1}{36}}{5}} & \frac{-1}{\frac{\frac{1}{36}}{5}} & \frac{1}{\frac{\frac{1}{36}}{5}}\end{pmatrix} && \left(R_{2}\leftarrow R_{2}-\left(\frac{\frac{\frac{1}{3}}{4}}{\frac{\frac{1}{4}}{3}}\right)R_{3}\right) \\
+H\left(3\right)^{-1} &= \begin{pmatrix}9 & -36 & 30 \\ -36 & 192 & -180 \\ 30 & -180 & 180\end{pmatrix}\end{aligned}\]
+
+\section*{Symbolic entries and matrix-valued functions}
+An explicit dimension lets the function parameter remain inside the entries:
+\[S(t)=\left(t^{i+j-2}\right)_{i,j=1}^{2}.\]
+
+\[S\left(t\right) = \begin{pmatrix}1 & t \\ t & t^{2}\end{pmatrix}\]
+
+The rows are symbolically dependent, so the determinant vanishes:
+
+\[\begin{aligned}S\left(t\right) &= \begin{pmatrix}1 & t \\ t & t^{2}\end{pmatrix} \\
+&\sim \begin{pmatrix}1 & t \\ 0 & 0\end{pmatrix} && \left(R_{2}\leftarrow R_{2}-\left(t\right)R_{1}\right) \\
+\det\left(S\left(t\right)\right) &= 0\end{aligned}\]
+
+Matrix limits are taken entry by entry:
+
+\[\lim_{t\to 0} S\left(t\right) = \begin{pmatrix}1 & 0 \\ 0 & 0\end{pmatrix}\]
+
+A rectangular rule supplies both dimensions explicitly:
+
+\[\left(10i + j\right)_{i,j}^{2\times3} = \begin{pmatrix}11 & 12 & 13 \\ 21 & 22 & 23\end{pmatrix}\]
+
+\section*{Limits through linear algebra}
+For the averaging matrix \(P\), powers converge to projection onto the steady state.
+
+\[\lim_{n\to \infty} P^{n} = \begin{pmatrix}\frac{1}{2} & \frac{1}{2} \\ \frac{1}{2} & \frac{1}{2}\end{pmatrix}\]
+
+Continuous linear-algebra operations consume the same symbolic sequence:
+
+\begin{align*}\lim_{n\to \infty} \operatorname{tr}\left(P^{n}\right) = 1 \\
+\lim_{n\to \infty} \det\left(P^{n}\right) = 0\end{align*}
+
+The source definition, exact calculations, and displayed matrices above are all evaluated by SCAS while the document is built.
+\end{document}

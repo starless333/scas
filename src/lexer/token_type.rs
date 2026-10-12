@@ -17,6 +17,9 @@ pub enum TokenType {
     Comma,      // done
     Dot,        // done
     Apostrophe,
+    /// The standalone `_` in an indexed matrix rule such as
+    /// `(i + j)_(i,j)`. Underscores inside names remain part of identifiers.
+    Subscript,
     Colon,     // done
     Semicolon, // done
     FlowOperator,

@@ -131,15 +131,20 @@ print(data["exact"]);       // exact integer</code></pre>
 let rows = read_csv("measurements.csv");
 print(rows[0]);     // [name, value]
 print(rows[1][0]);  // Ada, A.
-print(rows[1][1]);  // 42 (a string)</code></pre>
-          <div class="callout"><strong>Current data boundary</strong>CSV fields remain strings, and SCAS does not yet provide a table value, schema inference, or string-to-number parsing API. JSON is the better interchange format when numeric types must survive import.</div>
+print(rows[1][1]);  // 42 (a string)
+print(int(rows[1][1]) + 8); // 50</code></pre>
+          <div class="callout"><strong>CSV conversion</strong>CSV fields remain strings. Convert numeric fields explicitly with <code>int</code>, <code>double</code>, or <code>rational</code>; JSON preserves numeric types automatically.</div>
         </section>
 
         <section id="interactive">
           <h2 class="rule-heading">Interactive input and arguments</h2>
           <p><code>input</code> accepts zero arguments or one string prompt. It always returns a string with the native line ending removed.</p>
           <pre><code>let name = input("Name: ");
+let count = int(input("Count: "));
+let rate = double(input("Rate: "));
+let share = rational(input("Share (for example 2/3): "));
 print(format("Hello, {}", name));</code></pre>
+          <p><code>int</code> truncates real numeric values toward zero. <code>double</code> creates an arbitrary-precision decimal at the active precision. <code>rational</code> preserves finite decimals exactly and parses fraction strings such as <code>"2/3"</code>. Invalid text and zero denominators are runtime errors with source locations.</p>
           <p>In batch automation, prefer files or arguments so the run does not pause for a person. Browser evaluation reports that input is required and lets the interface collect an answer for the run.</p>
 
           <h3>Arguments expose the host invocation</h3>

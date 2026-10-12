@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="SCAS indexed matrix rules, symbolic entries, exact linear algebra, and matrix limits shown as source beside a three-page LaTeX render.">
+  <title>Matrix Rules Demo · SCAS</title>
+  <link rel="stylesheet" href="assets/site.css">
+  <script defer src="assets/site.js"></script>
+</head>
+<body>
+<a class="skip-link" href="#main-content">Skip to content</a>
+<div class="mobile-bar"><a href="index.html">SCAS docs</a><button type="button" data-nav-toggle aria-expanded="false" aria-controls="documentation-nav" aria-label="Open documentation navigation">Menu</button></div>
+<div class="layout">
+  <aside class="rail" id="documentation-nav">
+    <div class="brand"><a href="index.html">SCAS</a><span>0.1.0</span></div>
+    <nav aria-label="Documentation">
+      <div class="nav-group"><span>Start</span><a href="index.html">Overview</a><a href="getting-started.html">Getting started</a><a href="language.html">Language</a></div>
+      <div class="nav-group"><span>Mathematics</span><a href="math-functions.html">Functions &amp; precision</a><a href="builtins.html">Builtin reference</a><a href="calculus.html">Calculus</a><a href="linear-algebra.html">Linear algebra</a></div>
+      <div class="nav-group"><span>Workflow</span><a href="documenter.html">Executable documents</a><a href="ide.html">Desktop IDE &amp; CLI</a><a href="io.html">Input &amp; output</a><a href="internals.html">Architecture &amp; limits</a><a href="correctness.html">Correctness &amp; performance</a></div>
+      <div class="nav-group"><span>Demos</span><a href="demo-mit-diagonalization.html">MIT diagonalization</a><a aria-current="page" href="demo-matrix-rules.html">Matrix rules</a></div>
+      <div class="nav-group"><span>On this page</span><a href="#workbench">Source + result</a><a href="#coverage">What it shows</a><a href="#complete-render">Complete render</a></div>
+    </nav>
+  </aside>
+
+  <main class="document demo-document" id="main-content" tabindex="-1">
+    <header class="demo-masthead">
+      <div>
+        <h1>Define the pattern. Get the matrix.</h1>
+        <p>Indexed rules expand directly into exact or symbolic matrices. This executable document builds a Hilbert matrix, sends generated values through determinant and inverse algorithms, and takes limits of matrix-valued functions and matrix powers.</p>
+      </div>
+      <div class="demo-actions" aria-label="Demo downloads">
+        <a class="action-primary" href="assets/demos/matrix-rules/solution.scas" download>Download .scas</a>
+        <a href="assets/demos/matrix-rules/solution.pdf">Open PDF</a>
+        <a href="assets/demos/matrix-rules/solution.tex" download>Generated .tex</a>
+      </div>
+    </header>
+
+    <section class="demo-workbench" id="workbench" aria-label="SCAS source and rendered LaTeX">
+      <div class="demo-pane source-pane">
+        <div class="demo-pane-head"><strong>solution.scas</strong><span data-source-meta>bundled source preview</span></div>
+        <pre class="demo-source"><code data-source-file="assets/demos/matrix-rules/solution.scas">/// Matrices from Rules
+/// A matrix rule evaluates one expression over one-based indices.
+
+/// Define the n by n Hilbert matrix.
+let H(n) = (1 / (i + j - 1))_(i,j);
+\[
+    H(3) =&gt;
+\]
+\[
+    det_steps(H(3)) =&gt;
+\]
+\[
+    inverse_steps(H(3)) =&gt;
+\]
+
+/// Keep t symbolic while fixing the generated size.
+let S(t) = (t^(i + j - 2))_(i,j,2);
+\[
+    S(t) =&gt;
+\]
+\[
+    det(S(t)) =&gt;
+\]
+\[
+    limit(S(t), t, 0) =&gt;
+\]
+
+/// Explicit rectangular dimensions.
+\[
+    (10i + j)_(i,j,2,3) =&gt;
+\]
+
+/// Matrix power limits flow through linear algebra.
+let P = [3/4, 1/4; 1/4, 3/4];
+\[
+    limit(P^n, n, "infinity") =&gt;
+\]
+\{
+    limit(trace(P^n), n, "infinity") =&gt;;
+    limit(det(P^n), n, "infinity") =&gt;;
+\}</code></pre>
+      </div>
+      <div class="demo-pane render-pane">
+        <div class="demo-pane-head"><strong>LaTeX output</strong><span>page 1 of 3 · compiled with pdfTeX</span></div>
+        <div class="render-sheet"><a class="page-link" href="assets/demos/matrix-rules/page-1.svg" aria-label="Open rendered matrix-rules page 1 at full size"><img src="assets/demos/matrix-rules/page-1.svg" alt="Rendered first page showing the Hilbert rule, its generated matrix, and exact determinant elimination."></a></div>
+        <a class="continue-link" href="#complete-render">Continue through all three rendered pages</a>
+      </div>
+    </section>
+
+    <section class="demo-narrative" id="coverage">
+      <h2>One value type from rule to result.</h2>
+      <p>The rule syntax creates ordinary nested matrix values. No conversion step separates construction from the existing exact algorithms, so generated matrices can be multiplied, reduced, inverted, differentiated by entry, or passed through limits.</p>
+      <dl class="coverage-list">
+        <div><dt>Implicit square size</dt><dd><code>let H(n) = (...)_(i,j)</code> uses the sole function parameter for both dimensions.</dd></div>
+        <div><dt>Symbolic entries</dt><dd><code>(t^(i+j-2))_(i,j,2)</code> fixes the shape while retaining <code>t</code> in every generated entry.</dd></div>
+        <div><dt>Explicit rectangles</dt><dd>The final two rule arguments specify row and column counts independently.</dd></div>
+        <div><dt>Entrywise limits</dt><dd>Finite matrix limits preserve shape, while supported matrix-power sequences also flow through trace and determinant.</dd></div>
+      </dl>
+    </section>
+
+    <section class="complete-render" id="complete-render">
+      <div class="render-heading">
+        <div><h2>The complete three-page render</h2><p>The pages below were compiled from the downloadable SCAS source and generated TeX.</p></div>
+        <a href="assets/demos/matrix-rules/solution.pdf">Read as PDF</a>
+      </div>
+      <div class="page-gallery">
+        <figure><a class="page-link" href="assets/demos/matrix-rules/page-1.svg" aria-label="Open matrix-rules page 1"><img src="assets/demos/matrix-rules/page-1.svg" alt="Page 1: Hilbert rule, generated matrix, and exact determinant steps."></a><figcaption><a href="assets/demos/matrix-rules/page-1.svg">1 / 3 · open full size</a></figcaption></figure>
+        <figure><a class="page-link" href="assets/demos/matrix-rules/page-2.svg" aria-label="Open matrix-rules page 2"><img src="assets/demos/matrix-rules/page-2.svg" alt="Page 2: Gauss-Jordan work and exact inverse of the generated Hilbert matrix."></a><figcaption><a href="assets/demos/matrix-rules/page-2.svg">2 / 3 · open full size</a></figcaption></figure>
+        <figure><a class="page-link" href="assets/demos/matrix-rules/page-3.svg" aria-label="Open matrix-rules page 3"><img src="assets/demos/matrix-rules/page-3.svg" alt="Page 3: symbolic generated entries, rectangular rules, and matrix limits."></a><figcaption><a href="assets/demos/matrix-rules/page-3.svg">3 / 3 · open full size</a></figcaption></figure>
+      </div>
+    </section>
+
+    <section class="accessible-results" aria-labelledby="matrix-result-summary">
+      <h2 id="matrix-result-summary">Results in text</h2>
+      <details>
+        <summary>Read an accessible summary of the generated results</summary>
+        <div>
+          <p>The 3 by 3 Hilbert rule produces rows [1, 1/2, 1/3], [1/2, 1/3, 1/4], and [1/3, 1/4, 1/5]. Its determinant is 1/2160 and its inverse has integer rows [9, -36, 30], [-36, 192, -180], and [30, -180, 180].</p>
+          <p>The symbolic 2 by 2 rule produces [[1, t], [t, t squared]], whose determinant is zero and whose limit at t = 0 is [[1, 0], [0, 0]]. The rectangular rule produces [[11, 12, 13], [21, 22, 23]]. Powers of the averaging matrix converge to the all-one-half projection, with limiting trace 1 and determinant 0.</p>
+        </div>
+      </details>
+    </section>
+
+    <footer class="footer">SCAS demo · Continue with the <a href="language.html">matrix rule syntax</a>, <a href="linear-algebra.html">linear algebra guide</a>, or <a href="documenter.html">executable documents</a>.</footer>
+  </main>
+</div>
+</body>
+</html>

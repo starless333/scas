@@ -32,6 +32,39 @@ fn imports_share_scope_and_virtual_io_supports_text_and_input() {
 }
 
 #[test]
+fn numeric_casts_convert_input_strings_and_numeric_values() {
+    let io = Rc::new(MemoryIo::new());
+    for value in ["42", "2.5", "7/9", "-3.8"] {
+        io.queue_input(value.to_owned());
+    }
+    let source = r#"
+        print(int(input("integer: ")));
+        let decimal = double(input("decimal: "));
+        print(decimal);
+        print(type_of(decimal));
+        print(rational(input("rational: ")));
+        print(int(input("truncate: ")));
+        print(rational(0.125));
+        print(double(1/4));
+        print(int(7/3));
+    "#;
+    let mut scanner = Scanner::new(source);
+    let program = Parser::new(scanner.scan_tokens().clone()).parse().unwrap();
+    let mut interpreter =
+        Interpreter::with_limits_and_io(scanner.into_symbols(), Vec::new(), Limits::default(), io);
+    interpreter.run(&program).unwrap();
+    assert_eq!(
+        String::from_utf8(interpreter.output_mut().clone()).unwrap(),
+        "42\n2.5\ndecimal\n7/9\n-3\n1/8\n0.25\n2\n"
+    );
+
+    assert_eq!(
+        runtime_error("print(rational(\"1/0\"));"),
+        "rational cannot convert a rational with denominator zero"
+    );
+}
+
+#[test]
 fn bundled_scas_library_imports_in_native_execution() {
     assert_eq!(
         output("import \"stdlib/core.scas\"; print(square(7)); print(lerp(0, 10, 1/4));"),
@@ -331,6 +364,7 @@ fn resource_limits_stop_runaway_and_expensive_programs() {
         max_decimal_precision: 12,
         max_decimal_scale: 12,
         max_number_bits: 8,
+        max_matrix_elements: 3,
         ..Limits::default()
     };
 
@@ -349,6 +383,10 @@ fn resource_limits_stop_runaway_and_expensive_programs() {
         (
             "print(255 * 255);",
             "numeric result exceeds the 8 bit limit",
+        ),
+        (
+            "print((i + j)_(i,j,2));",
+            "matrix rule exceeds the 3 element execution limit",
         ),
     ];
     for (source, expected) in failures {

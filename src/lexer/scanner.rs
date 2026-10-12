@@ -160,6 +160,7 @@ impl Scanner {
                 }
             }
             '\'' => self.add_token(TokenType::Apostrophe),
+            '_' if self.peek() == '(' => self.add_token(TokenType::Subscript),
             ':' => self.add_token(TokenType::Colon),
             '=' => {
                 if self.check('=') {

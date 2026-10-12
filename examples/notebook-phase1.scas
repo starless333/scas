@@ -1,0 +1,13 @@
+/// # Phase 1 notebook fixture
+/// The same source runs as a script and as notebook cells.
+
+// %% parameters
+let x = 6;
+let square(n) = n * n;
+
+// %% result
+\[ square(x) => \]
+print(square(x));
+
+// %% verification
+assert(square(x) == 36);

@@ -6802,7 +6802,7 @@ fn token_highlight(token: TokenType) -> Option<Highlight> {
         | Tilde | ShiftLeft | ShiftRight | ShiftLeftEqual | ShiftRightEqual | Equal | PlusEqual
         | MinusEqual | StarEqual | SlashEqual | ModEqual | PowEqual | AmpersandEqual
         | PipeEqual | TildeEqual | EqualEqual | BangEqual | Less | LessEqual | Greater
-        | Apostrophe | GreaterEqual | Bang => Highlight::Operator,
+        | Apostrophe | Subscript | GreaterEqual | Bang => Highlight::Operator,
     })
 }
 
@@ -6909,6 +6909,7 @@ fn live_preview_limits() -> Limits {
         max_decimal_precision: 512,
         max_transcendental_precision: 256,
         max_number_bits: 1_000_000,
+        max_matrix_elements: 10_000,
         ..Limits::default()
     }
 }

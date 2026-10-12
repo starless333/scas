@@ -4,7 +4,7 @@
 use crate::ast::statement::FunctionBody;
 use crate::ast::{SourceSpan, StatementKind};
 use crate::document::{self, Document, DocumentFragment, FragmentKind};
-use crate::intelligence::{evaluate_hover, SourceIndex};
+use crate::intelligence::SourceIndex;
 use crate::latex::LatexRenderer;
 use crate::lexer::{Scanner, TokenType};
 use crate::parser::Parser;
@@ -17,7 +17,7 @@ use eframe::egui::{
 };
 use serde_json::{json, Value};
 use std::collections::HashSet;
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -819,6 +819,7 @@ struct WebApp {
     due: Option<f64>,
     worker: Option<Worker>,
     _onmessage: Option<Closure<dyn FnMut(MessageEvent)>>,
+    response_sender: Sender<String>,
     responses: Receiver<String>,
     status: String,
     source_name: String,
@@ -850,6 +851,7 @@ struct WebApp {
     rename_input: String,
     references_target: Option<String>,
     hover_key: Option<usize>,
+    hover_generation: u64,
     hover_since: f64,
     hover_value: Option<String>,
     first_frame: bool,
@@ -862,11 +864,15 @@ struct WebApp {
 impl WebApp {
     fn new(context: egui::Context) -> Self {
         let (sender, responses) = mpsc::channel();
+        let response_sender = sender.clone();
         let (worker, onmessage, status) = match create_worker() {
             Ok(worker) => {
+                let repaint_context = context.clone();
                 let onmessage = Closure::wrap(Box::new(move |event: MessageEvent| {
                     if let Some(result) = event.data().as_string() {
-                        let _ = sender.send(result);
+                        if sender.send(result).is_ok() {
+                            repaint_context.request_repaint();
+                        }
                     }
                 }) as Box<dyn FnMut(_)>);
                 worker.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
@@ -980,6 +986,7 @@ impl WebApp {
             due: None,
             worker,
             _onmessage: onmessage,
+            response_sender,
             responses,
             status,
             source_name: source_name.to_owned(),
@@ -1011,6 +1018,7 @@ impl WebApp {
             rename_input: String::new(),
             references_target: None,
             hover_key: None,
+            hover_generation: 0,
             hover_since: 0.0,
             hover_value: None,
             first_frame: true,
@@ -1228,12 +1236,79 @@ impl WebApp {
         false
     }
 
+    fn request_hover(&mut self, byte: usize) {
+        // Cache an empty result while the worker runs so repaints cannot queue
+        // the same expensive parse and evaluation again.
+        self.hover_value = Some(String::new());
+        self.generation = self.generation.wrapping_add(1);
+        self.hover_generation = self.generation;
+        if let Some(worker) = &self.worker {
+            let packet = json!({
+                "kind": "hover",
+                "generation": self.hover_generation,
+                "source": self.source,
+                "byte": byte,
+            });
+            let _ = worker.post_message(&JsValue::from_str(&packet.to_string()));
+        }
+    }
+
+    /// Hard cancellation for Wasm execution. A busy Web Worker cannot process
+    /// an interrupt message, so termination and replacement is the only true
+    /// cancellation boundary in browsers.
+    fn interrupt_worker(&mut self) {
+        if let Some(worker) = self.worker.take() {
+            worker.terminate();
+        }
+        self.generation = self.generation.wrapping_add(1);
+        self.run_generation = self.generation;
+        self.plot_generation = self.generation;
+        self.repl_generation = self.generation;
+        self.lsp_version = 0;
+        self.pending = false;
+        self.pending_pdf = false;
+        self.repl_pending = false;
+        self.plot_due = None;
+        self.hover_generation = 0;
+        self.hover_value = None;
+        match create_worker() {
+            Ok(worker) => {
+                let sender = self.response_sender.clone();
+                let repaint_context = self.context.clone();
+                let onmessage = Closure::wrap(Box::new(move |event: MessageEvent| {
+                    if let Some(result) = event.data().as_string() {
+                        if sender.send(result).is_ok() {
+                            repaint_context.request_repaint();
+                        }
+                    }
+                }) as Box<dyn FnMut(_)>);
+                worker.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
+                self.worker = Some(worker);
+                self._onmessage = Some(onmessage);
+                self.status = "Execution cancelled; worker restarted".to_owned();
+            }
+            Err(_) => {
+                self._onmessage = None;
+                self.status = "Execution cancelled; worker restart failed".to_owned();
+            }
+        }
+    }
+
     fn poll(&mut self, context: &egui::Context) {
         while let Ok(response) = self.responses.try_recv() {
             let Ok(value) = serde_json::from_str::<Value>(&response) else {
                 continue;
             };
             let kind = value["kind"].as_str().unwrap_or("run");
+            if kind == "hover" {
+                if value["generation"].as_u64() == Some(self.hover_generation)
+                    && value["byte"].as_u64() == self.hover_key.map(|byte| byte as u64)
+                {
+                    self.hover_value = Some(value["value"].as_str().unwrap_or("").to_owned());
+                    context.request_repaint();
+                }
+                continue;
+            }
             if kind == "lsp" {
                 for notification in value["notifications"].as_array().into_iter().flatten() {
                     let params = &notification["params"];
@@ -1485,9 +1560,6 @@ impl WebApp {
                 }
             }
             context.request_repaint();
-        }
-        if self.pending {
-            context.request_repaint_after(Duration::from_millis(80));
         }
     }
 
@@ -2639,6 +2711,11 @@ impl eframe::App for WebApp {
         if self.highlight_source != self.source
             || self.highlight_font_size_bits != effective_editor_font_size.to_bits()
         {
+            if self.highlight_source != self.source {
+                self.hover_key = None;
+                self.hover_generation = 0;
+                self.hover_value = None;
+            }
             self.highlight_job = highlight_source(&self.source, editor_font.clone(), &theme);
             self.highlight_source.clone_from(&self.source);
             self.highlight_font_size_bits = effective_editor_font_size.to_bits();
@@ -2813,6 +2890,12 @@ impl eframe::App for WebApp {
                                 });
                             }
                             ui.menu_button("Run", |ui| {
+                                if (self.pending || self.repl_pending)
+                                    && ui.button("Interrupt").clicked()
+                                {
+                                    self.interrupt_worker();
+                                    ui.close_menu();
+                                }
                                 if ui.button("Run Active  Ctrl+Enter").clicked() {
                                     match self.tab {
                                         Tab::Document => {
@@ -3638,11 +3721,7 @@ impl eframe::App for WebApp {
                             self.hover_value = None;
                         } else if now - self.hover_since >= 0.45 {
                             if self.hover_value.is_none() {
-                                self.hover_value = Some(
-                                    evaluate_hover(&self.source, byte)
-                                        .map(|(_, value)| value)
-                                        .unwrap_or_default(),
-                                );
+                                self.request_hover(byte);
                             }
                             if let Some(value) = &self.hover_value {
                                 if !value.is_empty() {
@@ -3654,6 +3733,9 @@ impl eframe::App for WebApp {
                         }
                     }
                     if response.changed() {
+                        self.hover_key = None;
+                        self.hover_generation = 0;
+                        self.hover_value = None;
                         if self.auto_greek {
                             expand_greek_shortcuts(&mut self.source);
                         }

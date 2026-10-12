@@ -153,8 +153,13 @@ impl<'a> LatexRenderer<'a> {
             ExprKind::Nil => output.push_str(r"\varnothing"),
             ExprKind::Number(value) => output.push_str(value),
             // A source string in render position is the documented raw-LaTeX
-            // escape hatch.
-            ExprKind::String(value) => output.push_str(value),
+            // escape hatch. Infinity is also the public spelling accepted by
+            // limit(), so give it conventional mathematical notation.
+            ExprKind::String(value) => output.push_str(match value.as_str() {
+                "infinity" => r"\infty",
+                "-infinity" => r"-\infty",
+                _ => value,
+            }),
             ExprKind::Variable(symbol) => {
                 self.write_identifier(self.symbols.resolve(*symbol), output)
             }
@@ -292,6 +297,29 @@ impl<'a> LatexRenderer<'a> {
             return;
         }
         match (name, args) {
+            ("_", [entry, row, column, dimensions @ ..]) => {
+                output.push_str(r"\left(");
+                if let ExprKind::Group(inner) = &entry.kind {
+                    self.write_expr(inner, 0, output);
+                } else {
+                    self.write_expr(entry, 0, output);
+                }
+                output.push_str(r"\right)_{");
+                self.write_expr(row, 0, output);
+                output.push(',');
+                self.write_expr(column, 0, output);
+                output.push('}');
+                if !dimensions.is_empty() {
+                    output.push_str(r"^{");
+                    for (index, dimension) in dimensions.iter().enumerate() {
+                        if index > 0 {
+                            output.push_str(r"\times");
+                        }
+                        self.write_expr(dimension, 0, output);
+                    }
+                    output.push('}');
+                }
+            }
             ("sqrt", [argument]) => {
                 output.push_str(r"\sqrt{");
                 self.write_expr(argument, 0, output);
@@ -614,11 +642,15 @@ impl<'a> LatexRenderer<'a> {
                 output.push('}');
             }
             Value::Number(number) => output.push_str(&number.to_string()),
-            Value::Str(text) => {
-                output.push_str(r"\text{");
-                write_text_escaped(text, output);
-                output.push('}');
-            }
+            Value::Str(text) => match text.as_str() {
+                "infinity" => output.push_str(r"\infty"),
+                "-infinity" => output.push_str(r"-\infty"),
+                _ => {
+                    output.push_str(r"\text{");
+                    write_text_escaped(text, output);
+                    output.push('}');
+                }
+            },
             Value::Bool(boolean) => output.push_str(if *boolean {
                 r"\text{true}"
             } else {
@@ -1008,6 +1040,21 @@ mod tests {
         );
         assert_eq!(render("integral(sqrt(x), x)"), r"\int \sqrt{x}\,dx");
         assert_eq!(render("2 * x + 3x"), r"2 \cdot x + 3x");
+    }
+
+    #[test]
+    fn renders_infinity_strings_as_mathematical_infinity() {
+        assert_eq!(render(r#""infinity""#), r"\infty");
+        assert_eq!(render(r#""-infinity""#), r"-\infty");
+        assert_eq!(
+            render(r#"limit(1 / x, x, "infinity")"#),
+            r"\lim_{x\to \infty} \frac{1}{x}"
+        );
+
+        let symbols = SymbolTable::new();
+        let renderer = LatexRenderer::new(&symbols);
+        assert_eq!(renderer.value(&Value::Str("infinity".into())), r"\infty");
+        assert_eq!(renderer.value(&Value::Str("-infinity".into())), r"-\infty");
     }
 
     #[test]

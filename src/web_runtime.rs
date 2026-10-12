@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 use std::cell::RefCell;
 use std::io;
 use std::num::NonZeroU64;
+use std::rc::Rc;
 
 pub const STARTER: &str =
     "/// A live, typeset result\nlet angle = π / 6;\n\\[ sin(angle) => \\]\nprint(sin(angle));\n";
@@ -312,6 +313,7 @@ fn repl_source_latex(source: &str, symbols: &SymbolTable) -> Option<String> {
 
 thread_local! {
     static REPL: RefCell<BrowserRepl> = RefCell::new(BrowserRepl::new());
+    static NOTEBOOK: RefCell<Option<crate::notebook::NotebookSession>> = const { RefCell::new(None) };
 }
 
 pub fn browser_limits() -> Limits {
@@ -325,6 +327,7 @@ pub fn browser_limits() -> Limits {
         max_decimal_precision: 512,
         max_transcendental_precision: 256,
         max_number_bits: 1_000_000,
+        max_matrix_elements: 10_000,
         ..Limits::default()
     }
 }
@@ -357,7 +360,24 @@ pub fn process_request(request: &str) -> String {
     if source.chars().count() > browser_limits().max_source_chars {
         return json!({ "generation": generation, "error": "Source exceeds the browser size limit" }).to_string();
     }
+    if parsed["kind"]
+        .as_str()
+        .is_some_and(|kind| kind.starts_with("notebook_"))
+    {
+        return notebook_request(&parsed, source, generation);
+    }
     match parsed["kind"].as_str().unwrap_or("run") {
+        "hover" => {
+            let byte = parsed["byte"].as_u64().unwrap_or(0) as usize;
+            let value = crate::intelligence::evaluate_hover(source, byte).map(|(_, value)| value);
+            json!({
+                "generation": generation,
+                "kind": "hover",
+                "byte": byte,
+                "value": value,
+            })
+            .to_string()
+        }
         "repl" | "repl_numeric" => {
             let input = parsed["input"].as_str().unwrap_or("");
             let result = REPL.with(|repl| {
@@ -407,6 +427,84 @@ pub fn process_request(request: &str) -> String {
         }
         _ => run_request(source, generation, parsed["inputs"].as_array()),
     }
+}
+
+fn notebook_request(request: &Value, source: &str, request_generation: u64) -> String {
+    NOTEBOOK.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.is_none() {
+            let io: Rc<dyn crate::runtime_io::RuntimeIo> = crate::runtime_io::browser_io();
+            *slot = Some(crate::notebook::NotebookSession::with_io(
+                source,
+                ExecutionOptions {
+                    limits: browser_limits(),
+                    decimal_precision: NonZeroU64::new(34).unwrap(),
+                },
+                io,
+                crate::notebook::NotebookHost::Browser,
+                crate::notebook::NotebookTrust::Untrusted,
+            ));
+        }
+        let session = slot.as_mut().expect("notebook session was initialized");
+        if session.source() != source {
+            session.update_source(source);
+        }
+        let kind = request["kind"].as_str().unwrap_or("notebook_cells");
+        if kind == "notebook_restart" {
+            session.restart();
+            return json!({
+                "kind": kind,
+                "generation": request_generation,
+                "session_generation": session.generation(),
+                "cells": session.cells().iter().map(|cell| cell.json()).collect::<Vec<_>>(),
+                "states": session.states().iter().map(|state| state.as_str()).collect::<Vec<_>>(),
+                "events": [],
+            })
+            .to_string();
+        }
+        if kind == "notebook_interrupt" {
+            // Cooperative interruption is useful to native workers. Browser
+            // hosts terminate and recreate the Web Worker for hard cancel;
+            // this request still covers work that yields back to the queue.
+            session.interrupt();
+            return json!({
+                "kind": kind,
+                "generation": request_generation,
+                "session_generation": session.generation(),
+                "events": [],
+            })
+            .to_string();
+        }
+        if kind == "notebook_cells" {
+            return json!({
+                "kind": kind,
+                "generation": request_generation,
+                "session_generation": session.generation(),
+                "cells": session.cells().iter().map(|cell| cell.json()).collect::<Vec<_>>(),
+                "states": session.states().iter().map(|state| state.as_str()).collect::<Vec<_>>(),
+                "capabilities": session.capabilities().json(crate::notebook::NotebookHost::Browser),
+                "events": [],
+            })
+            .to_string();
+        }
+        let index = request["cell"].as_u64().unwrap_or(0) as usize;
+        let run = match kind {
+            "notebook_run_cell" => session.run_cell(index),
+            "notebook_run_above" => session.run_above(index),
+            _ => session.run_all(),
+        };
+        json!({
+            "kind": kind,
+            "generation": request_generation,
+            "session_generation": run.generation,
+            "clean": run.clean,
+            "cells": session.cells().iter().map(|cell| cell.json()).collect::<Vec<_>>(),
+            "states": run.states.iter().map(|state| state.as_str()).collect::<Vec<_>>(),
+            "events": run.events.iter().map(|event| event.json()).collect::<Vec<_>>(),
+            "manifest": run.manifest.as_ref().map(|manifest| manifest.json()),
+        })
+        .to_string()
+    })
 }
 
 fn run_request(source: &str, generation: u64, inputs: Option<&Vec<Value>>) -> String {
@@ -612,6 +710,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hover_request_returns_evaluated_value_and_generation() {
+        let source = "let x = 6; print(x * (3 + 4));";
+        let byte = source.find('*').unwrap();
+        let response: Value = serde_json::from_str(&process_request(
+            &json!({
+                "generation": 42,
+                "kind": "hover",
+                "source": source,
+                "byte": byte,
+            })
+            .to_string(),
+        ))
+        .unwrap();
+        assert_eq!(response["kind"], "hover");
+        assert_eq!(response["generation"], 42);
+        assert_eq!(response["byte"], byte);
+        assert_eq!(response["value"], "42");
+    }
+
+    #[test]
     fn browser_run_produces_output_and_math_without_host_io() {
         let response: Value = serde_json::from_str(&process_request(
             &json!({
@@ -623,6 +741,35 @@ mod tests {
         assert_eq!(response["generation"], 7);
         assert!(response["output"].as_str().unwrap().contains('2'));
         assert!(response["fragments"].as_array().unwrap().len() > 0);
+    }
+
+    #[test]
+    fn browser_notebook_fixture_matches_shared_ordered_events() {
+        let source = include_str!("../examples/notebook-phase1.scas");
+        let response: Value = serde_json::from_str(&process_request(
+            &json!({
+                "generation": 21,
+                "kind": "notebook_run_all",
+                "source": source,
+            })
+            .to_string(),
+        ))
+        .unwrap();
+        assert_eq!(response["generation"], 21);
+        assert_eq!(response["clean"], true, "{response}");
+        let kinds = response["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| event["kind"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(kinds, ["text", "math", "stdout", "verification"]);
+        assert_eq!(response["manifest"]["verification"]["passed"], 1);
+        assert!(response["states"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|state| state == "current"));
     }
 
     #[test]

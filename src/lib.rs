@@ -6,6 +6,7 @@ pub mod intelligence;
 pub mod interpreter;
 pub mod latex;
 pub mod lexer;
+pub mod notebook;
 pub mod number;
 pub mod parser;
 pub mod plot;
@@ -45,6 +46,8 @@ pub struct Limits {
     pub max_transcendental_precision: u64,
     pub max_decimal_scale: u64,
     pub max_number_bits: u64,
+    /// Maximum number of entries materialized by one indexed matrix rule.
+    pub max_matrix_elements: usize,
 }
 
 impl Default for Limits {
@@ -61,6 +64,7 @@ impl Default for Limits {
             max_transcendental_precision: 2_000,
             max_decimal_scale: 100_000,
             max_number_bits: 8_000_000,
+            max_matrix_elements: 100_000,
         }
     }
 }

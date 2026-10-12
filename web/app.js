@@ -213,13 +213,17 @@ function appendProse(element, source) {
 }
 
 window.scasShowPreview = (fragmentsJson, tex, error, pending, x, y, width, height, pixelsPerPoint, resizable) => {
-  previewTex = tex;
-  previewState.textContent = pending ? "UPDATING" : "LIVE";
-  if (previewError) {
-    previewError.hidden = !error;
-    previewError.textContent = error ? `Editing: ${error} (showing last good preview)` : "";
+  if (previewTex !== tex) {
+    previewTex = tex;
+    if (previewSourceCode) previewSourceCode.textContent = tex;
   }
-  if (previewSourceCode) previewSourceCode.textContent = tex;
+  const state = pending ? "UPDATING" : "LIVE";
+  if (previewState.textContent !== state) previewState.textContent = state;
+  if (previewError) {
+    if (previewError.hidden !== !error) previewError.hidden = !error;
+    const message = error ? `Editing: ${error} (showing last good preview)` : "";
+    if (previewError.textContent !== message) previewError.textContent = message;
+  }
   const bounds = canvas.getBoundingClientRect();
   previewScale = pixelsPerPoint / (canvas.width / bounds.width);
   const left = bounds.left + x * previewScale;
@@ -228,19 +232,20 @@ window.scasShowPreview = (fragmentsJson, tex, error, pending, x, y, width, heigh
   const cssHeight = height * previewScale;
   previewRight = left + cssWidth;
   previewWidthPoints = width;
-  preview.style.left = `${left}px`;
-  preview.style.top = `${top}px`;
-  preview.style.width = `${cssWidth}px`;
-  preview.style.height = `${cssHeight}px`;
-  preview.hidden = false;
-  previewResizer.hidden = !resizable;
+  if (preview.style.left !== `${left}px`) preview.style.left = `${left}px`;
+  if (preview.style.top !== `${top}px`) preview.style.top = `${top}px`;
+  if (preview.style.width !== `${cssWidth}px`) preview.style.width = `${cssWidth}px`;
+  if (preview.style.height !== `${cssHeight}px`) preview.style.height = `${cssHeight}px`;
+  if (preview.hidden) preview.hidden = false;
+  if (previewResizer.hidden !== !resizable) previewResizer.hidden = !resizable;
   if (resizable) {
-    previewResizer.style.left = `${left - 5}px`;
-    previewResizer.style.top = `${top}px`;
-    previewResizer.style.height = `${cssHeight}px`;
-    previewResizer.setAttribute("aria-valuenow", String(Math.round(width)));
-    previewResizer.setAttribute("aria-valuemin", "220");
-    previewResizer.setAttribute("aria-valuemax", "900");
+    if (previewResizer.style.left !== `${left - 5}px`) previewResizer.style.left = `${left - 5}px`;
+    if (previewResizer.style.top !== `${top}px`) previewResizer.style.top = `${top}px`;
+    if (previewResizer.style.height !== `${cssHeight}px`) previewResizer.style.height = `${cssHeight}px`;
+    const currentWidth = String(Math.round(width));
+    if (previewResizer.getAttribute("aria-valuenow") !== currentWidth) {
+      previewResizer.setAttribute("aria-valuenow", currentWidth);
+    }
   }
   if (fragmentsJson === previewSource) return;
   previewSource = fragmentsJson;
@@ -261,11 +266,14 @@ window.scasShowPreview = (fragmentsJson, tex, error, pending, x, y, width, heigh
 };
 
 window.scasHidePreview = () => {
-  preview.hidden = true;
-  previewResizer.hidden = true;
+  if (!preview.hidden) preview.hidden = true;
+  if (!previewResizer.hidden) previewResizer.hidden = true;
 };
 
 window.scasCreateWorker = () => new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
+// A busy worker cannot service an interrupt message. Notebook and IDE hosts
+// must terminate it, discard that generation, and create a fresh worker.
+window.scasInterruptWorker = (worker) => worker?.terminate();
 
 window.scasDownload = (name, content, mime) => {
   const url = URL.createObjectURL(new Blob([content], { type: mime }));

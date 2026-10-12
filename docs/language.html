@@ -29,7 +29,10 @@ print(v[0]);
 
 let A = [1, 2; 3, 4];
 print(A[1, 0]);
-print(A' * [5, 6]);</code></pre><p>Indexes are zero-based. Matrix rows must be rectangular. Array concatenation uses <code>+</code>; matrix-specific operations validate their dimensions and report runtime errors.</p></section>
+print(A' * [5, 6]);
+
+let G(n) = (i + j)_(i,j);
+print(det(G(2))); // -1</code></pre><p>Indexes are zero-based. Matrix rows must be rectangular. Indexed rules use one-based rule variables: <code>(expr)_(i,j)</code> takes its square size from a function's sole parameter, while <code>(expr)_(i,j,size)</code> and <code>(expr)_(i,j,rows,columns)</code> give explicit dimensions. They produce ordinary exact or symbolic matrices for all linear-algebra operations. Array concatenation uses <code>+</code>; matrix-specific operations validate their dimensions and report runtime errors.</p></section>
 <section><h2 class="rule-heading">Symbolic evaluation</h2><p>An unbound name in a mathematical expression becomes symbolic. Builtins operate on that expression and preserve unsupported forms.</p><pre><code>let f = x^3 + 2x + sin(x);
 print(derivative(f, x));
 assume_positive(x);

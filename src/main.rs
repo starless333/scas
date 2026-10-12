@@ -2,6 +2,7 @@ mod repl;
 use scas::{execute_with_options, ExecutionOptions};
 use std::env;
 use std::fs;
+use std::io::Write;
 use std::io::{self, IsTerminal, Read};
 use std::num::NonZeroU64;
 use std::process::ExitCode;
@@ -12,6 +13,7 @@ Symbolic computer algebra system
 USAGE:
     scas [OPTIONS] [FILE]
     scas build FILE [OUTPUT.tex]
+    scas notebook FILE
 
 OPTIONS:
     -h, --help                 Show this help
@@ -38,6 +40,12 @@ fn main() -> ExitCode {
     let raw_args = env::args().skip(1).collect::<Vec<_>>();
     if raw_args.first().is_some_and(|argument| argument == "build") {
         return build_document(&raw_args[1..]);
+    }
+    if raw_args
+        .first()
+        .is_some_and(|argument| argument == "notebook")
+    {
+        return run_notebook(&raw_args[1..]);
     }
     let mut options = ExecutionOptions::default();
     let mut source_path = None;
@@ -114,6 +122,59 @@ fn main() -> ExitCode {
     }
 
     ExitCode::SUCCESS
+}
+
+fn run_notebook(arguments: &[String]) -> ExitCode {
+    if arguments.len() != 1 {
+        eprintln!("error: usage: scas notebook FILE");
+        return ExitCode::FAILURE;
+    }
+    let path = &arguments[0];
+    let source = match fs::read_to_string(path) {
+        Ok(source) => source,
+        Err(error) => {
+            eprintln!("error: failed to read `{path}`: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut session = scas::notebook::NotebookSession::new(source);
+    let header = serde_json::json!({
+        "type": "notebook",
+        "schema": 1,
+        "source": path,
+        "canonical_format": "scas",
+        "cells": session.cells().iter().map(|cell| cell.json()).collect::<Vec<_>>(),
+        "capabilities": session.capabilities().json(scas::notebook::NotebookHost::Native),
+    });
+    let stdout = io::stdout();
+    let mut output = io::BufWriter::new(stdout.lock());
+    if writeln!(output, "{header}").is_err() {
+        eprintln!("error: failed to write notebook output");
+        return ExitCode::FAILURE;
+    }
+    let run = session.run_all();
+    for event in &run.events {
+        if writeln!(output, "{}", event.json()).is_err() {
+            eprintln!("error: failed to write notebook output");
+            return ExitCode::FAILURE;
+        }
+    }
+    let summary = serde_json::json!({
+        "type": "complete",
+        "generation": run.generation,
+        "clean": run.clean,
+        "states": run.states.iter().map(|state| state.as_str()).collect::<Vec<_>>(),
+        "manifest": run.manifest.as_ref().map(|manifest| manifest.json()),
+    });
+    if writeln!(output, "{summary}").is_err() || output.flush().is_err() {
+        eprintln!("error: failed to write notebook output");
+        return ExitCode::FAILURE;
+    }
+    if run.succeeded() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
 }
 
 fn build_document(arguments: &[String]) -> ExitCode {

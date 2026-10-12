@@ -24,6 +24,23 @@ either `A'` or `transpose(A)`; the apostrophe is a chainable postfix operator.
 Square matrices may be raised to bounded integer powers with `A^n`; zero gives
 the identity and negative exponents use the exact matrix inverse.
 
+An indexed rule constructs a matrix without spelling out every entry. In a
+one-parameter function, `(expression)_(i,j)` uses the parameter as both
+dimensions. Indices in the rule are one-based, while indexing the resulting
+array remains zero-based:
+
+```scas
+let A(n) = (i + j)_(i,j);
+print(A(3));              // [[2,3,4], [3,4,5], [4,5,6]]
+print(det(A(2)));         // -1
+```
+
+Use `(expression)_(i,j,size)` for an explicit square size or
+`(expression)_(i,j,rows,columns)` for a rectangle. The index names shadow
+outer bindings, including the predefined imaginary unit `i`. Entries may
+contain other symbolic variables, and the resulting matrix works with the
+ordinary exact linear algebra and entrywise `limit` operations.
+
 The real numeric promotion order is integer, rational, decimal; a complex
 operand promotes arithmetic to complex. Integer division is an exact reduced
 rational. A decimal operand requests decimal arithmetic.

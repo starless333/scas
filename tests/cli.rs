@@ -52,6 +52,31 @@ fn source_file_and_precision_flag_are_supported() {
 }
 
 #[test]
+fn notebook_command_emits_json_lines_and_a_clean_manifest() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("examples")
+        .join("notebook-phase1.scas");
+    let output = Command::new(BINARY)
+        .arg("notebook")
+        .arg(path)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    let records = text(&output.stdout)
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(records.first().unwrap()["type"], "notebook");
+    assert!(records
+        .iter()
+        .any(|record| record["kind"] == "verification"));
+    let complete = records.last().unwrap();
+    assert_eq!(complete["type"], "complete");
+    assert_eq!(complete["clean"], true);
+    assert_eq!(complete["manifest"]["verification"]["passed"], 1);
+}
+
+#[test]
 fn build_command_emits_a_complete_latex_document() {
     let base = std::env::temp_dir().join(format!("scas-build-{}", std::process::id()));
     let source_path = base.with_extension("scas");
@@ -129,6 +154,7 @@ fn html_documentation_suite_covers_every_builtin_and_page() {
         "internals.html",
         "correctness.html",
         "demo-mit-diagonalization.html",
+        "demo-matrix-rules.html",
     ];
     for page in pages {
         let source = fs::read_to_string(docs.join(page))

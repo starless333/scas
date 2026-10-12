@@ -5,6 +5,12 @@ SCAS follows Semantic Versioning. User-visible changes accumulate under
 
 ## Unreleased
 
+- Added `int`, `double`, and `rational` casts for numeric values and strings,
+  including direct conversion of interactive `input()` and CSV fields.
+- Added matrix-valued functions and one-based indexed matrix rules such as
+  `let A(n) = (i + j)_(i,j)`, with explicit rectangular dimensions, symbolic
+  entries, exact linear-algebra support, and entrywise limits. Rule generation
+  has a dedicated element budget in browser and live-preview execution.
 - The native GUI now restores the selected theme, custom theme and font files,
   editor font size, line-number mode, and Greek-shortcut setting across launches.
 - Made the GUI graphing canvas dynamic like Desmos: pan and zoom re-sample

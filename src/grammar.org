@@ -35,6 +35,7 @@ block           ::= "{" statement* "}"
 (* ========================================== *)
 
 declaration     ::= variable_decl | function_decl | math_function_decl
+                  | let_function_decl
 
 variable_decl   ::= "let" IDENTIFIER ("=" expression)? ";"
 
@@ -42,6 +43,8 @@ function_decl   ::= "fn" IDENTIFIER "(" parameter_list? ")"
                     ("=" expression ";" | block)
 
 math_function_decl ::= IDENTIFIER "(" parameter_list? ")" "=" expression ";"
+
+let_function_decl ::= "let" IDENTIFIER "(" parameter_list? ")" "=" expression ";"
 
 parameter_list  ::= IDENTIFIER ("," IDENTIFIER)*
 
@@ -113,7 +116,12 @@ unary           ::= ("!" | "-" | "~") unary | exponent
 
 exponent        ::= postfix ("^" exponent)?
 
-postfix         ::= primary ("(" argument_list? ")" | "[" index_list "]" | "'")*
+postfix         ::= primary ("(" argument_list? ")" | "[" index_list "]" | "'"
+                  | "_(" matrix_rule_indices ")")*
+
+matrix_rule_indices ::= IDENTIFIER "," IDENTIFIER
+                      | IDENTIFIER "," IDENTIFIER "," expression
+                      | IDENTIFIER "," IDENTIFIER "," expression "," expression
 
 index_list      ::= expression ("," expression)*
 
