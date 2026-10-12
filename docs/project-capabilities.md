@@ -261,6 +261,8 @@ The `scas-lsp` binary communicates over standard LSP JSON-RPC and provides:
 
 - An `eframe`/`egui` source editor with syntax highlighting, tabs for Document,
   REPL, and Graphing, Run actions, clickable Problems, and responsive panels.
+- In-browser language services shared with the LSP: diagnostics, completions,
+  signature help, evaluated hover, go-to-definition, references, and rename.
 - Shared Rust lexer, parser, evaluator, document builder, plotter, and
   structured-preview model compiled to WebAssembly.
 - Evaluation, persistent REPL submissions, and graph sampling in a Web Worker
@@ -268,7 +270,7 @@ The `scas-lsp` binary communicates over standard LSP JSON-RPC and provides:
 - MathJax-backed live document preview with last-good output and TeX copying.
 - Persistent browser REPL with definitions, history, reset, and recovery after
   errors.
-- Pannable and zoomable graphing with SVG download.
+- Pannable and zoomable graphing with explicit x/y ranges and SVG download.
 - `.scas` import/download, TeX download, drag-and-drop `.scas`/CSV/JSON data,
   browser virtual files, Starter and MIT examples, and URL-hash source sharing.
 - Local draft recovery and static output suitable for GitHub Pages.
@@ -395,5 +397,6 @@ SCAS provides concrete implementation evidence for:
   high-precision numeric decompositions remain limited.
 - Complex special functions can report convergence failure at difficult
   arguments or requested precision rather than returning an unverified value.
-- The browser IDE omits the native PTY terminal and native PDF toolchain, and
-  its configured public Pages deployment has not yet been verified.
+- The browser IDE omits the native PTY terminal and PDF toolchain; its PDF
+  action uses the browser's Save as PDF print flow. Its configured public Pages
+  deployment has not yet been verified.

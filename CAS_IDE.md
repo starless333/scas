@@ -110,6 +110,7 @@ See `docs/DOCUMENTER.md` for the full design of the documenter.
 - [x] **Preview/source navigation** using fragment spans (exact in structured preview; rendered images navigate at chunk granularity)
 - [ ] Pixel-accurate source mapping within multi-fragment rendered images
 - [x] **LSP server** (`tower-lsp`) with diagnostics, completion, signature help, hover, definition, references, and rename
+- [x] **Browser LSP endpoint** in the Web Worker with full-document sync and an in-page JSON-RPC client
 - [ ] LSP documenter diagnostics and completion parity with the GUI
 - [x] Test the server in Neovim (headless initialization and definition request)
 - [ ] Make the GUI an LSP protocol client (it currently shares the source-index engine directly)
@@ -158,6 +159,7 @@ Pick one or two and do them well.
 
 ## Phase 7: Export and workflow
 
+- [x] Native PDF export through `pdflatex` and browser Save as PDF export
 - [ ] **PDF export** with bundled Tectonic
 - [ ] CLI **watch mode**
 - [ ] **Multi-file projects** with imports

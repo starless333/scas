@@ -4,7 +4,7 @@
 use crate::ast::statement::FunctionBody;
 use crate::ast::{SourceSpan, StatementKind};
 use crate::document::{self, Document, DocumentFragment, FragmentKind};
-use crate::intelligence::SourceIndex;
+use crate::intelligence::{evaluate_hover, SourceIndex};
 use crate::latex::LatexRenderer;
 use crate::lexer::{Scanner, TokenType};
 use crate::parser::Parser;
@@ -107,7 +107,7 @@ extern "C" {
     #[wasm_bindgen(js_namespace = window, js_name = scasImportFont)]
     fn import_font_file();
     #[wasm_bindgen(js_namespace = window, js_name = scasPrintDocument)]
-    fn print_document();
+    fn print_document(fragments: &str, tex: &str);
     #[wasm_bindgen(js_namespace = window, js_name = scasSetPreviewTheme)]
     fn set_preview_theme(
         panel: &str,
@@ -706,6 +706,7 @@ enum Tab {
 enum BottomTab {
     Output,
     Problems,
+    References,
 }
 
 struct WebSeries {
@@ -811,7 +812,9 @@ struct WebApp {
     run_generation: u64,
     plot_generation: u64,
     repl_generation: u64,
+    lsp_version: u64,
     pending: bool,
+    pending_pdf: bool,
     repl_pending: bool,
     due: Option<f64>,
     worker: Option<Worker>,
@@ -845,6 +848,10 @@ struct WebApp {
     cursor_char_index: usize,
     rename_target: Option<String>,
     rename_input: String,
+    references_target: Option<String>,
+    hover_key: Option<usize>,
+    hover_since: f64,
+    hover_value: Option<String>,
     first_frame: bool,
     quick_open: bool,
     quick_open_query: String,
@@ -966,7 +973,9 @@ impl WebApp {
             run_generation: 0,
             plot_generation: 0,
             repl_generation: 0,
+            lsp_version: 0,
             pending: false,
+            pending_pdf: false,
             repl_pending: false,
             due: None,
             worker,
@@ -1000,6 +1009,10 @@ impl WebApp {
             cursor_char_index: 0,
             rename_target: None,
             rename_input: String::new(),
+            references_target: None,
+            hover_key: None,
+            hover_since: 0.0,
+            hover_value: None,
             first_frame: true,
             quick_open: false,
             quick_open_query: String::new(),
@@ -1155,6 +1168,24 @@ impl WebApp {
 
     fn request(&mut self, kind: &str) -> bool {
         self.generation = self.generation.wrapping_add(1);
+        if kind == "run" {
+            self.lsp_version = self.lsp_version.wrapping_add(1);
+            if let Some(worker) = &self.worker {
+                let uri = "file:///browser.scas";
+                let message = if self.lsp_version == 1 {
+                    json!({"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+                        "textDocument": {"uri": uri, "languageId": "scas", "version": self.lsp_version, "text": self.source}
+                    }})
+                } else {
+                    json!({"jsonrpc": "2.0", "method": "textDocument/didChange", "params": {
+                        "textDocument": {"uri": uri, "version": self.lsp_version},
+                        "contentChanges": [{"text": self.source}]
+                    }})
+                };
+                let packet = json!({"kind": "lsp", "message": message});
+                let _ = worker.post_message(&JsValue::from_str(&packet.to_string()));
+            }
+        }
         let request = json!({
             "generation": self.generation,
             "kind": kind,
@@ -1203,6 +1234,31 @@ impl WebApp {
                 continue;
             };
             let kind = value["kind"].as_str().unwrap_or("run");
+            if kind == "lsp" {
+                for notification in value["notifications"].as_array().into_iter().flatten() {
+                    let params = &notification["params"];
+                    if params["version"].as_u64() != Some(self.lsp_version) {
+                        continue;
+                    }
+                    if let Some(diagnostics) = params["diagnostics"].as_array() {
+                        self.problems = diagnostics
+                            .iter()
+                            .map(|diagnostic| WebProblem {
+                                line: diagnostic["range"]["start"]["line"].as_u64().unwrap_or(0)
+                                    as usize
+                                    + 1,
+                                column: diagnostic["range"]["start"]["character"]
+                                    .as_u64()
+                                    .unwrap_or(0) as usize
+                                    + 1,
+                                message: diagnostic["message"].as_str().unwrap_or("").to_owned(),
+                            })
+                            .collect();
+                        context.request_repaint();
+                    }
+                }
+                continue;
+            }
             let latest = match kind {
                 "repl" => self.repl_generation,
                 "plot" => self.plot_generation,
@@ -1419,6 +1475,15 @@ impl WebApp {
                 "Ready"
             })
             .clone_into(&mut self.status);
+            if self.pending_pdf {
+                self.pending_pdf = false;
+                if self.error.is_none() {
+                    print_document(&self.preview_json, &self.tex);
+                    self.status = "Choose Save as PDF in the print dialog".to_owned();
+                } else {
+                    self.status = "Fix document errors before exporting PDF".to_owned();
+                }
+            }
             context.request_repaint();
         }
         if self.pending {
@@ -1470,14 +1535,17 @@ impl WebApp {
                 self.apply_plot_view(view, now, ui.ctx());
             }
         }
-        let (scroll, pointer) = ui.input(|input| {
+        let (pinch_zoom, pointer) = ui.input(|input| {
             (
-                input.raw_scroll_delta.y,
+                input.zoom_delta(),
                 input.pointer.hover_pos().unwrap_or(rect.center()),
             )
         });
-        if response.hovered() && scroll.abs() > 0.0 {
-            let factor = f64::from((-scroll * 0.0015).exp()).clamp(0.5, 2.0);
+        if response.hovered() && (pinch_zoom - 1.0).abs() > f32::EPSILON {
+            // A larger pinch delta means zooming in, while PlotBounds uses a
+            // smaller span factor for zooming in. Ordinary two-finger wheel
+            // motion is intentionally ignored.
+            let factor = (1.0 / f64::from(pinch_zoom)).clamp(0.5, 2.0);
             let x_ratio = f64::from((pointer.x - rect.left()) / rect.width().max(1.0));
             let y_ratio = f64::from((pointer.y - rect.top()) / rect.height().max(1.0));
             self.zoom_plot(factor, x_ratio, y_ratio, now, ui.ctx());
@@ -1651,7 +1719,7 @@ fn snap_web_graph_probe(
             if distance <= max_distance
                 && best
                     .as_ref()
-                    .is_none_or(|(best_distance, _)| distance < *best_distance)
+                    .map_or(true, |(best_distance, _)| distance < *best_distance)
             {
                 best = Some((
                     distance,
@@ -1677,7 +1745,7 @@ fn snap_web_graph_probe(
             if distance <= max_distance
                 && best
                     .as_ref()
-                    .is_none_or(|(best_distance, _)| distance < *best_distance)
+                    .map_or(true, |(best_distance, _)| distance < *best_distance)
             {
                 best = Some((
                     distance,
@@ -2365,12 +2433,64 @@ impl WebApp {
 
     fn begin_rename(&mut self) {
         let byte = char_to_byte(&self.source, self.cursor_char_index);
-        if let Some(occurrence) = SourceIndex::new(&self.source).at(byte) {
+        let index = SourceIndex::new(&self.source);
+        if let Some(occurrence) = index
+            .at(byte)
+            .or_else(|| byte.checked_sub(1).and_then(|before| index.at(before)))
+        {
             self.rename_input.clone_from(&occurrence.name);
             self.rename_target = Some(occurrence.name.clone());
         } else {
             self.status = "Place the cursor on a document symbol to rename it".to_owned();
         }
+    }
+
+    fn symbol_at_cursor(&self) -> Option<String> {
+        let byte = char_to_byte(&self.source, self.cursor_char_index);
+        let index = SourceIndex::new(&self.source);
+        index
+            .at(byte)
+            .or_else(|| byte.checked_sub(1).and_then(|before| index.at(before)))
+            .map(|occurrence| occurrence.name.clone())
+    }
+
+    fn insert_editor_template(
+        &mut self,
+        editor_id: egui::Id,
+        start_char: usize,
+        end_char: usize,
+        template: &str,
+    ) {
+        let source_chars = self.source.chars().count();
+        let start_char = start_char.min(source_chars);
+        let end_char = end_char.clamp(start_char, source_chars);
+        let marker = template.find("$0");
+        let cursor_offset = marker
+            .map(|index| template[..index].chars().count())
+            .unwrap_or_else(|| template.chars().count());
+        let insertion = marker.map_or_else(
+            || template.to_owned(),
+            |index| format!("{}{}", &template[..index], &template[index + 2..]),
+        );
+        let start_byte = char_to_byte(&self.source, start_char);
+        let end_byte = char_to_byte(&self.source, end_char);
+        self.source.replace_range(start_byte..end_byte, &insertion);
+        self.cursor_char_index = start_char + cursor_offset;
+        let mut state = TextEdit::load_state(&self.context, editor_id).unwrap_or_default();
+        state
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::one(
+                egui::text::CCursor::new(self.cursor_char_index),
+            )));
+        TextEdit::store_state(&self.context, editor_id, state);
+        self.context
+            .memory_mut(|memory| memory.request_focus(editor_id));
+        self.highlight_source.clear();
+        self.dirty = true;
+        self.save_draft();
+        self.due = Some(self.context.input(|input| input.time) + 0.4);
+        self.context
+            .request_repaint_after(Duration::from_millis(420));
     }
 
     fn insert_editor_text(&mut self, template: &str) {
@@ -2469,7 +2589,15 @@ impl WebApp {
                 ui.close_menu();
             }
             if ui.button("Export PDF…").clicked() {
-                print_document();
+                if self.pending || self.due.is_some() {
+                    self.pending_pdf = self.request("run");
+                    self.due = None;
+                } else if self.error.is_some() {
+                    self.status = "Fix document errors before exporting PDF".to_owned();
+                } else {
+                    print_document(&self.preview_json, &self.tex);
+                    self.status = "Choose Save as PDF in the print dialog".to_owned();
+                }
                 ui.close_menu();
             }
             if self.tab == Tab::Plot && ui.button("Export Graph as SVG…").clicked() {
@@ -2533,7 +2661,36 @@ impl eframe::App for WebApp {
         if context.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::P)) {
             self.quick_open = true;
         }
-        if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::F2)) {
+        let editor_id = egui::Id::new("web-source");
+        let editor_focused = context.memory(|memory| memory.has_focus(editor_id));
+        if editor_focused
+            && context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::F12))
+        {
+            if let Some(name) = self.symbol_at_cursor() {
+                let index = SourceIndex::new(&self.source);
+                if let Some(definition) = index.definition(&name) {
+                    self.jump_to_source(definition.line, definition.column);
+                } else {
+                    self.status = "No unambiguous definition in this document".to_owned();
+                }
+            }
+        }
+        if editor_focused
+            && context.input_mut(|input| input.consume_key(egui::Modifiers::SHIFT, egui::Key::F12))
+        {
+            if let Some(name) = self.symbol_at_cursor() {
+                if SourceIndex::new(&self.source).definition(&name).is_some() {
+                    self.references_target = Some(name);
+                    self.bottom_tab = BottomTab::References;
+                    self.output_open = true;
+                } else {
+                    self.status = "No unambiguous references in this document".to_owned();
+                }
+            }
+        }
+        if editor_focused
+            && context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::F2))
+        {
             self.begin_rename();
         }
         if context.input_mut(|input| {
@@ -2984,6 +3141,15 @@ impl eframe::App for WebApp {
                             {
                                 self.bottom_tab = BottomTab::Problems;
                             }
+                            if ui
+                                .selectable_label(
+                                    self.bottom_tab == BottomTab::References,
+                                    "REFERENCES",
+                                )
+                                .clicked()
+                            {
+                                self.bottom_tab = BottomTab::References;
+                            }
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
@@ -3027,6 +3193,40 @@ impl eframe::App for WebApp {
                                         .clicked()
                                     {
                                         jump_to = Some((problem.line, problem.column));
+                                    }
+                                }
+                            }
+                            BottomTab::References => {
+                                let Some(target) = self.references_target.as_deref() else {
+                                    ui.label(
+                                        RichText::new("Press Shift+F12 on a symbol.").color(muted),
+                                    );
+                                    return;
+                                };
+                                let index = SourceIndex::new(&self.source);
+                                let references = index.references(target);
+                                if references.is_empty() {
+                                    ui.label(
+                                        RichText::new("No unambiguous references found.")
+                                            .color(muted),
+                                    );
+                                }
+                                for occurrence in references {
+                                    let role = if occurrence.is_definition {
+                                        "definition"
+                                    } else {
+                                        "reference"
+                                    };
+                                    let label = format!(
+                                        "{}:{}:{}  {}  {}",
+                                        self.source_name,
+                                        occurrence.line,
+                                        occurrence.column,
+                                        target,
+                                        role
+                                    );
+                                    if ui.selectable_label(false, label).clicked() {
+                                        jump_to = Some((occurrence.line, occurrence.column));
                                     }
                                 }
                             }
@@ -3213,6 +3413,44 @@ impl eframe::App for WebApp {
                         ui.label(RichText::new("› …").size(12.0).color(muted));
                     });
                     ui.add_space(4.0);
+                    let completions = if editor_focused {
+                        editor_assist::completions(&self.source, self.cursor_char_index)
+                    } else {
+                        editor_assist::Matches::empty(self.cursor_char_index)
+                    };
+                    let (user_completion_start, user_completions) =
+                        if editor_focused && completions.len == 0 {
+                            editor_assist::user_function_completions(
+                                &self.source,
+                                self.cursor_char_index,
+                            )
+                        } else {
+                            (self.cursor_char_index, Vec::new())
+                        };
+                    let accept_completion = editor_focused
+                        && (completions.len > 0 || !user_completions.is_empty())
+                        && context.input_mut(|input| {
+                            input.consume_key(egui::Modifiers::NONE, egui::Key::Tab)
+                        });
+                    if let Some(completion) =
+                        accept_completion.then(|| completions.first()).flatten()
+                    {
+                        self.insert_editor_template(
+                            editor_id,
+                            completions.start_char,
+                            self.cursor_char_index,
+                            &completion.insertion.text(),
+                        );
+                    } else if accept_completion {
+                        if let Some((name, _)) = user_completions.first() {
+                            self.insert_editor_template(
+                                editor_id,
+                                user_completion_start,
+                                self.cursor_char_index,
+                                &format!("{name}($0)"),
+                            );
+                        }
+                    }
                     let available_rows =
                         (ui.available_height() / (effective_editor_font_size + 1.0)) as usize;
                     let cached_source = &self.highlight_source;
@@ -3231,12 +3469,13 @@ impl eframe::App for WebApp {
                         effective_editor_font_size,
                         self.line_numbers,
                     );
-                    let (response, cursor_range) = egui::ScrollArea::both()
+                    let output = egui::ScrollArea::both()
                         .show(ui, |ui| {
                             let output = TextEdit::multiline(&mut self.source)
-                                .id(egui::Id::new("web-source"))
+                                .id(editor_id)
                                 .font(editor_font.clone())
                                 .code_editor()
+                                .lock_focus(true)
                                 .frame(false)
                                 .margin(egui::Margin {
                                     left: gutter,
@@ -3259,13 +3498,160 @@ impl eframe::App for WebApp {
                                     gutter,
                                 );
                             }
-                            (output.response, output.cursor_range)
+                            output
                         })
                         .inner;
+                    let response = output.response.clone();
+                    let cursor_range = output.cursor_range;
                     if let Some(cursor) = cursor_range {
                         self.cursor_char_index = cursor.primary.ccursor.index;
                         (self.cursor_line, self.cursor_column) =
                             line_column_at_char(&self.source, self.cursor_char_index);
+                    }
+                    let popup_completions = if response.has_focus() {
+                        editor_assist::completions(&self.source, self.cursor_char_index)
+                    } else {
+                        editor_assist::Matches::empty(self.cursor_char_index)
+                    };
+                    let (popup_user_start, popup_user_completions) =
+                        if response.has_focus() && popup_completions.len == 0 {
+                            editor_assist::user_function_completions(
+                                &self.source,
+                                self.cursor_char_index,
+                            )
+                        } else {
+                            (self.cursor_char_index, Vec::new())
+                        };
+                    let mut chosen_completion = None;
+                    let mut chosen_user_completion = None;
+                    if response.has_focus()
+                        && (popup_completions.len > 0 || !popup_user_completions.is_empty())
+                    {
+                        if let Some(cursor) = cursor_range {
+                            let caret = output.galley.pos_from_cursor(&cursor.primary);
+                            let anchor =
+                                output.galley_pos + egui::vec2(caret.left(), caret.bottom() + 4.0);
+                            egui::Area::new(egui::Id::new("web-editor-completion"))
+                                .order(egui::Order::Foreground)
+                                .fixed_pos(anchor)
+                                .constrain(true)
+                                .show(context, |ui| {
+                                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                                        ui.set_min_width(290.0);
+                                        for (index, assist) in popup_completions.iter().enumerate()
+                                        {
+                                            let label = if index == 0 {
+                                                format!("{}   Tab", assist.label)
+                                            } else {
+                                                assist.label.to_owned()
+                                            };
+                                            if ui.selectable_label(false, label).clicked() {
+                                                chosen_completion = Some(assist);
+                                            }
+                                            ui.label(
+                                                RichText::new(assist.detail)
+                                                    .size(11.0)
+                                                    .color(muted),
+                                            );
+                                        }
+                                        for (index, (name, detail)) in
+                                            popup_user_completions.iter().enumerate()
+                                        {
+                                            let label = if index == 0 {
+                                                format!("{name}   Tab")
+                                            } else {
+                                                name.clone()
+                                            };
+                                            if ui.selectable_label(false, label).clicked() {
+                                                chosen_user_completion = Some(name.clone());
+                                            }
+                                            ui.label(RichText::new(detail).size(11.0).color(muted));
+                                        }
+                                    });
+                                });
+                        }
+                    } else if response.has_focus() {
+                        let byte = char_to_byte(&self.source, self.cursor_char_index);
+                        if let Some(call) =
+                            SourceIndex::new(&self.source).call_at(&self.source, byte)
+                        {
+                            if !call.parameters.is_empty() {
+                                if let Some(cursor) = cursor_range {
+                                    let caret = output.galley.pos_from_cursor(&cursor.primary);
+                                    let anchor = output.galley_pos
+                                        + egui::vec2(caret.left(), caret.bottom() + 4.0);
+                                    egui::Area::new(egui::Id::new("web-editor-signature"))
+                                        .order(egui::Order::Foreground)
+                                        .fixed_pos(anchor)
+                                        .constrain(true)
+                                        .show(context, |ui| {
+                                            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                                                ui.horizontal(|ui| {
+                                                    ui.monospace(format!("{}(", call.name));
+                                                    for (index, parameter) in
+                                                        call.parameters.iter().enumerate()
+                                                    {
+                                                        if index > 0 {
+                                                            ui.monospace(", ");
+                                                        }
+                                                        let text =
+                                                            RichText::new(parameter).monospace();
+                                                        ui.label(
+                                                            if index == call.active_parameter {
+                                                                text.strong()
+                                                                    .color(theme.ui.accent.0)
+                                                            } else {
+                                                                text
+                                                            },
+                                                        );
+                                                    }
+                                                    ui.monospace(")");
+                                                });
+                                            });
+                                        });
+                                }
+                            }
+                        }
+                    }
+                    if let Some(completion) = chosen_completion {
+                        self.insert_editor_template(
+                            editor_id,
+                            popup_completions.start_char,
+                            self.cursor_char_index,
+                            &completion.insertion.text(),
+                        );
+                    }
+                    if let Some(name) = chosen_user_completion {
+                        self.insert_editor_template(
+                            editor_id,
+                            popup_user_start,
+                            self.cursor_char_index,
+                            &format!("{name}($0)"),
+                        );
+                    }
+                    if let Some(pointer) = response.hover_pos() {
+                        let cursor = output.galley.cursor_from_pos(pointer - output.galley_pos);
+                        let byte = char_to_byte(&self.source, cursor.ccursor.index);
+                        if self.hover_key != Some(byte) {
+                            self.hover_key = Some(byte);
+                            self.hover_since = now;
+                            self.hover_value = None;
+                        } else if now - self.hover_since >= 0.45 {
+                            if self.hover_value.is_none() {
+                                self.hover_value = Some(
+                                    evaluate_hover(&self.source, byte)
+                                        .map(|(_, value)| value)
+                                        .unwrap_or_default(),
+                                );
+                            }
+                            if let Some(value) = &self.hover_value {
+                                if !value.is_empty() {
+                                    response.clone().on_hover_text(format!("= {value}"));
+                                }
+                            }
+                        } else {
+                            context.request_repaint_after(Duration::from_millis(460));
+                        }
                     }
                     if response.changed() {
                         if self.auto_greek {
@@ -3290,7 +3676,11 @@ impl eframe::App for WebApp {
                 .show(context, |ui| {
                     ui.horizontal(|ui| {
                         ui.label("y =");
-                        let expression = ui.text_edit_singleline(&mut self.plot_expression);
+                        let expression = ui.add(
+                            TextEdit::singleline(&mut self.plot_expression)
+                                .hint_text("sin(x) from -10 to 10 y from -2 to 2")
+                                .desired_width(430.0),
+                        );
                         if expression.changed() && self.auto_greek {
                             expand_greek_shortcuts(&mut self.plot_expression);
                         }

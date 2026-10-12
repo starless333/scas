@@ -46,17 +46,16 @@ const SERIES_COLORS: &[&str] = &[
 const ASCII_GLYPHS: &[char] = &['*', 'o', '#', '@', '%', '&', 'X', 'W'];
 
 const PLOT_USAGE: &str =
-    "usage: :plot [terminal|svg] EXPRESSION[, EXPRESSION…] [from A to B] [> FILE]
+    "usage: :plot [terminal|svg] EXPRESSION[ EXPRESSION…] [from X_MIN to X_MAX [y from Y_MIN to Y_MAX]] [> FILE]
 
-  The independent variable is x. The default is terminal output. The svg
-  mode writes SVG to the terminal, or to FILE when redirected. A FILE ending
-  in .svg also receives SVG in the default mode.
+  The independent variable is x. Separate curves with spaces or commas.
+  SVG is the default; terminal mode emits a character-grid graph instead.
 
 examples:
   :plot sin(x)
-  :plot svg sin(x)
+  :plot terminal sin(x)
   :plot x^2 - 2x from -5 to 5
-  :plot sin(x), cos(x) from -6 to 6 > graph.svg";
+  :plot sin(x) cos(x) from -6 to 6 y from -2 to 2 > graph.svg";
 
 /// One sampled curve. `samples` pairs each x with `Some(y)` for finite real
 /// values and `None` where the expression is undefined, complex, or errored.
@@ -157,6 +156,8 @@ struct PlotCommand {
     series: Vec<String>,
     from: Option<String>,
     to: Option<String>,
+    y_from: Option<String>,
+    y_to: Option<String>,
     redirect: Option<String>,
 }
 
@@ -770,37 +771,58 @@ fn split_redirect(source: &str) -> (String, Option<String>) {
 
 fn parse_plot_command(rest: &str) -> Result<PlotCommand, String> {
     let (series_part, redirect) = split_redirect(rest);
-    let (series_part, range_part) = match find_top_level(&series_part, " from ", true) {
+    let (series_part, range_part) = match find_top_level(&series_part, " from ", false) {
         Some(position) => (
             series_part[..position].to_owned(),
             Some(series_part[position + " from ".len()..].to_owned()),
         ),
         None => (series_part.clone(), None),
     };
-    let (from, to) = match range_part {
+    let (from, to, y_from, y_to) = match range_part {
         Some(range) => {
-            let (low, high) = match find_top_level(&range, " to ", false) {
+            let (x_range, y_range) = match find_top_level(&range, " y from ", false) {
                 Some(position) => (
-                    range[..position].trim().to_owned(),
-                    range[position + " to ".len()..].trim().to_owned(),
+                    &range[..position],
+                    Some(&range[position + " y from ".len()..]),
                 ),
-                None => {
-                    return Err("plot ranges need both bounds: from A to B".to_owned());
-                }
+                None => (range.as_str(), None),
             };
-            if low.is_empty() || high.is_empty() {
-                return Err("plot ranges need both bounds: from A to B".to_owned());
-            }
-            (Some(low), Some(high))
+            let (from, to) = parse_range_pair(x_range, "x")?;
+            let (y_from, y_to) = match y_range {
+                Some(range) => {
+                    let (low, high) = parse_range_pair(range, "y")?;
+                    (Some(low), Some(high))
+                }
+                None => (None, None),
+            };
+            (Some(from), Some(to), y_from, y_to)
         }
-        None => (None, None),
+        None => (None, None, None, None),
     };
-    let series = series_part
+    let comma_separated = series_part
         .split_top_level_commas()
         .into_iter()
         .map(|part| part.trim().to_owned())
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>();
+    let mut series = Vec::new();
+    for part in comma_separated {
+        let whitespace_separated = part
+            .split_top_level_whitespace()
+            .into_iter()
+            .map(|candidate| candidate.trim().to_owned())
+            .filter(|candidate| !candidate.is_empty())
+            .collect::<Vec<_>>();
+        if whitespace_separated.len() > 1
+            && whitespace_separated
+                .iter()
+                .all(|candidate| is_standalone_expression(candidate))
+        {
+            series.extend(whitespace_separated);
+        } else {
+            series.push(part);
+        }
+    }
     if series.is_empty() {
         return Err(PLOT_USAGE.to_owned());
     }
@@ -808,12 +830,29 @@ fn parse_plot_command(rest: &str) -> Result<PlotCommand, String> {
         series,
         from,
         to,
+        y_from,
+        y_to,
         redirect,
     })
 }
 
+fn parse_range_pair(source: &str, axis: &str) -> Result<(String, String), String> {
+    let (low, high) = match find_top_level(source, " to ", false) {
+        Some(position) => (
+            source[..position].trim().to_owned(),
+            source[position + " to ".len()..].trim().to_owned(),
+        ),
+        None => return Err(format!("plot {axis} range needs both bounds: from A to B")),
+    };
+    if low.is_empty() || high.is_empty() {
+        return Err(format!("plot {axis} range needs both bounds: from A to B"));
+    }
+    Ok((low, high))
+}
+
 trait SplitTopLevel {
     fn split_top_level_commas(&self) -> Vec<String>;
+    fn split_top_level_whitespace(&self) -> Vec<String>;
 }
 
 impl SplitTopLevel for str {
@@ -830,6 +869,36 @@ impl SplitTopLevel for str {
         parts.push(self[start..].to_owned());
         parts
     }
+
+    fn split_top_level_whitespace(&self) -> Vec<String> {
+        let mask = top_level_mask(self);
+        let mut parts = Vec::new();
+        let mut start = 0;
+        let mut in_separator = false;
+        for (index, character) in self.char_indices() {
+            let separator = character.is_whitespace() && mask[index];
+            if separator && !in_separator {
+                if start < index {
+                    parts.push(self[start..index].to_owned());
+                }
+                in_separator = true;
+            } else if !separator && in_separator {
+                start = index;
+                in_separator = false;
+            }
+        }
+        if !in_separator && start < self.len() {
+            parts.push(self[start..].to_owned());
+        }
+        parts
+    }
+}
+
+fn is_standalone_expression(source: &str) -> bool {
+    let mut symbols = SymbolTable::new();
+    parse_submission(&mut symbols, source)
+        .ok()
+        .is_some_and(|(program, expression, _)| program.len() == 1 && expression.is_some())
 }
 
 // ---------------------------------------------------------------------------
@@ -1674,15 +1743,29 @@ fn execute_plot_command_impl<W: Write>(
         )?);
     }
 
-    let bounds = auto_y_bounds(&series, x_min, x_max);
+    let mut bounds = auto_y_bounds(&series, x_min, x_max);
+    if range_override.is_none() {
+        match (&command.y_from, &command.y_to) {
+            (Some(from), Some(to)) => {
+                let low = evaluate_scalar(interpreter, symbols, from)?;
+                let high = evaluate_scalar(interpreter, symbols, to)?;
+                if low.partial_cmp(&high) != Some(std::cmp::Ordering::Less) {
+                    return Err(format!(
+                        "plot y range must satisfy from {} < to {}",
+                        format_number(low),
+                        format_number(high)
+                    ));
+                }
+                bounds.y_min = low;
+                bounds.y_max = high;
+            }
+            (None, None) => {}
+            _ => return Err("plot y range needs both bounds: y from A to B".to_owned()),
+        }
+    }
     let ascii = render_ascii(&series, &bounds, ascii_width, ascii_height);
-    let wants_svg_file = command.redirect.as_ref().is_some_and(|target| {
-        Path::new(target)
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("svg"))
-    });
-    let svg = (svg_mode || (!terminal_mode && wants_svg_file))
-        .then(|| render_svg(&series, &bounds, SVG_WIDTH, SVG_HEIGHT));
+    let svg =
+        (svg_mode || !terminal_mode).then(|| render_svg(&series, &bounds, SVG_WIDTH, SVG_HEIGHT));
     let mut wrote_file = None;
     if write_file {
         if let Some(target) = &command.redirect {
@@ -1703,7 +1786,7 @@ fn execute_plot_command_impl<W: Write>(
             series,
             bounds,
             ascii,
-            svg: if svg_mode { svg } else { None },
+            svg,
             wrote_file,
         },
         command.redirect,
@@ -2240,15 +2323,24 @@ mod tests {
 
     #[test]
     fn command_parsing_handles_ranges_and_redirects() {
-        let command = parse_plot_command("f(x), g(x) from -5 to 5 > out.svg").unwrap();
+        let command =
+            parse_plot_command("f(x), g(x) from -5 to 5 y from -2 to 8 > out.svg").unwrap();
         assert_eq!(command.series, vec!["f(x)", "g(x)"]);
         assert_eq!(command.from.as_deref(), Some("-5"));
         assert_eq!(command.to.as_deref(), Some("5"));
+        assert_eq!(command.y_from.as_deref(), Some("-2"));
+        assert_eq!(command.y_to.as_deref(), Some("8"));
         assert_eq!(command.redirect.as_deref(), Some("out.svg"));
 
         let plain = parse_plot_command("sin(x)").unwrap();
         assert_eq!(plain.series, vec!["sin(x)"]);
         assert!(plain.from.is_none() && plain.to.is_none() && plain.redirect.is_none());
+
+        let space_separated = parse_plot_command("f1 f2 from -2 to 2").unwrap();
+        assert_eq!(space_separated.series, vec!["f1", "f2"]);
+
+        let spaced_expression = parse_plot_command("x^2 - 2x from -2 to 2").unwrap();
+        assert_eq!(spaced_expression.series, vec!["x^2 - 2x"]);
 
         // Comparisons are not redirects.
         let comparison = parse_plot_command("x > 3").unwrap();
@@ -2277,6 +2369,59 @@ mod tests {
         assert_eq!(outcome.bounds.x_min, -3.0);
         assert_eq!(outcome.bounds.x_max, 3.0);
         assert!(outcome.svg.as_deref().unwrap().contains("<svg"));
+    }
+
+    #[test]
+    fn svg_is_the_default_and_terminal_mode_is_explicit() {
+        let mut interpreter = linear_interpreter();
+        let mut symbols = SymbolTable::new();
+        let (vector, _) =
+            execute_plot_command_in_memory(&mut interpreter, &mut symbols, "sin(x)", 64, 18, None)
+                .unwrap();
+        assert!(vector
+            .svg
+            .as_deref()
+            .is_some_and(|svg| svg.contains("<svg")));
+
+        let (terminal, _) = execute_plot_command_in_memory(
+            &mut interpreter,
+            &mut symbols,
+            "terminal sin(x)",
+            64,
+            18,
+            None,
+        )
+        .unwrap();
+        assert!(terminal.svg.is_none());
+        assert!(terminal.ascii.contains('*'));
+    }
+
+    #[test]
+    fn command_applies_explicit_x_and_y_ranges() {
+        let mut interpreter = linear_interpreter();
+        let mut symbols = SymbolTable::new();
+        let (outcome, _) = execute_plot_command_in_memory(
+            &mut interpreter,
+            &mut symbols,
+            "x^2 from -3 to 4 y from -5 to 20",
+            64,
+            18,
+            None,
+        )
+        .unwrap();
+        assert_eq!(outcome.bounds, PlotBounds::new(-3.0, 4.0, -5.0, 20.0));
+
+        let error = execute_plot_command_in_memory(
+            &mut interpreter,
+            &mut symbols,
+            "x from -3 to 3 y from 2 to -2",
+            64,
+            18,
+            None,
+        )
+        .err()
+        .expect("descending y bounds must fail");
+        assert!(error.contains("plot y range must satisfy"), "{error}");
     }
 
     #[test]

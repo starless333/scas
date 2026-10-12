@@ -1,0 +1,5 @@
+Latin Modern Roman is part of the Latin Modern fonts project by B. Jackowski
+and J. M. Nowacki. It is distributed under the GUST Font License.
+
+License and project information:
+https://www.gust.org.pl/projects/e-foundry/latin-modern

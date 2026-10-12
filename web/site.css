@@ -1,3 +1,11 @@
+@font-face {
+  font-family: "Latin Modern Roman";
+  src: url("./assets/LatinModernRoman-Regular.otf") format("opentype");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
 :root {
   --scas-panel: #252526;
   --scas-editor: #1f1f1f;
@@ -79,6 +87,12 @@ canvas { display: block; width: 100%; height: 100%; outline: none; }
   font-size: 15px;
 }
 #math-preview .preview-prose { margin: 0 0 6px; line-height: 1.42; overflow-wrap: anywhere; }
+#math-preview .preview-prose,
+#math-preview h2,
+#math-preview h3,
+#math-preview .preview-centered {
+  font-family: "Latin Modern Roman", "Computer Modern Serif", serif;
+}
 #math-preview h2, #math-preview h3 { margin: 4px 0 12px; color: var(--scas-text); }
 #math-preview h2 { font-size: 1.45em; }
 #math-preview h3 { font-size: 1.2em; }
@@ -158,9 +172,13 @@ canvas { display: block; width: 100%; height: 100%; outline: none; }
 }
 
 @media print {
+  @page { size: auto; margin: 18mm; }
   #scas-canvas, #math-preview-resizer, #loading, .preview-toolbar, .preview-caption, .preview-intro, #math-preview-source, #math-preview-error { display: none !important; }
   html, body, #workspace { height: auto; overflow: visible; background: white; }
   #math-preview { position: static !important; display: block !important; width: auto !important; height: auto !important; overflow: visible; border: 0; padding: 0; background: white; color: black; }
   #math-preview-content { zoom: 1 !important; }
-  #math-preview .preview-page { background: white; color: black; }
+  #math-preview .preview-page { margin: 0; padding: 0; background: white; color: black; }
+  #math-preview .preview-page * { color: black !important; }
+  #math-preview .preview-math { overflow: visible; background: white; border: 0; padding: 4px 0; break-inside: avoid; }
+  #math-preview .preview-prose, #math-preview h2, #math-preview h3 { break-inside: avoid; }
 }

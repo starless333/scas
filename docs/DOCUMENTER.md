@@ -83,27 +83,27 @@ At $x = 3$ the slope is $8$.
 - One leading space after `///` is stripped.
 - Contents are passed through as raw LaTeX, except for `#{ }` interpolation.
 - `////` (four or more slashes) is a plain comment.
-- A `///` line inside a render block is emitted as `\intertext{...}` so the `align*` continues.
+- A `///` line inside a render block ends the current `align*`, emits a normal
+  prose fragment, and starts a new alignment for later `=>` rows.
 
 ### 3.2 Render blocks `\{ ... \}`
-- Statements execute in order, exactly as in a normal block.
-- Each semicolon-terminated statement produces a new aligned row. Commands
-  chained with a comma share one row and are separated by `\quad`.
+- Statements execute in order, exactly as in a normal block, but remain silent
+  unless they use `=>`.
 - **Scope: a render block does not introduce a new scope**, so definitions remain visible afterward.
 - Rendering per statement kind:
 
 | Statement | Typeset as |
 |---|---|
-| `let a = e;` | `a &= e` |
-| `f(x) = e;` (math function decl) | `f(x) &= e` |
-| `a = e;`, `a += e;` | `a &= e` (compound ops expand, e.g. `a &= a + e`) |
-| `e;` | `e` (typeset as written, not evaluated for display) |
+| `let a = e;` | not typeset (executes only) |
+| `f(x) = e;` (math function decl) | not typeset (executes only) |
+| `a = e;`, `a += e;` | not typeset (executes only) |
+| `e;` | not typeset (executes only) |
 | `e =>;` | `e &= value` |
-| `let a = e, b = f;` | `a = e \quad b = f` |
+| `let a = e, b = f;` | not typeset (executes only) |
 | `print(e);` | not typeset (executes only) |
-| `return e;` | not typeset by default |
+| `return e;` | not typeset (executes only) |
 | `if` / `while` / `for` | executes; not typeset. Emit an informational diagnostic. |
-| `fn` declarations | executes; not typeset, unless the user asks for it explicitly (see section 10) |
+| `fn` declarations | not typeset (executes only) |
 
 ### 3.3 Render lines `\[ ... \]`
 - Contains exactly one expression, optionally followed by `=>`.
@@ -276,10 +276,10 @@ golden, TeX compile, and round-trip tests are tracked in `CAS_IDE.md`.
 
 - [x] Delimiter syntax: `\{ \}` / `\[ \]`
 - [x] Render block scope: shared
-- [x] `/// ` lines inside render blocks: `\intertext`
+- [x] `/// ` lines inside render blocks split aligned groups and render as prose
 - [x] Interpolation delimiter: `#{ }`
 - [x] Raw LaTeX escape syntax: string in render position
-- [x] Compound assignment renders its expanded meaning
+- [x] Compound assignments inside render blocks execute silently
 - [x] Control flow inside render blocks executes silently with an info diagnostic
 - [x] Default vector orientation: column
 - [x] `////` is an ordinary comment

@@ -13,6 +13,8 @@ pub mod runtime_io;
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
 mod web;
 #[cfg(feature = "web")]
+pub mod web_lsp;
+#[cfg(feature = "web")]
 pub mod web_runtime;
 
 use ast::SourceSpan;

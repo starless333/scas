@@ -39,7 +39,11 @@ bash scripts/build-web.sh
 python3 -m http.server --directory web
 ```
 
-The browser build runs SCAS in a Web Worker and offers source editing, a live math preview, a persistent REPL, zoomable and pannable graphing, virtual file import/download, and shareable source links. The Pages URL above is configured but has not yet been verified from a public deployment.
+The browser build runs SCAS in a Web Worker and offers source editing with language intelligence, a live Computer Modern math-and-prose preview, a persistent REPL, zoomable and pannable graphing with explicit x/y ranges, virtual file import/download, and shareable source links. The Pages URL above is configured but has not yet been verified from a public deployment.
+
+Both IDEs offer PDF export. The native IDE compiles the current document with `pdflatex`; the browser prepares the current typeset preview and opens the print dialog, where you can choose **Save as PDF**.
+
+The browser IDE also runs an offline LSP endpoint in its worker. It publishes syntax diagnostics as edits arrive and supports completion, hover, signature help, definition, references, and rename through JSON-RPC messages. Browser integrations can call `await window.scasCreateLspClient(onNotification)` and use its `request`, `notify`, and `dispose` methods; open a `file:///...scas` document with `textDocument/didOpen` before requesting language features. This worker endpoint serves browser clients; use `scas-lsp` for editor clients that need the standard stdin/stdout transport.
 
 Prebuilt releases are available on the [Releases page](https://github.com/starless333/scas/releases). Building from source requires Rust and Cargo. The IDE’s LaTeX preview uses `latex`, `dvisvgm`, and `rsvg-convert` when installed, rerendering SVG math at the selected zoom. A structured renderer is available when those tools are absent.
 

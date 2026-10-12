@@ -207,7 +207,7 @@ impl BrowserRepl {
 
     fn plot(&mut self, rest: &str) -> BrowserReplResult {
         if rest.is_empty() {
-            return BrowserReplResult::message("usage: :plot [terminal|svg] EXPRESSION[, EXPRESSION…] [from A to B] [> FILE]\n\nExamples:\n  :plot sin(x)\n  :plot sin(x), cos(x) from -6 to 6\n  :plot svg sin(x) > graph.svg\n\nIn the browser, > FILE offers a download button.");
+            return BrowserReplResult::message("usage: :plot [terminal|svg] EXPRESSION[ EXPRESSION…] [from X_MIN to X_MAX [y from Y_MIN to Y_MAX]] [> FILE]\n\nSVG is the default. Separate curves with spaces or commas.\n\nExamples:\n  :plot sin(x)\n  :plot sin(x) cos(x) from -6 to 6 y from -2 to 2\n  :plot terminal sin(x)\n\nIn the browser, > FILE offers a download button.");
         }
         let mut symbols = self.symbols.clone();
         let result = plot::execute_plot_command_in_memory(
@@ -226,15 +226,10 @@ impl BrowserRepl {
                     let name = path.rsplit(['/', '\\']).next()?.trim();
                     (!name.is_empty() && name != "." && name != "..").then(|| name.to_owned())
                 });
-                let vector = rest == "svg"
-                    || rest.starts_with("svg ")
-                    || download_name
-                        .as_ref()
-                        .is_some_and(|name| name.to_ascii_lowercase().ends_with(".svg"));
-                let svg = outcome
-                    .svg
-                    .clone()
-                    .unwrap_or_else(|| plot::render_svg(&outcome.series, &outcome.bounds, 800, 520));
+                let vector = outcome.svg.is_some();
+                let svg = outcome.svg.clone().unwrap_or_else(|| {
+                    plot::render_svg(&outcome.series, &outcome.bounds, 800, 520)
+                });
                 let series = outcome
                     .series
                     .iter()
@@ -342,6 +337,9 @@ pub fn process_request(request: &str) -> String {
         Err(error) => return json!({ "generation": 0, "error": error.to_string() }).to_string(),
     };
     let generation = parsed["generation"].as_u64().unwrap_or(0);
+    if parsed["kind"].as_str() == Some("lsp") {
+        return crate::web_lsp::process(&parsed["message"]).to_string();
+    }
     if parsed["kind"].as_str() == Some("file_import") {
         let name = parsed["name"].as_str().unwrap_or("");
         let content = parsed["content"].as_str().unwrap_or("");
@@ -749,14 +747,16 @@ mod tests {
         };
         request(":reset");
         assert!(request("f(x) = x^2 - 2")["error"].is_null());
-        let plot = request(":plot f(x), sin(x) from -3 to 3");
+        let plot = request(":plot f(x) sin(x) from -3 to 3 y from -4 to 8");
         assert!(plot["error"].is_null(), "{plot}");
         assert_eq!(plot["plot"]["series"].as_array().unwrap().len(), 2);
         assert_eq!(plot["plot"]["bounds"][0], -3.0);
         assert_eq!(plot["plot"]["bounds"][1], 3.0);
+        assert_eq!(plot["plot"]["bounds"][2], -4.0);
+        assert_eq!(plot["plot"]["bounds"][3], 8.0);
         assert!(plot["plot"]["ascii"].as_str().unwrap().contains('*'));
         assert!(plot["plot"]["svg"].as_str().unwrap().contains("<svg"));
-        assert_eq!(plot["plot"]["vector"], false);
+        assert_eq!(plot["plot"]["vector"], true);
 
         let vector = request(":plot(svg sin(x))");
         assert!(vector["error"].is_null(), "{vector}");

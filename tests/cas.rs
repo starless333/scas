@@ -310,6 +310,52 @@ fn rational_limits_at_infinity_are_exact() {
 }
 
 #[test]
+fn matrix_limits_and_matrix_valued_functions_are_entrywise() {
+    assert_eq!(
+        output(
+            r#"
+            print(limit([x, sin(x)/x; x^2, 3], x, 0));
+            fn M(t) = [t, t^2; sin(t)/t, cos(t)];
+            print(limit(M(x), x, 0));
+            print(limit(trace(M(x)), x, 0));
+            print(limit([1/x, x^2; 2, 3], x, 0, "right"));
+        "#
+        ),
+        "[[0, 1], [0, 3]]\n[[0, 0], [1, 1]]\n1\n[[infinity, 0], [2, 3]]\n"
+    );
+}
+
+#[test]
+fn exact_matrix_power_limits_cover_diagonal_and_nondiagonal_sequences() {
+    assert_eq!(
+        output(r#"
+            let A = [3/4, 1/4; 1/4, 3/4];
+            print(limit(A^n, n, "infinity"));
+            print(limit(trace(A^n), n, "infinity"));
+            print(limit(det(A^n), n, "infinity"));
+            let P = [1,1;0,1];
+            print(limit(P * [1,0;0,1/2]^n * inverse(P), n, "infinity"));
+            print(limit([1,0,0;0,1/2,0;0,0,0]^n, n, "infinity"));
+            print(limit([1/2,1;0,1/2]^n, n, "infinity"));
+            print(limit([2,0;0,3]^n, n, "-infinity"));
+        "#),
+        "[[1/2, 1/2], [1/2, 1/2]]\n1\n0\n[[1, -1], [0, 0]]\n[[1, 0, 0], [0, 0, 0], [0, 0, 0]]\n[[0, 0], [0, 0]]\n[[0, 0], [0, 0]]\n"
+    );
+    assert!(runtime_error("print(limit([1,1;0,1]^n, n, \"infinity\"));").contains("Jordan block"));
+}
+
+#[test]
+fn documented_matrix_limits_render_the_final_matrix() {
+    let document = scas::document::build(
+        "let A = [3/4, 1/4; 1/4, 3/4];\n\\[ limit(A^n, n, \"infinity\") => \\]\n\\[ limit([x, 2*x; 0, 1], x, 0) => \\]",
+    )
+    .unwrap();
+    let latex = document.latex();
+    assert!(latex.contains("\\begin{pmatrix}"), "{latex}");
+    assert!(latex.contains("\\frac{1}{2}"), "{latex}");
+}
+
+#[test]
 fn directional_poles_and_laurent_terms_are_explicit() {
     assert_eq!(output("print(limit(1/x, x, 0, \"left\")); print(limit(1/x, x, 0, \"right\")); print(limit(1/x^2, x, 0)); print(limit(x/(x^2), x, 0, \"right\"));"), "-infinity\ninfinity\ninfinity\ninfinity\n");
     assert_eq!(
@@ -657,7 +703,7 @@ fn integration_by_parts_and_definite_symmetry() {
             "-1 * exp(x) + exp(x) + exp(x) * x\n",
             "0\n",
             "2 * exp(-1)\n",
-            "2 * 3 ^ -1\n",
+            "2/3\n",
             "0\n",
             "0\n",
             "16/3\n",

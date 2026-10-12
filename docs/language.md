@@ -67,8 +67,9 @@ plot(x^2, x, -2, 2);
 \}
 ```
 
-A bare top-level plot, render-line plot, or plot expression in a render block
-is emitted as a graph; plots in render blocks appear on their own aligned row.
+A bare top-level plot, render-line plot, or `=>` plot expression in a render
+block is emitted as a graph; marked plots in render blocks appear on their own
+aligned row. Other statements in a render block execute silently.
 The plot expression is numerically sampled while preserving the surrounding
 interpreter state. Invalid bounds or expressions produce a diagnostic and a
 visible placeholder instead of stopping the rest of the document.

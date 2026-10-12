@@ -255,7 +255,10 @@ impl<W: Write> Interpreter<W> {
                     let value = self
                         .evaluate(&env, expr)
                         .map_err(|flow| self.describe_top_level(flow))?;
-                    result = Some(value);
+                    result = Some(
+                        self.simplify_final_value(value)
+                            .map_err(|flow| self.describe_top_level(flow))?,
+                    );
                     continue;
                 }
             }
@@ -366,6 +369,7 @@ impl<W: Write> Interpreter<W> {
             None => expression.clone(),
         };
         self.evaluate(&env, &effective)
+            .and_then(|value| self.simplify_final_value(value))
             .map_err(|flow| self.describe_top_level(flow))
     }
 
@@ -388,6 +392,17 @@ impl<W: Write> Interpreter<W> {
         let Some(Value::Builtin(builtin)) = Environment::get(&self.globals, symbol) else {
             return self.evaluate_expression(expression);
         };
+        if builtin == Builtin::Limit && args.len() == 3 {
+            if let (ExprKind::Variable(variable), ExprKind::String(point)) =
+                (&args[1].kind, &args[2].kind)
+            {
+                if (point == "infinity" || point == "-infinity")
+                    && Self::contains_matrix_sequence_power(&args[0], *variable)
+                {
+                    return self.evaluate_expression(expression);
+                }
+            }
+        }
         let documented = match builtin {
             Builtin::Transpose => Builtin::TransposeSteps,
             Builtin::Trace => Builtin::TraceSteps,
@@ -440,7 +455,9 @@ impl<W: Write> Interpreter<W> {
             }
             Ok(result)
         });
-        value.map_err(|flow| self.describe_top_level(flow))
+        value
+            .and_then(|value| self.simplify_final_value(value))
+            .map_err(|flow| self.describe_top_level(flow))
     }
 
     fn documented_calculus_steps(
@@ -449,6 +466,9 @@ impl<W: Write> Interpreter<W> {
         args: &[Value],
         result: Value,
     ) -> ExecResult<Value> {
+        if builtin == Builtin::Limit && matches!(args[0], Value::Array(_)) {
+            return Ok(result);
+        }
         let expression = self.value_to_symbolic(args[0].clone())?;
         let mut steps = vec![DerivationStep {
             value: args[0].clone(),
@@ -927,6 +947,7 @@ impl<W: Write> Interpreter<W> {
 
             StatementKind::Print(expr) => {
                 let v = self.evaluate(env, expr)?;
+                let v = self.simplify_final_value(v)?;
                 let rendered = self.stringify(&v);
                 writeln!(self.output, "{rendered}")
                     .map_err(|error| self.error(format!("failed to write output: {error}")))?;
@@ -1116,6 +1137,25 @@ impl<W: Write> Interpreter<W> {
 
             ExprKind::Call { callee, args } => {
                 let callee_val = self.evaluate(env, callee)?;
+                if matches!(callee_val, Value::Builtin(Builtin::Limit)) && args.len() == 3 {
+                    if let (ExprKind::Variable(variable), ExprKind::String(point)) =
+                        (&args[1].kind, &args[2].kind)
+                    {
+                        if (point == "infinity" || point == "-infinity")
+                            && Environment::get(env, *variable).is_none()
+                            && Self::contains_matrix_sequence_power(&args[0], *variable)
+                        {
+                            if let Some(result) = self.matrix_sequence_limit_expression(
+                                env,
+                                &args[0],
+                                *variable,
+                                point == "-infinity",
+                            )? {
+                                return self.simplify_final_value(result);
+                            }
+                        }
+                    }
+                }
                 let mut arg_vals = Vec::with_capacity(args.len());
                 for a in args {
                     arg_vals.push(self.evaluate(env, a)?);
@@ -4055,7 +4095,6 @@ impl<W: Write> Interpreter<W> {
                 Ok(Self::symbolic_value(result))
             }
             Builtin::Limit => {
-                let expression = self.value_to_symbolic(args[0].clone())?;
                 let variable = self.calculus_variable(&args[1], "limit")?;
                 if args.len() == 4 {
                     let Value::Str(side) = &args[3] else {
@@ -4065,37 +4104,7 @@ impl<W: Write> Interpreter<W> {
                         return Err(self.error("limit side must be \"left\" or \"right\""));
                     }
                 }
-                if let Value::Str(point) = &args[2] {
-                    if point == "infinity" || point == "-infinity" {
-                        if args.len() == 4 {
-                            return Err(self.error("limit side is only valid at a finite point"));
-                        }
-                        return self.limit_at_infinity(&expression, variable, point == "-infinity");
-                    }
-                }
-                let point = self.value_to_symbolic(args[2].clone())?;
-                if let Some(result) =
-                    self.limit_abs_ratio(&expression, variable, &point, args.get(3))?
-                {
-                    return Ok(result);
-                }
-                if let Some(result) =
-                    self.limit_directional_abs(&expression, variable, &point, args.get(3))?
-                {
-                    return Ok(result);
-                }
-                if let Some(result) =
-                    self.polynomial_rational_limit(&expression, variable, &point, args.get(3))?
-                {
-                    return Ok(result);
-                }
-                if let Some(divergence) =
-                    self.limit_at_finite_pole(&expression, variable, &point, args.get(3))?
-                {
-                    return Ok(divergence);
-                }
-                let result = self.limit_symbolic(expression, variable, &point)?;
-                Ok(Self::symbolic_value(result))
+                self.limit_value(&args[0], variable, &args[2], args.get(3))
             }
             Builtin::Series => {
                 let expression = self.value_to_symbolic(args[0].clone())?;
@@ -5153,6 +5162,50 @@ impl<W: Write> Interpreter<W> {
             -1
         };
         Ok(Some(Self::integer_value(sign)))
+    }
+
+    /// A matrix (or vector) limit exists exactly when every entry has the
+    /// requested scalar limit. Preserve the shape, including nested arrays.
+    fn limit_value(
+        &self,
+        value: &Value,
+        variable: Symbol,
+        point: &Value,
+        side: Option<&Value>,
+    ) -> ExecResult<Value> {
+        if let Value::Array(entries) = value {
+            return Ok(Value::Array(Rc::new(
+                entries
+                    .iter()
+                    .map(|entry| self.limit_value(entry, variable, point, side))
+                    .collect::<ExecResult<Vec<_>>>()?,
+            )));
+        }
+        let expression = self.value_to_symbolic(value.clone())?;
+        if let Value::Str(direction) = point {
+            if direction == "infinity" || direction == "-infinity" {
+                if side.is_some() {
+                    return Err(self.error("limit side is only valid at a finite point"));
+                }
+                return self.limit_at_infinity(&expression, variable, direction == "-infinity");
+            }
+        }
+        let point = self.value_to_symbolic(point.clone())?;
+        if let Some(result) = self.limit_abs_ratio(&expression, variable, &point, side)? {
+            return Ok(result);
+        }
+        if let Some(result) = self.limit_directional_abs(&expression, variable, &point, side)? {
+            return Ok(result);
+        }
+        if let Some(result) = self.polynomial_rational_limit(&expression, variable, &point, side)? {
+            return Ok(result);
+        }
+        if let Some(result) = self.limit_at_finite_pole(&expression, variable, &point, side)? {
+            return Ok(result);
+        }
+        Ok(Self::symbolic_value(
+            self.limit_symbolic(expression, variable, &point)?,
+        ))
     }
 
     fn limit_symbolic(
@@ -6790,6 +6843,117 @@ impl<W: Write> Interpreter<W> {
         right: Rc<SymbolicExpr>,
     ) -> Rc<SymbolicExpr> {
         Rc::new(SymbolicExpr::Binary { left, op, right })
+    }
+
+    /// Complete numeric folding after the ordinary algebraic identity rules,
+    /// including entries of matrices and derivation results.
+    fn simplify_final_value(&self, value: Value) -> ExecResult<Value> {
+        match value {
+            Value::Symbolic(expression) => self
+                .fold_final_numbers(&expression)
+                .map(Self::symbolic_value),
+            Value::Array(entries) => Ok(Value::Array(Rc::new(
+                entries
+                    .iter()
+                    .cloned()
+                    .map(|entry| self.simplify_final_value(entry))
+                    .collect::<ExecResult<Vec<_>>>()?,
+            ))),
+            Value::Map(entries) => Ok(Value::Map(Rc::new(
+                entries
+                    .iter()
+                    .cloned()
+                    .map(|(key, value)| Ok((key, self.simplify_final_value(value)?)))
+                    .collect::<ExecResult<Vec<_>>>()?,
+            ))),
+            Value::Derivation { result, steps } => Ok(Value::Derivation {
+                result: Rc::new(self.simplify_final_value(result.as_ref().clone())?),
+                steps,
+            }),
+            value => Ok(value),
+        }
+    }
+
+    /// Preserve explicitly requested forms such as `factor` and `apart` while
+    /// folding numeric leaves exposed by substitution (for example `0 ^ 2`).
+    fn fold_final_numbers(&self, expression: &Rc<SymbolicExpr>) -> ExecResult<Rc<SymbolicExpr>> {
+        match expression.as_ref() {
+            SymbolicExpr::Unary { op, expr } => {
+                let inner = self.fold_final_numbers(expr)?;
+                if matches!(
+                    inner.as_ref(),
+                    SymbolicExpr::Number(Number::Integer(_) | Number::Rational(_))
+                ) {
+                    return self
+                        .apply_unary(*op, Self::symbolic_value(inner))
+                        .and_then(|value| self.value_to_symbolic(value));
+                }
+                Ok(Rc::new(SymbolicExpr::Unary {
+                    op: *op,
+                    expr: inner,
+                }))
+            }
+            SymbolicExpr::Binary { left, op, right } => {
+                let left = self.fold_final_numbers(left)?;
+                let right = self.fold_final_numbers(right)?;
+                if matches!(
+                    (left.as_ref(), right.as_ref()),
+                    (
+                        SymbolicExpr::Number(Number::Integer(_) | Number::Rational(_)),
+                        SymbolicExpr::Number(Number::Integer(_) | Number::Rational(_))
+                    )
+                ) && matches!(
+                    op,
+                    BinaryOp::Add
+                        | BinaryOp::Sub
+                        | BinaryOp::Mul
+                        | BinaryOp::Div
+                        | BinaryOp::Mod
+                        | BinaryOp::Pow
+                ) {
+                    return self
+                        .apply_binary(*op, Self::symbolic_value(left), Self::symbolic_value(right))
+                        .and_then(|value| self.value_to_symbolic(value));
+                }
+                let identity_candidate = left.equals(&right)
+                    || Self::symbolic_is_zero(&left)
+                    || Self::symbolic_is_zero(&right)
+                    || Self::symbolic_is_one(&left)
+                    || Self::symbolic_is_one(&right)
+                    || matches!(op, BinaryOp::Add | BinaryOp::Sub)
+                        && Self::squared_unary_call(&left).is_some()
+                        && Self::squared_unary_call(&right).is_some();
+                if identity_candidate
+                    && matches!(
+                        op,
+                        BinaryOp::Add
+                            | BinaryOp::Sub
+                            | BinaryOp::Mul
+                            | BinaryOp::Div
+                            | BinaryOp::Pow
+                    )
+                {
+                    if let Ok(Value::Number(number @ (Number::Integer(_) | Number::Rational(_)))) =
+                        self.symbolic_binary(
+                            *op,
+                            Self::symbolic_value(Rc::clone(&left)),
+                            Self::symbolic_value(Rc::clone(&right)),
+                        )
+                    {
+                        return Ok(Rc::new(SymbolicExpr::Number(number)));
+                    }
+                }
+                Ok(Self::symbolic_binary_raw(left, *op, right))
+            }
+            SymbolicExpr::Call { function, args } => Ok(Rc::new(SymbolicExpr::Call {
+                function: *function,
+                args: args
+                    .iter()
+                    .map(|argument| self.fold_final_numbers(argument))
+                    .collect::<ExecResult<Vec<_>>>()?,
+            })),
+            _ => Ok(Rc::clone(expression)),
+        }
     }
 
     fn simplify_symbolic_tree(
@@ -10299,6 +10463,258 @@ impl<W: Write> Interpreter<W> {
             }
         }
         Ok(Self::matrix_value(result))
+    }
+
+    /// Evaluate a matrix sequence limit before ordinary evaluation rejects a
+    /// symbolic matrix exponent. Surrounding continuous matrix operations can
+    /// then consume the limiting matrix directly.
+    fn contains_matrix_sequence_power(expression: &Expr, variable: Symbol) -> bool {
+        match &expression.kind {
+            ExprKind::Binary {
+                op: BinaryOp::Pow,
+                right,
+                ..
+            } if matches!(right.kind, ExprKind::Variable(found) if found == variable) => true,
+            ExprKind::Binary { left, right, .. } => {
+                Self::contains_matrix_sequence_power(left, variable)
+                    || Self::contains_matrix_sequence_power(right, variable)
+            }
+            ExprKind::Call { args, .. } | ExprKind::Array(args) => args
+                .iter()
+                .any(|argument| Self::contains_matrix_sequence_power(argument, variable)),
+            ExprKind::Group(inner) | ExprKind::Unary { expr: inner, .. } => {
+                Self::contains_matrix_sequence_power(inner, variable)
+            }
+            _ => false,
+        }
+    }
+
+    fn matrix_sequence_limit_expression(
+        &mut self,
+        env: &Env,
+        expression: &Expr,
+        variable: Symbol,
+        negative_infinity: bool,
+    ) -> ExecResult<Option<Value>> {
+        match &expression.kind {
+            ExprKind::Group(inner) => {
+                self.matrix_sequence_limit_expression(env, inner, variable, negative_infinity)
+            }
+            ExprKind::Binary {
+                left,
+                op: BinaryOp::Pow,
+                right,
+                ..
+            } if matches!(right.kind, ExprKind::Variable(found) if found == variable) => {
+                let base = self.evaluate(env, left)?;
+                if matches!(base, Value::Array(_)) {
+                    self.matrix_power_limit(&base, negative_infinity).map(Some)
+                } else {
+                    Ok(None)
+                }
+            }
+            ExprKind::Binary {
+                left, op, right, ..
+            } if matches!(op, BinaryOp::Mul | BinaryOp::Add | BinaryOp::Sub) => {
+                let left_limit =
+                    self.matrix_sequence_limit_expression(env, left, variable, negative_infinity)?;
+                let right_limit =
+                    self.matrix_sequence_limit_expression(env, right, variable, negative_infinity)?;
+                if left_limit.is_none() && right_limit.is_none() {
+                    return Ok(None);
+                }
+                let point = Value::Str(
+                    if negative_infinity {
+                        "-infinity"
+                    } else {
+                        "infinity"
+                    }
+                    .to_owned(),
+                );
+                let left = match left_limit {
+                    Some(value) => value,
+                    None => {
+                        let value = self.evaluate(env, left)?;
+                        self.limit_value(&value, variable, &point, None)?
+                    }
+                };
+                let right = match right_limit {
+                    Some(value) => value,
+                    None => {
+                        let value = self.evaluate(env, right)?;
+                        self.limit_value(&value, variable, &point, None)?
+                    }
+                };
+                self.apply_binary(*op, left, right).map(Some)
+            }
+            ExprKind::Call { callee, args } => {
+                let builtin = match self.evaluate(env, callee)? {
+                    Value::Builtin(builtin)
+                        if matches!(
+                            builtin,
+                            Builtin::Transpose
+                                | Builtin::Trace
+                                | Builtin::Determinant
+                                | Builtin::Matmul
+                                | Builtin::Inverse
+                                | Builtin::MatrixExp
+                                | Builtin::Dot
+                                | Builtin::Norm
+                        ) =>
+                    {
+                        builtin
+                    }
+                    _ => return Ok(None),
+                };
+                let mut values = Vec::with_capacity(args.len());
+                let mut found_power = false;
+                let point = Value::Str(
+                    if negative_infinity {
+                        "-infinity"
+                    } else {
+                        "infinity"
+                    }
+                    .to_owned(),
+                );
+                for argument in args {
+                    if let Some(value) = self.matrix_sequence_limit_expression(
+                        env,
+                        argument,
+                        variable,
+                        negative_infinity,
+                    )? {
+                        found_power = true;
+                        values.push(value);
+                    } else {
+                        let value = self.evaluate(env, argument)?;
+                        values.push(self.limit_value(&value, variable, &point, None)?);
+                    }
+                }
+                if found_power {
+                    self.call_builtin(builtin, values).map(Some)
+                } else {
+                    Ok(None)
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn matrix_power_limit(&self, base: &Value, negative_infinity: bool) -> ExecResult<Value> {
+        let matrix = self.square_matrix(base, "matrix power limit")?;
+        let size = matrix.len();
+        let rational = |value: &Value| -> ExecResult<BigRational> {
+            match value {
+                Value::Number(Number::Integer(number)) => {
+                    Ok(BigRational::from_integer(number.clone()))
+                }
+                Value::Number(Number::Rational(number)) => Ok(number.clone()),
+                _ => Err(self.error("matrix power limits require exact rational entries")),
+            }
+        };
+        let entries = matrix
+            .iter()
+            .map(|row| row.iter().map(&rational).collect::<ExecResult<Vec<_>>>())
+            .collect::<ExecResult<Vec<_>>>()?;
+        let zero = BigRational::zero();
+        let one = BigRational::one();
+        let diagonal =
+            (0..size).all(|row| (0..size).all(|col| row == col || entries[row][col].is_zero()));
+        if diagonal {
+            let mut result = vec![vec![Value::Number(Number::Integer(BigInt::zero())); size]; size];
+            for index in 0..size {
+                let weight = self.matrix_power_weight(&entries[index][index], negative_infinity)?;
+                result[index][index] = Value::Number(Number::from_rational(weight));
+            }
+            return Ok(Self::matrix_value(result));
+        }
+        if size != 2 {
+            return Err(self.error("non-diagonal matrix power limits currently require a 2x2 matrix with rational eigenvalues"));
+        }
+        let trace = &entries[0][0] + &entries[1][1];
+        let determinant = &entries[0][0] * &entries[1][1] - &entries[0][1] * &entries[1][0];
+        let discriminant =
+            &trace * &trace - BigRational::from_integer(BigInt::from(4)) * determinant;
+        if discriminant.is_negative() {
+            return Err(self.error("matrix power limit has non-real eigenvalues"));
+        }
+        let numerator_root = discriminant.numer().sqrt();
+        let denominator_root = discriminant.denom().sqrt();
+        if &numerator_root * &numerator_root != *discriminant.numer()
+            || &denominator_root * &denominator_root != *discriminant.denom()
+        {
+            return Err(self.error("matrix power limit requires rational eigenvalues"));
+        }
+        let root = BigRational::new(numerator_root, denominator_root);
+        let two = BigRational::from_integer(BigInt::from(2));
+        let first = (&trace + &root) / &two;
+        let second = (&trace - &root) / &two;
+        if first == second {
+            let weight = self.matrix_power_weight(&first, negative_infinity)?;
+            if weight.is_zero() {
+                return Ok(Self::matrix_value(vec![vec![Self::integer_value(0); 2]; 2]));
+            }
+            if (0..2).all(|row| {
+                (0..2).all(|col| {
+                    entries[row][col]
+                        == if row == col {
+                            one.clone()
+                        } else {
+                            zero.clone()
+                        }
+                })
+            }) {
+                return Ok(Self::matrix_value(vec![
+                    vec![Self::integer_value(1), Self::integer_value(0)],
+                    vec![Self::integer_value(0), Self::integer_value(1)],
+                ]));
+            }
+            return Err(self.error(
+                "matrix power limit does not exist: eigenvalue 1 has a nontrivial Jordan block",
+            ));
+        }
+        let first_weight = self.matrix_power_weight(&first, negative_infinity)?;
+        let second_weight = self.matrix_power_weight(&second, negative_infinity)?;
+        let denominator = &first - &second;
+        let result = (0..2)
+            .map(|row| {
+                (0..2)
+                    .map(|col| {
+                        let identity = if row == col {
+                            one.clone()
+                        } else {
+                            zero.clone()
+                        };
+                        let projector = (&entries[row][col] - &second * &identity) / &denominator;
+                        Value::Number(Number::from_rational(
+                            &first_weight * &projector + &second_weight * (&identity - projector),
+                        ))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        Ok(Self::matrix_value(result))
+    }
+
+    fn matrix_power_weight(
+        &self,
+        eigenvalue: &BigRational,
+        negative_infinity: bool,
+    ) -> ExecResult<BigRational> {
+        if eigenvalue == &BigRational::one() {
+            return Ok(BigRational::one());
+        }
+        let magnitude = eigenvalue.abs();
+        let contracts = if negative_infinity {
+            magnitude > BigRational::one()
+        } else {
+            magnitude < BigRational::one()
+        };
+        if contracts {
+            Ok(BigRational::zero())
+        } else {
+            Err(self.error("matrix power limit does not converge"))
+        }
     }
 
     fn rational_pow(mut base: BigRational, mut exponent: u32) -> BigRational {

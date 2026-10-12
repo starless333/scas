@@ -83,11 +83,12 @@ const SVG_GRAPH_COLORS: &[u32] = &[
 ];
 
 const GUI_PLOT_HELP: &str =
-    "usage: :plot [terminal|svg] EXPRESSION[, EXPRESSION…] [from A to B] [> FILE]\n\n\
-  Draws the graph inline; svg mode or FILE ending in .svg produces a vector image.\n\nexamples:\n\
+    "usage: :plot [terminal|svg] EXPRESSION[ EXPRESSION…] [from X_MIN to X_MAX [y from Y_MIN to Y_MAX]] [> FILE]\n\n\
+  Draws an SVG graph inline by default. Separate curves with spaces or commas;\n\
+  terminal mode draws a character-grid graph instead.\n\nexamples:\n\
   :plot sin(x)\n\
   :plot x^2 - 2x from -5 to 5\n\
-  :plot svg sin(x), cos(x) from -6 to 6 > graph.svg";
+  :plot sin(x) cos(x) from -6 to 6 y from -2 to 2 > graph.svg";
 
 const GREEK: &[(&str, &str)] = &[
     ("\\Alpha", "Α"),
@@ -7714,7 +7715,10 @@ mod tests {
         app.repl_input = ":plot x^2 from -2 to 2".to_string();
         app.submit_repl();
         assert_eq!(app.repl_entries.len(), 1);
-        assert!(app.repl_entries[0].plot.is_some());
+        assert!(app.repl_entries[0]
+            .plot
+            .as_ref()
+            .is_some_and(|plot| plot.svg));
         assert!(app.repl_entries[0].error.is_none());
         assert!(app.repl_input.is_empty());
 

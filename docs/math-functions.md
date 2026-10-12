@@ -293,6 +293,14 @@ polynomial. `sum(f, k, a, b)` and `product(f, k, a, b)` evaluate finite integer
 ranges exactly. Symbolic sums of `1`, `k`, `k^2`, and `k^3` use Faulhaber
 forms; unsupported symbolic bounds remain unevaluated.
 
+Limits of vectors and matrices are computed entry by entry, including values
+returned by matrix-valued functions. Matrix power sequence limits such as
+`limit(A^n, n, "infinity")` cover exact rational diagonal matrices of any size
+and exact rational 2×2 matrices with rational eigenvalues. The same limit can
+flow through continuous matrix operations such as `trace`, `det`, and `matmul`.
+Oscillating, divergent, or unsupported spectral cases return an error rather
+than an estimated answer.
+
 `dsolve([a, b], x)` and `dsolve([a, b, c], x)` return a fundamental solution
 basis for homogeneous constant-coefficient first- and second-order ODEs.
 `dsolve(p, q, x, C)` solves the first-order linear equation

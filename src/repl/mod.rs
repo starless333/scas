@@ -15,8 +15,8 @@ const PLOT_ASCII_WIDTH: usize = 64;
 const PLOT_ASCII_HEIGHT: usize = 17;
 
 const PLOT_HELP: &str =
-    "usage: :plot [terminal|svg] EXPRESSION[, EXPRESSION…] [from A to B] [> FILE]\n\n\
-  The independent variable is x. Multiple expressions draw together in\n\
+    "usage: :plot [terminal|svg] EXPRESSION[ EXPRESSION…] [from X_MIN to X_MAX [y from Y_MIN to Y_MAX]] [> FILE]\n\n\
+  The independent variable is x. Separate expressions with spaces or commas; they draw together in\n\
   distinct characters. With no range the window is -10 to 10.\n\
   Terminal output is the default. The svg mode emits vector markup to\n\
   stdout or to FILE when redirected. A file ending in .svg also receives\n\
@@ -25,7 +25,7 @@ examples:\n\
   :plot sin(x)\n\
   :plot svg sin(x) > graph.svg\n\
   :plot x^2 - 2x from -5 to 5\n\
-  :plot sin(x), cos(x) from -6 to 6\n\
+  :plot sin(x), cos(x) from -6 to 6 y from -2 to 2\n\
   :plot sin(x), cos(x) > graph.svg\n\
   :plot f(t) = 2t + 1 from 0 to 10\n\n\
   Plots use the session's definitions and restore any existing value\n\
@@ -85,11 +85,24 @@ where
                     writeln!(output, "{PLOT_HELP}")?;
                     continue;
                 }
-                let rest = rest.trim().to_owned();
+                let rest = rest.trim();
+                let redirects_to_svg = rest.rsplit_once('>').is_some_and(|(_, target)| {
+                    target.trim().to_ascii_lowercase().ends_with(".svg")
+                });
+                let plot_source = if rest == "svg"
+                    || rest.starts_with("svg ")
+                    || rest == "terminal"
+                    || rest.starts_with("terminal ")
+                    || redirects_to_svg
+                {
+                    rest.to_owned()
+                } else {
+                    format!("terminal {rest}")
+                };
                 match scas::plot::execute_plot_command(
                     &mut interpreter,
                     &mut symbols,
-                    &rest,
+                    &plot_source,
                     plot_width,
                     plot_height,
                     &std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),

@@ -4,13 +4,14 @@ These decisions close the open items in `DOCUMENTER.md`.
 
 - Render delimiters are `\{ ... \}` and `\[ ... \]`; ordinary braces retain
   their existing execution and scope meaning.
-- Render blocks share their surrounding scope so displayed definitions remain
-  usable afterward.
-- `///` inside a render block emits `\intertext{...}`. Four or more leading
+- Render blocks share their surrounding scope. Declarations and ordinary
+  statements execute silently; only expressions marked with `=>` are typeset.
+- `///` inside a render block closes the current alignment, renders as normal
+  prose, and starts a fresh alignment for later `=>` rows. Four or more leading
   slashes are ordinary comments.
 - Prose interpolation uses `#{ expression }`.
 - Raw LaTeX uses a string in render position.
-- Compound assignments render their expanded meaning, such as `a &= a + e`.
+- Compound assignments inside render blocks execute silently.
 - Control flow in render blocks executes silently and produces an informational
   diagnostic.
 - Vectors render as column `pmatrix` values by default.

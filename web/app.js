@@ -1,4 +1,9 @@
 let handle;
+// Browser integrations can use the same offline language service as the IDE.
+window.scasCreateLspClient = async (onNotification) => {
+  const { ScasLspClient } = await import("./lsp.js");
+  return new ScasLspClient(onNotification);
+};
 const loading = document.getElementById("loading");
 const loadingMessage = document.getElementById("loading-message");
 const loadingDetail = document.getElementById("loading-detail");
@@ -17,6 +22,17 @@ const previewSourceCode = document.getElementById("math-preview-source-code");
 document.getElementById("math-preview-close")?.addEventListener("click", () => window.scasClosePreview?.());
 let previewSource = null;
 let previewQueue = Promise.resolve();
+async function ensureMathJax() {
+  if (window.MathJax?.typesetPromise) return;
+  const script = document.querySelector('script[src*="mathjax"]');
+  if (window.MathJax?.startup?.promise) await window.MathJax.startup.promise;
+  else await new Promise((resolve, reject) => {
+    if (!script) return reject(new Error("MathJax script is missing"));
+    script.addEventListener("load", resolve, { once: true });
+    script.addEventListener("error", reject, { once: true });
+  });
+  if (!window.MathJax?.typesetPromise) throw new Error("MathJax is unavailable");
+}
 let previewTex = "";
 let previewVersion = 0;
 let previewScale = 1;
@@ -58,6 +74,9 @@ previewZoomOut?.addEventListener("click", () => updatePreviewZoom(previewZoom / 
 previewZoomReset?.addEventListener("click", () => updatePreviewZoom(1));
 previewZoomIn?.addEventListener("click", () => updatePreviewZoom(previewZoom * PREVIEW_ZOOM_STEP));
 previewContent?.addEventListener("wheel", (event) => {
+  // Trackpad pinches arrive as ctrl+wheel. Leave ordinary two-finger motion
+  // alone so it scrolls the document instead of changing its scale.
+  if (!event.ctrlKey) return;
   event.preventDefault();
   updatePreviewZoom(previewZoom * Math.exp(-event.deltaY / 300), event);
 }, { passive: false });
@@ -230,15 +249,7 @@ window.scasShowPreview = (fragmentsJson, tex, error, pending, x, y, width, heigh
   previewQueue = previewQueue.then(async () => {
     if (version !== previewVersion) return;
     fillPreview(fragments);
-    if (!window.MathJax?.typesetPromise) {
-      const script = document.querySelector('script[src*="mathjax"]');
-      if (window.MathJax?.startup?.promise) await window.MathJax.startup.promise;
-      else await new Promise((resolve, reject) => {
-        if (!script) return reject(new Error("MathJax script is missing"));
-        script.addEventListener("load", resolve, { once: true });
-        script.addEventListener("error", reject, { once: true });
-      });
-    }
+    await ensureMathJax();
     await window.MathJax.typesetPromise([previewContent]);
   }).catch((error) => {
     console.error("Math preview failed", error);
@@ -317,7 +328,26 @@ window.scasSetPreviewTheme = (panel, editor, text, muted, accent, selection) => 
     .getPropertyValue("--scas-editor").trim() === "#ffffff" ? "light" : "dark";
 };
 
-window.scasPrintDocument = () => window.print();
+window.scasPrintDocument = async (fragmentsJson, tex) => {
+  const wasHidden = preview.hidden;
+  preview.hidden = false;
+  try {
+    await previewQueue;
+    previewSource = fragmentsJson;
+    fillPreview(JSON.parse(fragmentsJson));
+    await ensureMathJax();
+    await window.MathJax.typesetPromise([previewContent]);
+    previewTex = tex;
+    if (previewSourceCode) previewSourceCode.textContent = tex;
+    const restore = () => { if (wasHidden) preview.hidden = true; };
+    window.addEventListener("afterprint", restore, { once: true });
+    window.print();
+  } catch (error) {
+    if (wasHidden) preview.hidden = true;
+    console.error("PDF export failed", error);
+    window.alert(`Could not prepare the PDF preview: ${error}`);
+  }
+};
 
 window.scasPromptInput = (message) => window.prompt(message);
 

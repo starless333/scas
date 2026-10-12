@@ -1,7 +1,6 @@
 //! Front-end utilities shared by the self-documenter and future IDE clients.
 
-use crate::ast::statement::FunctionBody;
-use crate::ast::{AssignOp, Expr, ExprKind, SourceSpan, Statement, StatementKind};
+use crate::ast::{Expr, ExprKind, SourceSpan, Statement, StatementKind};
 use crate::interpreter::value::Value;
 use crate::interpreter::Interpreter;
 use crate::latex::LatexRenderer;
@@ -15,6 +14,80 @@ use num_traits::{One, Zero};
 use std::io;
 use std::num::NonZeroU64;
 use std::ops::Range;
+
+// Raw prose can contain Unicode math even when evaluated expressions use TeX
+// commands. Declare common symbols so the document compiles with pdflatex.
+const PDF_UNICODE_DECLARATIONS: &str = r"\DeclareUnicodeCharacter{0393}{\ensuremath{\Gamma}}
+\DeclareUnicodeCharacter{0391}{A}
+\DeclareUnicodeCharacter{0392}{B}
+\DeclareUnicodeCharacter{0394}{\ensuremath{\Delta}}
+\DeclareUnicodeCharacter{0395}{E}
+\DeclareUnicodeCharacter{0396}{Z}
+\DeclareUnicodeCharacter{0397}{H}
+\DeclareUnicodeCharacter{0398}{\ensuremath{\Theta}}
+\DeclareUnicodeCharacter{0399}{I}
+\DeclareUnicodeCharacter{039A}{K}
+\DeclareUnicodeCharacter{039B}{\ensuremath{\Lambda}}
+\DeclareUnicodeCharacter{039C}{M}
+\DeclareUnicodeCharacter{039D}{N}
+\DeclareUnicodeCharacter{039E}{\ensuremath{\Xi}}
+\DeclareUnicodeCharacter{039F}{O}
+\DeclareUnicodeCharacter{03A0}{\ensuremath{\Pi}}
+\DeclareUnicodeCharacter{03A1}{P}
+\DeclareUnicodeCharacter{03A3}{\ensuremath{\Sigma}}
+\DeclareUnicodeCharacter{03A4}{T}
+\DeclareUnicodeCharacter{03A5}{Y}
+\DeclareUnicodeCharacter{03A6}{\ensuremath{\Phi}}
+\DeclareUnicodeCharacter{03A7}{X}
+\DeclareUnicodeCharacter{03A8}{\ensuremath{\Psi}}
+\DeclareUnicodeCharacter{03A9}{\ensuremath{\Omega}}
+\DeclareUnicodeCharacter{03B1}{\ensuremath{\alpha}}
+\DeclareUnicodeCharacter{03B2}{\ensuremath{\beta}}
+\DeclareUnicodeCharacter{03B3}{\ensuremath{\gamma}}
+\DeclareUnicodeCharacter{03B4}{\ensuremath{\delta}}
+\DeclareUnicodeCharacter{03B5}{\ensuremath{\epsilon}}
+\DeclareUnicodeCharacter{03B6}{\ensuremath{\zeta}}
+\DeclareUnicodeCharacter{03B7}{\ensuremath{\eta}}
+\DeclareUnicodeCharacter{03B8}{\ensuremath{\theta}}
+\DeclareUnicodeCharacter{03B9}{\ensuremath{\iota}}
+\DeclareUnicodeCharacter{03BA}{\ensuremath{\kappa}}
+\DeclareUnicodeCharacter{03BB}{\ensuremath{\lambda}}
+\DeclareUnicodeCharacter{03BC}{\ensuremath{\mu}}
+\DeclareUnicodeCharacter{03BD}{\ensuremath{\nu}}
+\DeclareUnicodeCharacter{03BE}{\ensuremath{\xi}}
+\DeclareUnicodeCharacter{03BF}{\ensuremath{o}}
+\DeclareUnicodeCharacter{03C0}{\ensuremath{\pi}}
+\DeclareUnicodeCharacter{03C1}{\ensuremath{\rho}}
+\DeclareUnicodeCharacter{03C2}{\ensuremath{\varsigma}}
+\DeclareUnicodeCharacter{03C3}{\ensuremath{\sigma}}
+\DeclareUnicodeCharacter{03C4}{\ensuremath{\tau}}
+\DeclareUnicodeCharacter{03C5}{\ensuremath{\upsilon}}
+\DeclareUnicodeCharacter{03C6}{\ensuremath{\phi}}
+\DeclareUnicodeCharacter{03C7}{\ensuremath{\chi}}
+\DeclareUnicodeCharacter{03C8}{\ensuremath{\psi}}
+\DeclareUnicodeCharacter{03C9}{\ensuremath{\omega}}
+\DeclareUnicodeCharacter{03D0}{\ensuremath{\beta}}
+\DeclareUnicodeCharacter{03D1}{\ensuremath{\vartheta}}
+\DeclareUnicodeCharacter{03D5}{\ensuremath{\varphi}}
+\DeclareUnicodeCharacter{03D6}{\ensuremath{\varpi}}
+\DeclareUnicodeCharacter{03F0}{\ensuremath{\kappa}}
+\DeclareUnicodeCharacter{03F1}{\ensuremath{\varrho}}
+\DeclareUnicodeCharacter{03F5}{\ensuremath{\varepsilon}}
+\DeclareUnicodeCharacter{00D7}{\ensuremath{\times}}
+\DeclareUnicodeCharacter{00B7}{\ensuremath{\cdot}}
+\DeclareUnicodeCharacter{2212}{\ensuremath{-}}
+\DeclareUnicodeCharacter{221E}{\ensuremath{\infty}}
+\DeclareUnicodeCharacter{2192}{\ensuremath{\to}}
+\DeclareUnicodeCharacter{2264}{\ensuremath{\leq}}
+\DeclareUnicodeCharacter{2265}{\ensuremath{\geq}}
+\DeclareUnicodeCharacter{2260}{\ensuremath{\neq}}
+\DeclareUnicodeCharacter{2013}{--}
+\DeclareUnicodeCharacter{2014}{---}
+\DeclareUnicodeCharacter{2018}{\textquoteleft}
+\DeclareUnicodeCharacter{2019}{\textquoteright}
+\DeclareUnicodeCharacter{201C}{\textquotedblleft}
+\DeclareUnicodeCharacter{201D}{\textquotedblright}
+";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Interpolation {
@@ -80,7 +153,7 @@ impl Document {
     }
 
     pub fn latex(&self) -> String {
-        let mut user_packages = String::new();
+        let mut user_packages = PDF_UNICODE_DECLARATIONS.to_owned();
         for package in &self.packages {
             if !package.is_empty()
                 && package
@@ -233,7 +306,7 @@ fn process_top_level(
             });
         }
         StatementKind::RenderBlock(statements) => {
-            render_block(statements, statement.span, interpreter, document)?;
+            render_block(statements, interpreter, document)?;
         }
         _ => interpreter
             .execute_statement(statement)
@@ -244,38 +317,31 @@ fn process_top_level(
 
 fn render_block(
     statements: &[Statement],
-    span: SourceSpan,
     interpreter: &mut Interpreter<io::Sink>,
     document: &mut Document,
 ) -> Result<(), ExecutionError> {
     let mut rows = Vec::new();
+    let mut rows_span = None;
     for statement in statements {
+        if let StatementKind::DocComment(prose) = &statement.kind {
+            flush_aligned_rows(&mut rows, &mut rows_span, document);
+            let latex = interpolate(prose, statement.span, interpreter, document);
+            document.fragments.push(DocumentFragment {
+                span: statement.span,
+                kind: FragmentKind::Prose,
+                latex,
+            });
+            continue;
+        }
+        if matches!(
+            statement.kind,
+            StatementKind::RenderLine { .. } | StatementKind::RenderBlock(_)
+        ) {
+            flush_aligned_rows(&mut rows, &mut rows_span, document);
+            process_top_level(statement, interpreter, document)?;
+            continue;
+        }
         let row = match &statement.kind {
-            StatementKind::DocComment(prose) => Some(format!(
-                r"\intertext{{{}}}",
-                interpolate(prose, statement.span, interpreter, document)
-            )),
-            StatementKind::Expr(expression) => {
-                if let Some(plot) = render_plot_call(expression, interpreter) {
-                    Some(format!(
-                        "& {}",
-                        plot.unwrap_or_else(|message| {
-                            document.diagnostics.push(DocumentDiagnostic {
-                                span: statement.span,
-                                severity: DiagnosticSeverity::Error,
-                                message,
-                            });
-                            r"\text{\textbf{plot unavailable}}".to_owned()
-                        })
-                    ))
-                } else {
-                    let text = LatexRenderer::new(interpreter.symbols()).expression(expression);
-                    interpreter
-                        .execute_statement(statement)
-                        .map_err(ExecutionError::Runtime)?;
-                    Some(text)
-                }
-            }
             StatementKind::Show(expression) => {
                 if let Some(plot) = render_plot_call(expression, interpreter) {
                     Some(format!(
@@ -301,82 +367,6 @@ fn render_block(
                     })
                 }
             }
-            StatementKind::Let { name, value } => {
-                let row = value.as_ref().map(|value| {
-                    let renderer = LatexRenderer::new(interpreter.symbols());
-                    let name = renderer.identifier(interpreter.symbols().resolve(*name));
-                    format!("{} &= {}", name, renderer.expression(value))
-                });
-                interpreter
-                    .execute_statement(statement)
-                    .map_err(ExecutionError::Runtime)?;
-                row
-            }
-            StatementKind::Assign { name, op, value } => {
-                let renderer = LatexRenderer::new(interpreter.symbols());
-                let name = renderer.identifier(interpreter.symbols().resolve(*name));
-                let rhs = renderer.expression(value);
-                let shown = match op {
-                    AssignOp::Assign => rhs,
-                    _ => format!("{name} {} {rhs}", assign_operator(*op)),
-                };
-                interpreter
-                    .execute_statement(statement)
-                    .map_err(ExecutionError::Runtime)?;
-                Some(format!("{name} &= {shown}"))
-            }
-            StatementKind::Function {
-                name,
-                params,
-                body: FunctionBody::Expression(body),
-            } => {
-                let renderer = LatexRenderer::new(interpreter.symbols());
-                let name = renderer.identifier(interpreter.symbols().resolve(*name));
-                let params = params
-                    .iter()
-                    .map(|symbol| renderer.identifier(interpreter.symbols().resolve(*symbol)))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let body = renderer.expression(body);
-                interpreter
-                    .execute_statement(statement)
-                    .map_err(ExecutionError::Runtime)?;
-                Some(format!(r"{name}\left({params}\right) &= {body}"))
-            }
-            StatementKind::Chain(statements) => {
-                let mut parts = Vec::new();
-                for chained in statements {
-                    let renderer = LatexRenderer::new(interpreter.symbols());
-                    match &chained.kind {
-                        StatementKind::Let {
-                            name,
-                            value: Some(value),
-                        } => parts.push(format!(
-                            "{} = {}",
-                            renderer.identifier(interpreter.symbols().resolve(*name)),
-                            renderer.expression(value)
-                        )),
-                        StatementKind::Let { value: None, .. } => {}
-                        StatementKind::Assign { name, value, .. } => parts.push(format!(
-                            "{} = {}",
-                            renderer.identifier(interpreter.symbols().resolve(*name)),
-                            renderer.expression(value)
-                        )),
-                        StatementKind::Expr(expression) => {
-                            parts.push(renderer.expression(expression))
-                        }
-                        _ => {}
-                    }
-                    interpreter
-                        .execute_statement(chained)
-                        .map_err(ExecutionError::Runtime)?;
-                }
-                (!parts.is_empty()).then(|| parts.join(r" \quad "))
-            }
-            StatementKind::RenderLine { .. } | StatementKind::RenderBlock(_) => {
-                process_top_level(statement, interpreter, document)?;
-                None
-            }
             StatementKind::If { .. } | StatementKind::While { .. } | StatementKind::For { .. } => {
                 document.diagnostics.push(DocumentDiagnostic {
                     span: statement.span,
@@ -396,6 +386,9 @@ fn render_block(
             }
         };
         if let Some(row) = row {
+            rows_span = Some(rows_span.map_or(statement.span, |start: SourceSpan| {
+                start.through(statement.span)
+            }));
             // A result may contain its own aligned derivation. In a render
             // block the outer align* already supplies that environment.
             rows.push(
@@ -406,14 +399,26 @@ fn render_block(
             );
         }
     }
-    if !rows.is_empty() {
-        document.fragments.push(DocumentFragment {
-            span,
-            kind: FragmentKind::AlignedMath,
-            latex: format!(r"\begin{{align*}}{}\end{{align*}}", rows.join(" \\\\\n")),
-        });
-    }
+    flush_aligned_rows(&mut rows, &mut rows_span, document);
     Ok(())
+}
+
+fn flush_aligned_rows(
+    rows: &mut Vec<String>,
+    span: &mut Option<SourceSpan>,
+    document: &mut Document,
+) {
+    if rows.is_empty() {
+        return;
+    }
+    document.fragments.push(DocumentFragment {
+        span: span.take().expect("render rows always carry a source span"),
+        kind: FragmentKind::AlignedMath,
+        latex: format!(
+            r"\begin{{align*}}{}\end{{align*}}",
+            std::mem::take(rows).join(" \\\\\n")
+        ),
+    });
 }
 
 /// Evaluate `plot(expression[, variable], lower, upper)` in document scope
@@ -865,20 +870,6 @@ fn render_conventional_call(name: &str, args: &[String]) -> String {
     }
 }
 
-fn assign_operator(operator: AssignOp) -> &'static str {
-    match operator {
-        AssignOp::Assign => "=",
-        AssignOp::AddAssign => "+",
-        AssignOp::SubAssign => "-",
-        AssignOp::MulAssign => r"\cdot",
-        AssignOp::DivAssign => "/",
-        AssignOp::ModAssign => r"\bmod",
-        AssignOp::PowAssign => "^",
-        AssignOp::BitAndAssign => r"\mathbin{\&}",
-        AssignOp::BitOrAssign => r"\mathbin{|}",
-    }
-}
-
 fn interpolate(
     prose: &str,
     span: SourceSpan,
@@ -1035,7 +1026,7 @@ mod tests {
         assert_eq!(document.fragments.len(), 3);
         assert!(document.fragments[0].latex.contains("Current value: 2"));
         assert!(document.fragments[1].latex.contains(r"x + 3 = 5"));
-        assert!(document.fragments[2].latex.contains(r"y &= x \cdot 4"));
+        assert!(!document.fragments[2].latex.contains(r"y &= x \cdot 4"));
         assert!(document.fragments[2].latex.contains(r"\frac{y}{2} = 4"));
         assert!(document.latex().contains(r"\usepackage{amsmath}"));
         assert!(document.latex().contains(r"\allowdisplaybreaks[4]"));
@@ -1046,9 +1037,33 @@ mod tests {
     }
 
     #[test]
+    fn prose_inside_render_blocks_splits_aligned_groups() {
+        let document = build(
+            r#"\{
+let x = 2;
+x =>;
+/// Between results: #{ x }
+x + 1 =>;
+\}
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(document.fragments.len(), 3);
+        assert_eq!(document.fragments[0].kind, FragmentKind::AlignedMath);
+        assert!(document.fragments[0].latex.contains("x = 2"));
+        assert_eq!(document.fragments[1].kind, FragmentKind::Prose);
+        assert_eq!(document.fragments[1].latex, "Between results: 2");
+        assert_eq!(document.fragments[2].kind, FragmentKind::AlignedMath);
+        assert!(document.fragments[2].latex.contains("x + 1 = 3"));
+        assert_eq!(document.body().matches(r"\begin{align*}").count(), 2);
+        assert!(!document.body().contains(r"\intertext"));
+    }
+
+    #[test]
     fn user_function_definitions_and_calls_use_math_identifiers() {
         let document = build("\\{ f(x)=2x+1; solve(f(x),x) =>; \\}\n").unwrap();
-        assert!(document.body().contains(r"f\left(x\right) &= 2x + 1"));
+        assert!(!document.body().contains(r"f\left(x\right) &= 2x + 1"));
         assert!(document.body().contains(r"f\left(x\right) &= 0"));
         assert!(!document.body().contains(r"\operatorname{f}"));
     }
@@ -1121,6 +1136,7 @@ mod tests {
         .unwrap();
         let latex = document.latex();
         assert!(latex.contains(r"\usepackage{mathtools}"));
+        assert!(latex.contains(r"\DeclareUnicodeCharacter{039B}{\ensuremath{\Lambda}}"));
         assert!(!latex.contains("bad{package}"));
     }
 
@@ -1131,20 +1147,24 @@ mod tests {
 solve(z^2-z, z) =>;
 let long_name = 2, x = 1;
 x = 3;
+x + 100;
+x =>;
 det_steps([1, 2; 3, 4]) =>;
 \}
 "#,
         )
         .unwrap();
         let latex = &document.fragments[0].latex;
-        assert!(latex.contains(r"\mathrm{long}_{\mathrm{name}} = 2 \quad x = 1"));
+        assert!(!latex.contains(r"\mathrm{long}_{\mathrm{name}}"));
+        assert!(!latex.contains("x + 100"));
+        assert!(latex.contains("x = 3"));
         assert!(latex.contains(r"z^{2} - z &= 0"), "{latex}");
         assert!(latex.contains(r"&\implies z = 0"), "{latex}");
         assert!(latex.contains(r"z = 0"));
         assert!(latex.contains(r"z = 1"));
         assert!(latex.contains(r"\begin{align*}"));
         assert!(!latex.contains(r"\begin{aligned}"));
-        assert!(latex.matches("\\\\\n").count() >= 3, "{latex}");
+        assert!(latex.matches("\\\\\n").count() >= 2, "{latex}");
     }
 
     #[test]
