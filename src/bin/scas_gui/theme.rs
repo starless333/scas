@@ -150,7 +150,7 @@ impl Theme {
         style.visuals.widgets.inactive.fg_stroke.color = self.ui.text.0;
         style.visuals.widgets.inactive.rounding = egui::Rounding::same(2.0);
         style.visuals.widgets.inactive.bg_stroke =
-            egui::Stroke::new(1.0, self.ui.muted.0.gamma_multiply(0.28));
+            egui::Stroke::new(1.0_f32, self.ui.muted.0.gamma_multiply(0.28));
         style.visuals.widgets.hovered.bg_fill = self.ui.selection.0;
         style.visuals.widgets.hovered.fg_stroke.color = self.ui.text.0;
         style.visuals.widgets.hovered.rounding = egui::Rounding::same(2.0);

@@ -1,0 +1,11 @@
+changes-20261001
+
+Goal 1: Improves the aesthetics of the editor 
+1.1. Change font
+1.2 Change layout
+
+Goal 2: Refine graphing part
+1.1 Make sure to show roots of curve in the graphing part iff hover over curve
+1.2 Separate roots from discontinuities
+
+

@@ -1,4 +1,10 @@
+#[cfg(target_arch = "wasm32")]
+use crate::intelligence::SourceIndex;
+#[cfg(target_arch = "wasm32")]
+use crate::interpreter::value::Builtin;
+#[cfg(not(target_arch = "wasm32"))]
 use scas::intelligence::SourceIndex;
+#[cfg(not(target_arch = "wasm32"))]
 use scas::interpreter::value::Builtin;
 
 pub const MAX_MATCHES: usize = 6;

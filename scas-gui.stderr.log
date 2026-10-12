@@ -1,0 +1,173 @@
+    Updating crates.io index
+ Downloading crates ...
+  Downloaded ab_glyph v0.2.32
+  Downloaded ab_glyph_rasterizer v0.1.10
+  Downloaded ahash v0.8.12
+  Downloaded bytemuck_derive v1.12.1
+  Downloaded bit-set v0.5.3
+  Downloaded com_macros v0.6.0
+  Downloaded cursor-icon v1.2.0
+  Downloaded document-features v0.2.12
+  Downloaded error-code v3.4.0
+  Downloaded cfg_aliases v0.1.1
+  Downloaded glutin-winit v0.4.2
+  Downloaded glutin_egl_sys v0.6.0
+  Downloaded glutin_wgl_sys v0.5.0
+  Downloaded gpu-descriptor v0.3.2
+  Downloaded gpu-descriptor-types v0.2.0
+  Downloaded icu_provider_macros v1.5.0
+  Downloaded ecolor v0.28.1
+  Downloaded gpu-alloc-types v0.3.1
+  Downloaded hexf-parse v0.2.1
+  Downloaded byteorder-lite v0.1.0
+  Downloaded idna_adapter v1.2.0
+  Downloaded bit-vec v0.6.3
+  Downloaded com v0.6.0
+  Downloaded foldhash v0.1.5
+  Downloaded clipboard-win v5.4.1
+  Downloaded displaydoc v0.2.7
+  Downloaded memoffset v0.9.1
+  Downloaded com_macros_support v0.6.0
+  Downloaded egui-wgpu v0.28.1
+  Downloaded icu_locid_transform v1.5.0
+  Downloaded khronos-egl v6.0.0
+  Downloaded egui-winit v0.28.1
+  Downloaded emath v0.28.1
+  Downloaded gpu-alloc v0.6.2
+  Downloaded hassle-rs v0.11.0
+  Downloaded arrayvec v0.7.8
+  Downloaded crc32fast v1.5.2
+  Downloaded gl_generator v0.14.0
+  Downloaded egui_glow v0.28.1
+  Downloaded libloading v0.7.4
+  Downloaded litemap v0.7.4
+  Downloaded gpu-allocator v0.25.0
+  Downloaded icu_locid_transform_data v1.5.1
+  Downloaded bitflags v2.13.2
+  Downloaded codespan-reporting v0.11.1
+  Downloaded libloading v0.8.9
+  Downloaded litrs v1.0.0
+  Downloaded nohash-hasher v0.2.0
+  Downloaded bytemuck v1.25.2
+  Downloaded owned_ttf_parser v0.25.1
+  Downloaded icu_normalizer_data v1.5.1
+  Downloaded icu_locid v1.5.0
+  Downloaded icu_normalizer v1.5.0
+  Downloaded icu_properties v1.5.1
+  Downloaded glutin v0.31.3
+  Downloaded log v0.4.34
+  Downloaded arboard v3.6.1
+  Downloaded icu_provider v1.5.0
+  Downloaded flate2 v1.1.10
+  Downloaded icu_collections v1.5.0
+  Downloaded miniz_oxide v0.9.1
+  Downloaded indexmap v2.11.4
+  Downloaded eframe v0.28.1
+  Downloaded glow v0.13.1
+  Downloaded hashbrown v0.16.1
+  Downloaded hashbrown v0.15.5
+  Downloaded icu_properties_data v1.5.1
+  Downloaded image v0.25.6
+  Downloaded egui v0.28.1
+  Downloaded ash v0.37.3+1.3.251
+  Downloaded pkg-config v0.3.34
+  Downloaded presser v0.3.1
+  Downloaded khronos_api v3.1.0
+  Downloaded naga v0.20.0
+  Downloaded epaint v0.28.1
+  Downloaded raw-window-handle v0.5.2
+  Downloaded renderdoc-sys v1.1.0
+  Downloaded rustc-hash v1.1.0
+  Downloaded profiling v1.0.18
+  Downloaded serde_spanned v0.6.9
+  Downloaded smallvec v1.16.2
+  Downloaded smol_str v0.2.2
+  Downloaded spirv v0.3.0+sdk-1.3.268.0
+  Downloaded syn v1.0.109
+  Downloaded syn v3.0.6
+  Downloaded synstructure v0.14.0
+  Downloaded termcolor v1.4.1
+  Downloaded toml_datetime v0.6.11
+  Downloaded tinystr v0.7.6
+  Downloaded toml v0.8.23
+  Downloaded type-map v0.5.1
+  Downloaded toml_write v0.1.2
+  Downloaded unicode-xid v0.2.6
+  Downloaded unicode-ident v1.0.26
+  Downloaded unicode-width v0.1.14
+  Downloaded toml_edit v0.22.27
+  Downloaded utf16_iter v1.0.5
+  Downloaded ttf-parser v0.25.1
+  Downloaded unicode-segmentation v1.12.0
+  Downloaded web-time v0.2.4
+  Downloaded webbrowser v1.1.0
+  Downloaded wgpu-types v0.20.0
+  Downloaded wgpu v0.20.1
+  Downloaded wgpu-core v0.21.1
+  Downloaded widestring v1.2.1
+  Downloaded wgpu-hal v0.21.1
+  Downloaded winapi v0.3.9
+  Downloaded windows-core v0.52.0
+  Downloaded windows-targets v0.53.5
+  Downloaded windows-targets v0.48.5
+  Downloaded write16 v1.0.0
+  Downloaded yoke-derive v0.7.5
+  Downloaded writeable v0.5.5
+  Downloaded yoke v0.7.5
+  Downloaded xml-rs v0.8.29
+  Downloaded zerofrom-derive v0.1.8
+  Downloaded zerovec-derive v0.10.4
+  Downloaded zerocopy v0.8.59
+  Downloaded zerovec v0.10.4
+  Downloaded zlib-rs v0.6.8
+  Downloaded winit v0.29.15
+  Downloaded windows-sys v0.48.0
+  Downloaded windows_x86_64_msvc v0.48.5
+  Downloaded windows_x86_64_msvc v0.53.1
+  Downloaded windows-sys v0.60.2
+  Downloaded windows v0.52.0
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.26
+   Compiling quote v1.0.47
+   Compiling cfg-if v1.0.5
+   Compiling autocfg v1.5.1
+   Compiling stable_deref_trait v1.2.1
+   Compiling khronos_api v3.1.0
+   Compiling smallvec v1.16.2
+   Compiling icu_locid_transform_data v1.5.1
+   Compiling cfg_aliases v0.1.1
+   Compiling writeable v0.5.5
+   Compiling litemap v0.7.4
+   Compiling windows-link v0.2.1
+   Compiling xml-rs v0.8.29
+   Compiling icu_properties_data v1.5.1
+   Compiling log v0.4.34
+   Compiling windows_x86_64_msvc v0.48.5
+   Compiling once_cell v1.21.4
+   Compiling icu_normalizer_data v1.5.1
+   Compiling parking_lot_core v0.9.12
+   Compiling zerocopy v0.8.59
+   Compiling version_check v0.9.5
+   Compiling simd-adler32 v0.3.10
+   Compiling ttf-parser v0.25.1
+error: linker `link.exe` not found
+  |
+  = note: program not found
+
+note: the msvc targets depend on the msvc linker but `link.exe` was not found
+
+note: please ensure that Visual Studio 2017 or later, or Build Tools for Visual Studio were installed with the Visual C++ option
+
+note: VS Code is a different product, and is not sufficient
+
+   Compiling write16 v1.0.0
+error: could not compile `icu_locid_transform_data` (build script) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `icu_properties_data` (build script) due to 1 previous error
+error: could not compile `khronos_api` (build script) due to 1 previous error
+error: could not compile `quote` (build script) due to 1 previous error
+error: could not compile `windows_x86_64_msvc` (build script) due to 1 previous error
+error: could not compile `icu_normalizer_data` (build script) due to 1 previous error
+error: could not compile `proc-macro2` (build script) due to 1 previous error
+error: could not compile `parking_lot_core` (build script) due to 1 previous error
+error: could not compile `zerocopy` (build script) due to 1 previous error

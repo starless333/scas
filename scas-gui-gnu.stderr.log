@@ -1,0 +1,50 @@
+ Downloading crates ...
+  Downloaded windows_x86_64_gnu v0.48.5
+  Downloaded windows_x86_64_gnu v0.53.1
+  Downloaded winapi-x86_64-pc-windows-gnu v0.4.0
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.26
+   Compiling stable_deref_trait v1.2.1
+   Compiling autocfg v1.5.1
+   Compiling cfg-if v1.0.5
+   Compiling khronos_api v3.1.0
+   Compiling smallvec v1.16.2
+   Compiling cfg_aliases v0.1.1
+   Compiling icu_locid_transform_data v1.5.1
+   Compiling litemap v0.7.4
+   Compiling writeable v0.5.5
+   Compiling log v0.4.34
+   Compiling icu_properties_data v1.5.1
+   Compiling windows_x86_64_gnu v0.48.5
+   Compiling xml-rs v0.8.29
+   Compiling windows-link v0.2.1
+   Compiling once_cell v1.21.4
+   Compiling icu_normalizer_data v1.5.1
+   Compiling parking_lot_core v0.9.12
+   Compiling version_check v0.9.5
+   Compiling zerocopy v0.8.59
+   Compiling utf8_iter v1.0.4
+   Compiling simd-adler32 v0.3.10
+   Compiling ttf-parser v0.25.1
+   Compiling scopeguard v1.2.0
+error: linker `link.exe` not found
+  |
+  = note: program not found
+
+note: the msvc targets depend on the msvc linker but `link.exe` was not found
+
+note: please ensure that Visual Studio 2017 or later, or Build Tools for Visual Studio were installed with the Visual C++ option
+
+note: VS Code is a different product, and is not sufficient
+
+error: could not compile `icu_locid_transform_data` (build script) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `icu_properties_data` (build script) due to 1 previous error
+error: could not compile `quote` (build script) due to 1 previous error
+error: could not compile `windows_x86_64_gnu` (build script) due to 1 previous error
+error: could not compile `khronos_api` (build script) due to 1 previous error
+error: could not compile `icu_normalizer_data` (build script) due to 1 previous error
+error: could not compile `proc-macro2` (build script) due to 1 previous error
+error: could not compile `parking_lot_core` (build script) due to 1 previous error
+error: could not compile `zerocopy` (build script) due to 1 previous error

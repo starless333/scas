@@ -1581,6 +1581,51 @@ pub fn execute_plot_command_with_range<W: Write>(
     base_directory: &Path,
     range_override: Option<(f64, f64)>,
 ) -> Result<PlotOutcome, String> {
+    execute_plot_command_impl(
+        interpreter,
+        symbols,
+        rest,
+        ascii_width,
+        ascii_height,
+        base_directory,
+        range_override,
+        true,
+    )
+    .map(|(outcome, _)| outcome)
+}
+
+/// Samples a REPL plot without touching the host filesystem. The caller can
+/// offer a browser download when the command includes a redirect target.
+pub fn execute_plot_command_in_memory<W: Write>(
+    interpreter: &mut Interpreter<W>,
+    symbols: &mut SymbolTable,
+    rest: &str,
+    ascii_width: usize,
+    ascii_height: usize,
+    range_override: Option<(f64, f64)>,
+) -> Result<(PlotOutcome, Option<String>), String> {
+    execute_plot_command_impl(
+        interpreter,
+        symbols,
+        rest,
+        ascii_width,
+        ascii_height,
+        Path::new(""),
+        range_override,
+        false,
+    )
+}
+
+fn execute_plot_command_impl<W: Write>(
+    interpreter: &mut Interpreter<W>,
+    symbols: &mut SymbolTable,
+    rest: &str,
+    ascii_width: usize,
+    ascii_height: usize,
+    base_directory: &Path,
+    range_override: Option<(f64, f64)>,
+    write_file: bool,
+) -> Result<(PlotOutcome, Option<String>), String> {
     let (svg_mode, terminal_mode, rest) = if rest == "svg" {
         (true, false, "")
     } else if let Some(expression) = rest.strip_prefix("svg ") {
@@ -1593,6 +1638,9 @@ pub fn execute_plot_command_with_range<W: Write>(
         (false, false, rest)
     };
     let command = parse_plot_command(rest)?;
+    if !write_file && command.series.len() > 8 {
+        return Err("Browser plots support at most 8 curves at a time".to_owned());
+    }
     let (x_min, x_max) = match range_override {
         Some((low, high)) if low.is_finite() && high.is_finite() && low < high => (low, high),
         Some(_) => return Err("plot view requires finite ascending bounds".to_owned()),
@@ -1636,25 +1684,30 @@ pub fn execute_plot_command_with_range<W: Write>(
     let svg = (svg_mode || (!terminal_mode && wants_svg_file))
         .then(|| render_svg(&series, &bounds, SVG_WIDTH, SVG_HEIGHT));
     let mut wrote_file = None;
-    if let Some(target) = &command.redirect {
-        let path = resolve_path(base_directory, target);
-        let content = if let Some(svg) = &svg {
-            svg.clone()
-        } else {
-            format!("{ascii}\n")
-        };
-        fs::write(&path, content)
-            .map_err(|error| format!("could not write {}: {error}", path.display()))?;
-        wrote_file = Some(path);
+    if write_file {
+        if let Some(target) = &command.redirect {
+            let path = resolve_path(base_directory, target);
+            let content = if let Some(svg) = &svg {
+                svg.clone()
+            } else {
+                format!("{ascii}\n")
+            };
+            fs::write(&path, content)
+                .map_err(|error| format!("could not write {}: {error}", path.display()))?;
+            wrote_file = Some(path);
+        }
     }
 
-    Ok(PlotOutcome {
-        series,
-        bounds,
-        ascii,
-        svg: if svg_mode { svg } else { None },
-        wrote_file,
-    })
+    Ok((
+        PlotOutcome {
+            series,
+            bounds,
+            ascii,
+            svg: if svg_mode { svg } else { None },
+            wrote_file,
+        },
+        command.redirect,
+    ))
 }
 
 fn resolve_path(base_directory: &Path, target: &str) -> PathBuf {
@@ -2204,6 +2257,26 @@ mod tests {
 
         assert!(parse_plot_command("").is_err());
         assert!(parse_plot_command("f(x) from -5").is_err());
+    }
+
+    #[test]
+    fn in_memory_plot_preserves_redirect_without_writing() {
+        let mut interpreter = linear_interpreter();
+        let mut symbols = SymbolTable::new();
+        let (outcome, requested_file) = execute_plot_command_in_memory(
+            &mut interpreter,
+            &mut symbols,
+            "svg sin(x) from -3 to 3 > graph.svg",
+            64,
+            18,
+            None,
+        )
+        .unwrap();
+        assert_eq!(requested_file.as_deref(), Some("graph.svg"));
+        assert!(outcome.wrote_file.is_none());
+        assert_eq!(outcome.bounds.x_min, -3.0);
+        assert_eq!(outcome.bounds.x_max, 3.0);
+        assert!(outcome.svg.as_deref().unwrap().contains("<svg"));
     }
 
     #[test]

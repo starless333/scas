@@ -1,0 +1,4 @@
+/// A live, typeset result
+let angle = π / 6;
+\[ sin(angle) => \]
+print(sin(angle));

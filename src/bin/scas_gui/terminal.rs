@@ -492,6 +492,9 @@ mod tests {
         let mut session = TerminalSession::start(Path::new(".")).unwrap();
         session.resize(35, 91, 900.0, 500.0).unwrap();
         assert_eq!(session.master.get_size().unwrap().cols, 91);
+        #[cfg(windows)]
+        session.write(b"echo 42\r").unwrap();
+        #[cfg(unix)]
         session.write(b"printf '%s\\n' $((6 * 7))\r").unwrap();
         for _ in 0..100 {
             session.poll();

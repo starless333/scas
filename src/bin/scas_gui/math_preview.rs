@@ -127,7 +127,7 @@ fn latex_heading<'a>(line: &'a str, prefix: &str) -> Option<&'a str> {
 fn formula_card(ui: &mut egui::Ui, rows: &[&str], accent: Color32, muted: Color32, scale: f32) {
     egui::Frame::none()
         .fill(ui.visuals().faint_bg_color)
-        .stroke(Stroke::new(1.0, muted.gamma_multiply(0.35)))
+        .stroke(Stroke::new(1.0_f32, muted.gamma_multiply(0.35)))
         .rounding(8.0 * scale)
         .inner_margin(egui::Margin::symmetric(18.0 * scale, 14.0 * scale))
         .show(ui, |ui| {
@@ -174,7 +174,7 @@ fn render(ui: &mut egui::Ui, math: &Math, size: f32, color: Color32) {
                     ui.allocate_exact_size(egui::vec2(width, 1.5), egui::Sense::hover());
                 ui.painter().line_segment(
                     [rect.left_center(), rect.right_center()],
-                    Stroke::new(1.25, color),
+                    Stroke::new(1.25_f32, color),
                 );
                 ui.with_layout(Layout::top_down(Align::Center), |ui| {
                     render(ui, denominator, size * 0.78, color)

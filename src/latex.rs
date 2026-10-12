@@ -1101,7 +1101,7 @@ mod tests {
         assert_eq!(render("f(x)"), r"f\left(x\right)");
         assert_eq!(
             render("velocity(x)"),
-            r"\operatorname{\mathrm{velocity}}\left(x\right)"
+            r"\operatorname{velocity}\left(x\right)"
         );
     }
 

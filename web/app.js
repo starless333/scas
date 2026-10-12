@@ -12,6 +12,8 @@ const previewZoomOut = document.getElementById("math-preview-zoom-out");
 const previewZoomReset = document.getElementById("math-preview-zoom-reset");
 const previewZoomIn = document.getElementById("math-preview-zoom-in");
 const previewResizer = document.getElementById("math-preview-resizer");
+const previewError = document.getElementById("math-preview-error");
+const previewSourceCode = document.getElementById("math-preview-source-code");
 document.getElementById("math-preview-close")?.addEventListener("click", () => window.scasClosePreview?.());
 let previewSource = null;
 let previewQueue = Promise.resolve();
@@ -56,7 +58,6 @@ previewZoomOut?.addEventListener("click", () => updatePreviewZoom(previewZoom / 
 previewZoomReset?.addEventListener("click", () => updatePreviewZoom(1));
 previewZoomIn?.addEventListener("click", () => updatePreviewZoom(previewZoom * PREVIEW_ZOOM_STEP));
 previewContent?.addEventListener("wheel", (event) => {
-  if (!event.ctrlKey && !event.metaKey) return;
   event.preventDefault();
   updatePreviewZoom(previewZoom * Math.exp(-event.deltaY / 300), event);
 }, { passive: false });
@@ -84,6 +85,15 @@ previewResizer?.addEventListener("pointerup", (event) => {
   }
   previewResizer.classList.remove("dragging");
 });
+function cancelPreviewResize(event) {
+  if (event?.pointerId != null && previewResizer?.hasPointerCapture(event.pointerId)) {
+    previewResizer.releasePointerCapture(event.pointerId);
+  }
+  previewResizer?.classList.remove("dragging");
+}
+previewResizer?.addEventListener("pointercancel", cancelPreviewResize);
+previewResizer?.addEventListener("lostpointercapture", cancelPreviewResize);
+window.addEventListener("blur", cancelPreviewResize);
 previewResizer?.addEventListener("dblclick", () => handle?.reset_preview_width());
 previewResizer?.addEventListener("keydown", (event) => {
   if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
@@ -92,8 +102,23 @@ previewResizer?.addEventListener("keydown", (event) => {
 });
 
 previewCopy?.addEventListener("click", async () => {
-  await navigator.clipboard.writeText(previewTex);
-  previewCopy.textContent = "Copied";
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(previewTex);
+    } else {
+      const textarea = document.createElement("textarea");
+      textarea.value = previewTex;
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.append(textarea);
+      textarea.select();
+      if (!document.execCommand("copy")) throw new Error("Copy is unavailable");
+      textarea.remove();
+    }
+    previewCopy.textContent = "Copied";
+  } catch {
+    previewCopy.textContent = "Copy failed";
+  }
   setTimeout(() => { previewCopy.textContent = "Copy TeX"; }, 1500);
 });
 
@@ -137,7 +162,18 @@ function fillPreview(fragments) {
       const block = document.createElement("div");
       block.className = "preview-math";
       block.title = `Source line ${fragment.span?.line ?? 1}`;
+      block.tabIndex = 0;
+      block.setAttribute("role", "button");
+      block.setAttribute("aria-label", `Go to source line ${fragment.span?.line ?? 1}`);
       block.textContent = fragment.latex;
+      const jump = () => handle?.jump_to_source(fragment.span?.line ?? 1, fragment.span?.column ?? 1);
+      block.addEventListener("click", jump);
+      block.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          jump();
+        }
+      });
       page.append(block);
     }
   }
@@ -157,9 +193,14 @@ function appendProse(element, source) {
   element.append(document.createTextNode(source.slice(offset)));
 }
 
-window.scasShowPreview = (fragmentsJson, tex, pending, x, y, width, height, pixelsPerPoint, resizable) => {
+window.scasShowPreview = (fragmentsJson, tex, error, pending, x, y, width, height, pixelsPerPoint, resizable) => {
   previewTex = tex;
   previewState.textContent = pending ? "UPDATING" : "LIVE";
+  if (previewError) {
+    previewError.hidden = !error;
+    previewError.textContent = error ? `Editing: ${error} (showing last good preview)` : "";
+  }
+  if (previewSourceCode) previewSourceCode.textContent = tex;
   const bounds = canvas.getBoundingClientRect();
   previewScale = pixelsPerPoint / (canvas.width / bounds.width);
   const left = bounds.left + x * previewScale;
@@ -236,7 +277,7 @@ window.scasImport = () => {
       if (!handle) return;
       const content = await file.text();
       handle.import_data_file(file.name, content);
-      if (file.name.toLowerCase().endsWith(".scas")) handle.load_source(content);
+      if (file.name.toLowerCase().endsWith(".scas")) handle.load_source_named(file.name, content);
     }
   };
   input.click();
@@ -287,8 +328,14 @@ document.addEventListener("drop", async (event) => {
     if (!/\.(scas|csv|json)$/i.test(file.name)) continue;
     const content = await file.text();
     handle?.import_data_file(file.name, content);
-    if (file.name.toLowerCase().endsWith(".scas")) handle?.load_source(content);
+    if (file.name.toLowerCase().endsWith(".scas")) handle?.load_source_named(file.name, content);
   }
+});
+
+window.addEventListener("beforeunload", (event) => {
+  if (!handle?.is_dirty()) return;
+  event.preventDefault();
+  event.returnValue = "";
 });
 
 function showStartupError(error) {

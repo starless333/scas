@@ -1,0 +1,160 @@
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.26
+   Compiling quote v1.0.47
+   Compiling stable_deref_trait v1.2.1
+   Compiling khronos_api v3.1.0
+   Compiling smallvec v1.16.2
+   Compiling icu_locid_transform_data v1.5.1
+   Compiling cfg_aliases v0.1.1
+   Compiling litemap v0.7.4
+   Compiling writeable v0.5.5
+   Compiling log v0.4.34
+   Compiling windows-link v0.2.1
+   Compiling icu_properties_data v1.5.1
+   Compiling windows_x86_64_gnu v0.48.5
+   Compiling xml-rs v0.8.29
+   Compiling icu_normalizer_data v1.5.1
+   Compiling once_cell v1.21.4
+   Compiling zerocopy v0.8.59
+   Compiling version_check v0.9.5
+   Compiling parking_lot_core v0.9.12
+   Compiling utf8_iter v1.0.4
+   Compiling scopeguard v1.2.0
+   Compiling ttf-parser v0.25.1
+   Compiling simd-adler32 v0.3.10
+   Compiling utf16_iter v1.0.5
+   Compiling write16 v1.0.0
+   Compiling windows_x86_64_gnu v0.53.1
+   Compiling serde_core v1.0.229
+   Compiling lock_api v0.4.14
+   Compiling adler2 v2.0.1
+   Compiling crc32fast v1.5.2
+   Compiling serde v1.0.229
+   Compiling ab_glyph_rasterizer v0.1.10
+   Compiling winit v0.29.15
+   Compiling raw-window-handle v0.5.2
+   Compiling bitflags v2.13.2
+   Compiling nohash-hasher v0.2.0
+   Compiling percent-encoding v2.3.2
+   Compiling miniz_oxide v0.9.1
+   Compiling glutin v0.31.3
+   Compiling memoffset v0.9.1
+   Compiling ahash v0.8.12
+   Compiling cursor-icon v1.2.0
+   Compiling unicode-segmentation v1.12.0
+   Compiling form_urlencoded v1.2.2
+   Compiling winapi-x86_64-pc-windows-gnu v0.4.0
+   Compiling smol_str v0.2.2
+   Compiling error-code v3.4.0
+   Compiling raw-window-handle v0.6.2
+   Compiling miniz_oxide v0.8.9
+   Compiling windows-targets v0.48.5
+   Compiling owned_ttf_parser v0.25.1
+   Compiling fdeflate v0.3.7
+   Compiling glutin-winit v0.4.2
+   Compiling libloading v0.8.9
+   Compiling gl_generator v0.14.0
+   Compiling windows-sys v0.48.0
+   Compiling windows-targets v0.53.5
+   Compiling clipboard-win v5.4.1
+   Compiling equivalent v1.0.2
+   Compiling hashbrown v0.16.1
+   Compiling ab_glyph v0.2.32
+   Compiling flate2 v1.1.10
+   Compiling bitflags v1.3.2
+   Compiling winapi v0.3.9
+   Compiling bigdecimal v0.4.11
+   Compiling glow v0.13.1
+   Compiling parking_lot v0.12.5
+   Compiling web-time v0.2.4
+   Compiling windows-sys v0.60.2
+   Compiling toml_write v0.1.2
+   Compiling winnow v0.7.15
+   Compiling litrs v1.0.0
+   Compiling byteorder-lite v0.1.0
+   Compiling syn v3.0.6
+   Compiling syn v2.0.119
+   Compiling png v0.17.16
+   Compiling indexmap v2.11.4
+   Compiling glutin_egl_sys v0.6.0
+   Compiling glutin_wgl_sys v0.5.0
+   Compiling document-features v0.2.12
+   Compiling arboard v3.6.1
+   Compiling synstructure v0.14.0
+   Compiling zerofrom-derive v0.1.8
+   Compiling displaydoc v0.2.7
+   Compiling bytemuck_derive v1.12.1
+   Compiling serde_derive v1.0.229
+   Compiling synstructure v0.13.2
+   Compiling zerofrom v0.1.8
+   Compiling yoke-derive v0.7.5
+   Compiling zerovec-derive v0.10.4
+   Compiling icu_provider_macros v1.5.0
+   Compiling bytemuck v1.25.2
+   Compiling yoke v0.7.5
+   Compiling emath v0.28.1
+   Compiling image v0.25.6
+   Compiling ecolor v0.28.1
+   Compiling zerovec v0.10.4
+   Compiling epaint v0.28.1
+   Compiling tinystr v0.7.6
+   Compiling icu_collections v1.5.0
+   Compiling icu_locid v1.5.0
+   Compiling egui v0.28.1
+   Compiling icu_provider v1.5.0
+   Compiling serde_spanned v0.6.9
+   Compiling toml_datetime v0.6.11
+   Compiling toml_edit v0.22.27
+   Compiling icu_locid_transform v1.5.0
+   Compiling icu_properties v1.5.1
+   Compiling toml v0.8.23
+   Compiling egui_glow v0.28.1
+   Compiling icu_normalizer v1.5.0
+   Compiling idna_adapter v1.2.0
+   Compiling idna v1.1.0
+   Compiling url v2.5.8
+   Compiling webbrowser v1.1.0
+   Compiling egui-winit v0.28.1
+   Compiling eframe v0.28.1
+   Compiling scas v0.1.0 (D:\SCAS)
+warning: falling back to `f32` as the trait bound `f32: From<f64>` is not satisfied
+  --> src\bin\scas_gui\math_preview.rs:96:29
+   |
+96 |         .stroke(Stroke::new(1.0, muted.gamma_multiply(0.35)))
+   |                             ^^^ help: explicitly specify the type as `f32`: `1.0_f32`
+   |
+   = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+   = note: for more information, see issue #154024 <https://github.com/rust-lang/rust/issues/154024>
+   = note: `#[warn(float_literal_f32_fallback)]` (part of `#[warn(future_incompatible)]`) on by default
+
+warning: falling back to `f32` as the trait bound `f32: From<f64>` is not satisfied
+   --> src\bin\scas_gui\math_preview.rs:143:33
+    |
+143 |                     Stroke::new(1.25, color),
+    |                                 ^^^^ help: explicitly specify the type as `f32`: `1.25_f32`
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = note: for more information, see issue #154024 <https://github.com/rust-lang/rust/issues/154024>
+
+warning: falling back to `f32` as the trait bound `f32: From<f64>` is not satisfied
+    --> src\bin\scas-gui.rs:1140:27
+     |
+1140 |         egui::Stroke::new(1.0, theme.ui.muted.0.gamma_multiply(0.35)),
+     |                           ^^^ help: explicitly specify the type as `f32`: `1.0_f32`
+     |
+     = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+     = note: for more information, see issue #154024 <https://github.com/rust-lang/rust/issues/154024>
+
+warning: falling back to `f32` as the trait bound `f32: From<f64>` is not satisfied
+    --> src\bin\scas-gui.rs:1300:59
+     |
+1300 |                 part.format.underline = egui::Stroke::new(1.5, diagnostic_color);
+     |                                                           ^^^ help: explicitly specify the type as `f32`: `1.5_f32`
+     |
+     = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+     = note: for more information, see issue #154024 <https://github.com/rust-lang/rust/issues/154024>
+
+warning: `scas` (bin "scas-gui") generated 4 warnings (run `cargo fix --bin "scas-gui" -p scas` to apply 4 suggestions)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 26.64s
+     Running `target\debug\scas-gui.exe`
+error: process didn't exit successfully: `target\debug\scas-gui.exe` (exit code: 0xffffffff)

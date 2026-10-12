@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#252526">
   <meta name="description" content="Write, run, and preview exact mathematics in the SCAS browser IDE.">
   <title>SCAS · Browser IDE</title>
@@ -23,14 +23,20 @@
       </div>
       <div class="preview-caption">
         <button id="math-preview-copy" type="button">Copy TeX</button>
+        <span class="preview-font">Computer Modern</span>
         <div class="preview-zoom" aria-label="Document preview zoom controls">
           <button id="math-preview-zoom-out" type="button" aria-label="Zoom out of rendered document">−</button>
           <button id="math-preview-zoom-reset" type="button" aria-label="Reset rendered document zoom">100%</button>
           <button id="math-preview-zoom-in" type="button" aria-label="Zoom in to rendered document">+</button>
         </div>
       </div>
+      <p id="math-preview-error" class="preview-error" role="status" hidden></p>
       <div class="preview-intro"><strong>Rendered document</strong><span>Live output from the current SCAS source</span></div>
-      <div id="math-preview-content"></div>
+      <div id="math-preview-content" aria-live="polite"></div>
+      <details id="math-preview-source">
+        <summary>LaTeX source</summary>
+        <pre><code id="math-preview-source-code"></code></pre>
+      </details>
     </section>
     <div id="math-preview-resizer" role="separator" aria-label="Resize document preview" aria-orientation="vertical" tabindex="0" hidden></div>
     <div id="loading" role="status" aria-live="polite">
