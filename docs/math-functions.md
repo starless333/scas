@@ -41,6 +41,11 @@ value instead of reporting a real-domain error. The branch conventions are:
   applicable).
 - `cbrt` preserves the real cube root for real inputs; complex inputs use the
   principal cube root.
+- Exact negative bases raised to fractional powers retain the principal
+  complex branch. Half powers such as `(-1)^(1/2)` evaluate to `i`; thirds,
+  quarters, and sixths use exact roots of unity. Other exact fractional powers
+  stay symbolic when no exact principal result is available. `cbrt(-1)`
+  remains `-1` because `cbrt` is explicitly real on real inputs.
 - `log(value, base)` is `ln(value) / ln(base)` on the same principal branches.
 - `atan2(y, x)`, `hypot(x, y)`, ordering, `min`, `max`, `sign`, and integer
   rounding operations require real inputs.
@@ -204,7 +209,7 @@ and `ln(exp(x))` verbatim. The rewrites unlocked by each fact:
 | real | `ln(exp(x)) -> x`, `sqrt(x^2) -> abs(x)` |
 | nonzero | `x/x -> 1`, `x % x -> 0`, `x^a/x^b -> x^(a-b)`, `exp(ln(x)) -> x` |
 | nonnegative | `abs(x) -> x`, `sqrt(x^2) -> x` |
-| positive | all of the above, and the positive-log/exponent forms (`log(a^n) -> n*log(a)` for `a > 0`) |
+| positive | all of the above, and positive-log/exponent forms (`log(a^n) -> n*log(a)` when `a > 0` and `n` is real) |
 | integer | parity and divisibility reasoning where relevant |
 
 Assumptions are session-local and currently attach to variables, not
@@ -253,6 +258,7 @@ then matches the integrand against the rule set below. Affine arguments
 | `asin`, `acos`, `atan` of `a*x + b` | inverse trigonometric |
 | `asinh`, `acosh`, `atanh` of `a*x + b` | inverse hyperbolic |
 | `erf(a*x + b)`, `erfc(a*x + b)` | error functions |
+| `exp(-(a*x+b)^2)` | Gaussian primitive using `erf(a*x+b)` |
 | `sec^2`, `csc^2` of `a*x + b` | tangent/cotangent |
 | `sec*tan`, `csc*cot` (same affine argument) | secant/cosecant |
 | `p(x) * g(a*x + b)`, `g` in `exp`, `sin`, `cos`, `sinh`, `cosh` | **by parts** (tabular rule, polynomial degree ≤ 8) |
@@ -373,6 +379,9 @@ inventory.
 | Signature | Result |
 | --- | --- |
 | `simplify(expr)` | canonical simplification |
+| `full_simplify(expr)` | bounded expand/factor/trigonometric candidate search; returns the candidate with the fewest leaves |
+| `logexpand(expr)`, `logcombine(expr)` | explicit logarithm transforms, guarded by positive arguments and real exponents |
+| `rationalize(expr)` | exact conjugate for denominators `a ± b*sqrt(c)` and `a*sqrt(c) ± b*sqrt(d)` with rational coefficients and radicands |
 | `expand(expr)` | distribution and angle-sum expansion |
 | `factor(expr)` | common-content and univariate factoring |
 | `apart(expr)` | partial fractions (repeated rational linear factors and one remaining irreducible quadratic; improper fractions are divided first) |

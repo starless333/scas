@@ -46,6 +46,10 @@
     double("2.5") =>;
     rational("7/9") =>;
     simplify(x + x) =>;
+    full_simplify(sin(x)^2 + cos(x)^2) =>;
+    logexpand(ln(x * y)) =>;
+    logcombine(ln(x) + ln(y)) =>;
+    rationalize(1 / (1 + sqrt(2))) =>;
     expand((x + 1)^3) =>;
     factor(x^2 - 1) =>;
     apart((x^2 + 1) / (x + 1)) =>;

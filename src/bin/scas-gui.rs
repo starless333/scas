@@ -301,6 +301,7 @@ struct GraphBatchResult {
     x_min: f64,
     x_max: f64,
     count: usize,
+    elapsed: Duration,
     samples: Vec<Result<SampledSeries, String>>,
 }
 
@@ -381,7 +382,6 @@ impl ViewState {
         self.y_max - self.y_min
     }
 
-    #[cfg(test)]
     fn zoom(&mut self, factor: f64) {
         let cx = (self.x_min + self.x_max) / 2.0;
         let cy = (self.y_min + self.y_max) / 2.0;
@@ -528,8 +528,9 @@ struct ScasApp {
     graph_request_id: u64,
     /// Highest result id that has been applied to the curves.
     graph_last_applied_id: u64,
-    graph_sample_count: usize,
     graph_sampling: bool,
+    graph_sampling_latency: Duration,
+    graph_worker_retry_due: Option<Instant>,
     graph_canvas_width: f32,
     graph_auto_bounds: Option<PlotBounds>,
     graph_view: ViewState,
@@ -538,6 +539,7 @@ struct ScasApp {
     /// precedence over ordinary curve samples so roots, holes, and extrema
     /// remain inspectable after the pointer moves away.
     graph_probe: Option<GraphProbe>,
+    graph_drag_series: Option<usize>,
 }
 
 enum PendingAction {
@@ -856,9 +858,7 @@ impl ScasApp {
             .collect();
         let repl_symbols = SymbolTable::new();
         let repl_interpreter = Interpreter::new(repl_symbols.clone(), Vec::new());
-        let (graph_request_sender, request_receiver) = mpsc::channel();
-        let (result_sender, graph_result_receiver) = mpsc::channel();
-        std::thread::spawn(move || run_graph_sampler(request_receiver, result_sender));
+        let (graph_request_sender, graph_result_receiver) = spawn_graph_sampler();
         let mut app = Self {
             source: STARTER.to_owned(),
             output: "Run the program to see its output.".to_owned(),
@@ -969,13 +969,15 @@ impl ScasApp {
             graph_content_generation: 0,
             graph_request_id: 0,
             graph_last_applied_id: 0,
-            graph_sample_count: 900,
             graph_sampling: false,
+            graph_sampling_latency: Duration::ZERO,
+            graph_worker_retry_due: None,
             graph_canvas_width: 800.0,
             graph_auto_bounds: None,
             graph_view: ViewState::centered(22.0, 12.0),
             graph_new_input: String::new(),
             graph_probe: None,
+            graph_drag_series: None,
         };
         app.saved_preferences = app.preference_snapshot();
         app.start_analysis();
@@ -1066,6 +1068,11 @@ impl ScasApp {
     /// current curve buffer until the viewport approaches its padded edges.
     fn ensure_graph_coverage(&mut self) {
         let span = self.graph_view.x_span();
+        let padding = graph_coverage_padding(self.graph_sampling_latency);
+        // Wide cached windows have fewer base samples per visible pixel.
+        // Lower the density floor accordingly so slow functions do not enter
+        // a resampling loop solely because their cache is wider.
+        let density_floor = (1.5 / (1.0 + (padding - 0.3) * 1.5)) as f32;
         if self.graph_sample_due.is_some() || self.graph_sampling {
             return;
         }
@@ -1081,9 +1088,9 @@ impl ScasApp {
             };
             function.stale
                 || function.sampled.is_err()
-                || function.sampled_min >= visible_min - span * 0.15
-                || function.sampled_max <= visible_max + span * 0.15
-                || visible_density < 1.5
+                || function.sampled_min >= visible_min - span * padding * 0.5
+                || function.sampled_max <= visible_max + span * padding * 0.5
+                || visible_density < density_floor
         });
         if needs_samples {
             // Fast tier first so moving the window stays responsive; the
@@ -1099,8 +1106,9 @@ impl ScasApp {
         }
         let view = self.graph_view;
         let span = view.x_span();
-        let x_min = view.x_min - span * 0.3;
-        let x_max = view.x_max + span * 0.3;
+        let padding = graph_coverage_padding(self.graph_sampling_latency);
+        let x_min = view.x_min - span * padding;
+        let x_max = view.x_max + span * padding;
         let width = self.graph_canvas_width.max(300.0);
         let count = match quality {
             // Base densities; the adaptive sampler refines on top of these
@@ -1125,7 +1133,6 @@ impl ScasApp {
         if self.graph_request_sender.send(request).is_ok() {
             self.graph_sampling = true;
         }
-        self.graph_sample_count = count;
         if quality == GraphQuality::Full {
             self.graph_refine_due = None;
         }
@@ -1138,6 +1145,7 @@ impl ScasApp {
             match event {
                 Ok(result) => {
                     self.graph_sampling = false;
+                    self.graph_sampling_latency = result.elapsed;
                     self.apply_graph_batch(result);
                     applied = true;
                 }
@@ -1147,9 +1155,22 @@ impl ScasApp {
                     for function in &mut self.graph_functions {
                         function.stale = true;
                     }
+                    if self.graph_worker_retry_due.is_none() {
+                        self.set_status("Graph sampler stopped; retrying shortly");
+                        self.graph_worker_retry_due = Some(Instant::now() + Duration::from_secs(1));
+                    }
                     break;
                 }
             }
+        }
+        if self
+            .graph_worker_retry_due
+            .is_some_and(|due| Instant::now() >= due)
+        {
+            (self.graph_request_sender, self.graph_result_receiver) = spawn_graph_sampler();
+            self.graph_worker_retry_due = None;
+            self.schedule_graph_sampling(Duration::ZERO);
+            self.set_status("Graph sampler restarted");
         }
         if applied {
             context.request_repaint();
@@ -1175,6 +1196,8 @@ impl ScasApp {
         }
         if self.graph_sampling {
             context.request_repaint_after(Duration::from_millis(24));
+        } else if let Some(due) = self.graph_worker_retry_due {
+            context.request_repaint_after(due.saturating_duration_since(Instant::now()));
         } else if let Some((due, _)) = self.graph_sample_due {
             context.request_repaint_after(due.saturating_duration_since(Instant::now()));
         } else if let Some(due) = self.graph_refine_due {
@@ -1192,7 +1215,6 @@ impl ScasApp {
         }
         self.graph_last_applied_id = result.id;
         self.graph_auto_bounds = None;
-        self.graph_sample_count = result.count;
         for (function, sampled) in self.graph_functions.iter_mut().zip(result.samples) {
             function.sampled_min = result.x_min;
             function.sampled_max = result.x_max;
@@ -1212,27 +1234,7 @@ impl ScasApp {
             self.graph_probe = self
                 .graph_functions
                 .get(probe.series_index)
-                .and_then(|function| {
-                    let Some(kind) = probe.critical_kind else {
-                        return Some(probe);
-                    };
-                    function
-                        .critical_points
-                        .iter()
-                        .filter(|point| point.kind == kind)
-                        .min_by(|left, right| {
-                            (left.x - probe.x)
-                                .abs()
-                                .total_cmp(&(right.x - probe.x).abs())
-                        })
-                        .map(|point| GraphProbe {
-                            series_index: probe.series_index,
-                            x: point.x,
-                            y: Some(point.y),
-                            critical_kind: Some(point.kind),
-                        })
-                        .or(Some(probe))
-                });
+                .and_then(|function| resnap_graph_probe(probe, function).or(Some(probe)));
         }
     }
 
@@ -3051,15 +3053,25 @@ impl ScasApp {
                 ui.add_space(6.0);
                 let input_id = egui::Id::new("graph-new-input");
                 let mut add = false;
-                let response = ui.add(
-                    TextEdit::singleline(&mut self.graph_new_input)
-                        .id(input_id)
-                        .font(TextStyle::Monospace)
-                        .desired_width(f32::INFINITY)
-                        .hint_text("sin(x)  or  g(t) = 2t + 1"),
-                );
+                let input = TextEdit::singleline(&mut self.graph_new_input)
+                    .id(input_id)
+                    .font(TextStyle::Monospace)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("sin(x)  or  g(t) = 2t + 1")
+                    .show(ui);
+                let response = &input.response;
                 if response.changed() && self.auto_greek {
+                    let before_expansion = self.graph_new_input.clone();
                     expand_greek_shortcuts(&mut self.graph_new_input);
+                    if self.graph_new_input != before_expansion {
+                        if let Some(cursor) = input.cursor_range {
+                            let mut state = input.state.clone();
+                            let mut undoer = state.undoer();
+                            undoer.add_undo(&(cursor.as_ccursor_range(), before_expansion));
+                            state.set_undoer(undoer);
+                            TextEdit::store_state(context, input_id, state);
+                        }
+                    }
                 }
                 add |= response.lost_focus() && context.input(|input| input.key_pressed(egui::Key::Enter));
                 ui.add_space(4.0);
@@ -3218,11 +3230,115 @@ impl ScasApp {
             self.schedule_graph_sampling(Duration::from_millis(100));
         }
         let canvas = ui.allocate_rect(plot_rect, egui::Sense::click_and_drag());
+        if canvas.clicked() {
+            canvas.request_focus();
+        }
+        if canvas.has_focus() {
+            let (dx, dy, zoom_in, zoom_out, home) = context.input(|input| {
+                (
+                    i32::from(input.key_pressed(egui::Key::ArrowRight))
+                        - i32::from(input.key_pressed(egui::Key::ArrowLeft)),
+                    i32::from(input.key_pressed(egui::Key::ArrowUp))
+                        - i32::from(input.key_pressed(egui::Key::ArrowDown)),
+                    input.key_pressed(egui::Key::Plus),
+                    input.key_pressed(egui::Key::Minus),
+                    input.key_pressed(egui::Key::Home),
+                )
+            });
+            if home {
+                self.graph_view = ViewState::centered(22.0, 12.0);
+                self.graph_view.auto_y = false;
+                self.graph_auto_bounds = None;
+                self.ensure_graph_coverage();
+            } else if dx != 0 || dy != 0 || zoom_in || zoom_out {
+                let x_step = self.graph_view.x_span() * 0.1 * f64::from(dx);
+                let y_step = self.graph_view.y_span() * 0.1 * f64::from(dy);
+                self.graph_view.x_min += x_step;
+                self.graph_view.x_max += x_step;
+                self.graph_view.y_min += y_step;
+                self.graph_view.y_max += y_step;
+                let factor = if zoom_in {
+                    0.8
+                } else if zoom_out {
+                    1.25
+                } else {
+                    1.0
+                };
+                if (MIN_VIEW_SPAN..=MAX_VIEW_SPAN).contains(&(self.graph_view.x_span() * factor))
+                    && (MIN_VIEW_SPAN..=MAX_VIEW_SPAN)
+                        .contains(&(self.graph_view.y_span() * factor))
+                {
+                    self.graph_view.zoom(factor);
+                }
+                self.graph_view.auto_y = false;
+                self.graph_auto_bounds = None;
+                self.ensure_graph_coverage();
+            }
+        }
 
-        // Interaction first: drag pans, scroll wheel zooms, click inspects.
+        // A drag beginning on a curve tracks it; drags elsewhere pan.
+        if canvas.drag_started() {
+            let bounds = self.current_graph_bounds();
+            self.graph_drag_series = context
+                .input(|input| input.pointer.press_origin())
+                .and_then(|pointer| {
+                    snap_graph_critical_point(
+                        pointer,
+                        &bounds,
+                        plot_rect,
+                        &self.graph_functions,
+                        12.0,
+                    )
+                    .or_else(|| {
+                        snap_graph_probe(pointer, &bounds, plot_rect, &self.graph_functions)
+                    })
+                    .filter(|probe| {
+                        let Some(y) = probe.y else {
+                            return false;
+                        };
+                        let screen_x = plot_rect.left()
+                            + ((probe.x - bounds.x_min) / bounds.x_span()) as f32
+                                * plot_rect.width();
+                        let screen_y = plot_rect.top()
+                            + ((bounds.y_max - y) / bounds.y_span()) as f32 * plot_rect.height();
+                        pointer.distance(egui::pos2(screen_x, screen_y)) <= 12.0
+                    })
+                })
+                .map(|probe| probe.series_index);
+        }
+        if canvas.drag_stopped() {
+            self.graph_drag_series = None;
+        }
+        if let Some(series_index) = self.graph_drag_series.filter(|_| canvas.dragged()) {
+            if let Some(pointer) = canvas.interact_pointer_pos() {
+                let bounds = self.current_graph_bounds();
+                self.graph_probe = snap_graph_critical_point(
+                    pointer,
+                    &bounds,
+                    plot_rect,
+                    &self.graph_functions,
+                    12.0,
+                )
+                .filter(|probe| probe.series_index == series_index)
+                .or_else(|| {
+                    self.graph_functions.get(series_index).and_then(|function| {
+                        snap_graph_probe(
+                            pointer,
+                            &bounds,
+                            plot_rect,
+                            std::slice::from_ref(function),
+                        )
+                        .map(|mut probe| {
+                            probe.series_index = series_index;
+                            probe
+                        })
+                    })
+                });
+            }
+        }
         // Pointer delta is frame-local; `Response::drag_delta` accumulates
         // from the start of the gesture and would apply earlier motion again.
-        let drag = if canvas.dragged() {
+        let drag = if canvas.dragged() && self.graph_drag_series.is_none() {
             context.input(|input| input.pointer.delta())
         } else {
             egui::Vec2::ZERO
@@ -3321,6 +3437,13 @@ impl ScasApp {
             plot_rect,
             hovered_series,
         );
+        if canvas.has_focus() {
+            ui.painter_at(plot_rect).rect_stroke(
+                plot_rect.shrink(1.0),
+                0.0,
+                egui::Stroke::new(1.0, theme.ui.accent.0),
+            );
+        }
 
         if let Some(probe) = self.graph_probe {
             draw_graph_probe(
@@ -3468,6 +3591,20 @@ impl ScasApp {
     }
 }
 
+fn graph_coverage_padding(latency: Duration) -> f64 {
+    (0.3 + latency.as_secs_f64() * 0.3).clamp(0.3, 1.2)
+}
+
+fn spawn_graph_sampler() -> (
+    mpsc::Sender<GraphBatchRequest>,
+    mpsc::Receiver<GraphBatchResult>,
+) {
+    let (request_sender, request_receiver) = mpsc::channel();
+    let (result_sender, result_receiver) = mpsc::channel();
+    std::thread::spawn(move || run_graph_sampler(request_receiver, result_sender));
+    (request_sender, result_receiver)
+}
+
 /// Persistent graph sampling worker. One interpreter stays alive across
 /// batches and replays each successful REPL submission only once, so pans,
 /// zooms, and edits re-sample curves instead of rebuilding the session for
@@ -3481,6 +3618,7 @@ fn run_graph_sampler(requests: Receiver<GraphBatchRequest>, results: Sender<Grap
     let mut replayed: Vec<String> = Vec::new();
     let mut pending: Option<GraphBatchRequest> = None;
     while let Some(request) = pending.take().or_else(|| requests.recv().ok()) {
+        let started = Instant::now();
         // Collapse the queue: only the newest window matters.
         let mut request = request;
         while let Ok(newer) = requests.try_recv() {
@@ -3544,6 +3682,7 @@ fn run_graph_sampler(requests: Receiver<GraphBatchRequest>, results: Sender<Grap
             x_min: request.x_min,
             x_max: request.x_max,
             count: request.count,
+            elapsed: started.elapsed(),
             samples,
         });
     }
@@ -3826,6 +3965,48 @@ fn curve_color(index: usize) -> egui::Color32 {
         ((raw >> 8) & 0xff) as u8,
         (raw & 0xff) as u8,
     )
+}
+
+/// Keep a pinned probe attached to the same curve after its samples change.
+fn resnap_graph_probe(probe: GraphProbe, function: &GraphFunction) -> Option<GraphProbe> {
+    if probe.x < function.sampled_min || probe.x > function.sampled_max {
+        return None;
+    }
+    if let Some(kind) = probe.critical_kind {
+        if let Some(point) = function
+            .critical_points
+            .iter()
+            .filter(|point| point.kind == kind)
+            .min_by(|left, right| {
+                (left.x - probe.x)
+                    .abs()
+                    .total_cmp(&(right.x - probe.x).abs())
+            })
+        {
+            return Some(GraphProbe {
+                series_index: probe.series_index,
+                x: point.x,
+                y: Some(point.y),
+                critical_kind: Some(kind),
+            });
+        }
+    }
+    let series = function.sampled.as_ref().ok()?;
+    let (x, y) = series
+        .samples
+        .iter()
+        .filter(|(_, y)| y.is_some())
+        .min_by(|left, right| {
+            (left.0 - probe.x)
+                .abs()
+                .total_cmp(&(right.0 - probe.x).abs())
+        })?;
+    Some(GraphProbe {
+        series_index: probe.series_index,
+        x: *x,
+        y: *y,
+        critical_kind: None,
+    })
 }
 
 /// Snaps a tapped screen point to the nearest curve: finds the closest
@@ -7624,6 +7805,67 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn pinned_probe_tracks_new_samples() {
+        let mut app = ScasApp::new(&egui::Context::default());
+        app.add_graph_function("x^2");
+        app.graph_probe = Some(GraphProbe {
+            series_index: 0,
+            x: 1.0,
+            y: Some(1.0),
+            critical_kind: None,
+        });
+        app.apply_graph_batch(GraphBatchResult {
+            id: app.graph_request_id + 1,
+            content_generation: app.graph_content_generation,
+            x_min: 0.0,
+            x_max: 2.0,
+            count: 3,
+            elapsed: Duration::from_millis(10),
+            samples: vec![Ok(SampledSeries {
+                label: "x^2".to_owned(),
+                variable: "x".to_owned(),
+                samples: vec![(0.0, Some(0.0)), (1.1, Some(1.21)), (2.0, Some(4.0))],
+            })],
+        });
+        let probe = app.graph_probe.expect("probe should survive resampling");
+        assert_eq!(probe.x, 1.1);
+        assert_eq!(probe.y, Some(1.21));
+    }
+
+    #[test]
+    fn slow_graph_sampling_receives_wider_coverage() {
+        assert_eq!(graph_coverage_padding(Duration::ZERO), 0.3);
+        assert!(graph_coverage_padding(Duration::from_secs(2)) > 0.3);
+        assert_eq!(graph_coverage_padding(Duration::from_secs(30)), 1.2);
+    }
+
+    #[test]
+    fn disconnected_graph_sampler_is_restarted() {
+        let context = egui::Context::default();
+        let mut app = ScasApp::new(&context);
+        let (sender, receiver) = mpsc::channel::<GraphBatchResult>();
+        drop(sender);
+        app.graph_result_receiver = receiver;
+        app.poll_graph_sampling(&context);
+        assert!(app.graph_worker_retry_due.is_some());
+        app.graph_worker_retry_due = Some(Instant::now() - Duration::from_millis(1));
+        app.poll_graph_sampling(&context);
+        assert!(app.graph_worker_retry_due.is_none());
+        assert!(app
+            .graph_request_sender
+            .send(GraphBatchRequest {
+                id: 1,
+                content_generation: 0,
+                session: Vec::new(),
+                sources: Vec::new(),
+                x_min: -1.0,
+                x_max: 1.0,
+                count: 2,
+            })
+            .is_ok());
     }
 
     #[test]

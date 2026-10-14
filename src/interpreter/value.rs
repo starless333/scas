@@ -53,6 +53,10 @@ pub enum Builtin {
     Double,
     Rational,
     Simplify,
+    FullSimplify,
+    LogExpand,
+    LogCombine,
+    Rationalize,
     Expand,
     Factor,
     Apart,
@@ -196,6 +200,10 @@ impl Builtin {
         ("double", Builtin::Double),
         ("rational", Builtin::Rational),
         ("simplify", Builtin::Simplify),
+        ("full_simplify", Builtin::FullSimplify),
+        ("logexpand", Builtin::LogExpand),
+        ("logcombine", Builtin::LogCombine),
+        ("rationalize", Builtin::Rationalize),
         ("expand", Builtin::Expand),
         ("factor", Builtin::Factor),
         ("apart", Builtin::Apart),
@@ -375,6 +383,9 @@ pub enum SymbolicExpr {
 
 impl SymbolicExpr {
     pub fn equals(&self, other: &SymbolicExpr) -> bool {
+        if std::ptr::eq(self, other) {
+            return true;
+        }
         match (self, other) {
             (SymbolicExpr::Number(a), SymbolicExpr::Number(b)) => a == b,
             (SymbolicExpr::Constant(a), SymbolicExpr::Constant(b)) => a == b,

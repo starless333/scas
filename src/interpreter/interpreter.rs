@@ -22,7 +22,7 @@ use num_integer::Integer;
 use num_rational::BigRational;
 use num_traits::{FromPrimitive, One, Signed, ToPrimitive, Zero};
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::num::NonZeroU64;
 use std::rc::Rc;
@@ -74,6 +74,31 @@ fn rewrite_variable(
             }))
         }
         SymbolicExpr::Variable(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod symbolic_arena_tests {
+    use super::*;
+
+    #[test]
+    fn repeated_subexpressions_share_nodes() {
+        let x = Rc::new(SymbolicExpr::Variable(0));
+        let make_sum = || {
+            Interpreter::<Vec<u8>>::symbolic_binary_raw(
+                Rc::clone(&x),
+                BinaryOp::Add,
+                Interpreter::<Vec<u8>>::symbolic_integer(1),
+            )
+        };
+        let expression =
+            Interpreter::<Vec<u8>>::symbolic_binary_raw(make_sum(), BinaryOp::Mul, make_sum());
+        let mut arena = HashMap::new();
+        let interned = Interpreter::<Vec<u8>>::intern_symbolic_tree(&expression, &mut arena);
+        let SymbolicExpr::Binary { left, right, .. } = interned.as_ref() else {
+            panic!("expected a product");
+        };
+        assert!(Rc::ptr_eq(left, right));
     }
 }
 
@@ -686,6 +711,11 @@ impl<W: Write> Interpreter<W> {
             Builtin::Double => r"\text{convert to an arbitrary-precision decimal}",
             Builtin::Rational => r"\text{convert to an exact reduced rational}",
             Builtin::Simplify => r"\text{apply exact simplification identities}",
+            Builtin::FullSimplify => r"\text{choose the smallest guarded rewrite}",
+            Builtin::LogExpand | Builtin::LogCombine => {
+                r"\text{apply real-positive logarithm identities}"
+            }
+            Builtin::Rationalize => r"\text{multiply by an exact radical conjugate}",
             Builtin::Expand => r"\text{distribute products and powers}",
             Builtin::Factor => r"\text{factor over the exact polynomial domain}",
             Builtin::Apart => r"\text{compute a partial-fraction decomposition}",
@@ -1807,6 +1837,10 @@ impl<W: Write> Interpreter<W> {
         if matches!(
             builtin,
             Builtin::Simplify
+                | Builtin::FullSimplify
+                | Builtin::LogExpand
+                | Builtin::LogCombine
+                | Builtin::Rationalize
                 | Builtin::Expand
                 | Builtin::Factor
                 | Builtin::Apart
@@ -1820,9 +1854,32 @@ impl<W: Write> Interpreter<W> {
             if builtin == Builtin::Simplify {
                 return Ok(Value::Symbolic(expression));
             }
+            if builtin == Builtin::FullSimplify {
+                return Ok(Self::symbolic_value(
+                    self.full_simplify_symbolic(&expression)?,
+                ));
+            }
+            if matches!(builtin, Builtin::LogExpand | Builtin::LogCombine) {
+                return Ok(Self::symbolic_value(self.transform_logs(
+                    &expression,
+                    builtin,
+                    128,
+                )));
+            }
+            if builtin == Builtin::Rationalize {
+                let result = self
+                    .rationalize_radical_fraction(&expression)
+                    .unwrap_or(expression);
+                return Ok(Self::symbolic_value(self.simplify_symbolic_tree(&result)?));
+            }
             if builtin == Builtin::Expand {
                 if let Some(expanded) = self.expand_function_identity(&expression)? {
                     return Ok(Self::symbolic_value(expanded));
+                }
+                if let Some(expanded) = self.expand_half_angle(&expression) {
+                    return Ok(Self::symbolic_value(
+                        self.simplify_symbolic_tree(&expanded)?,
+                    ));
                 }
                 if let Some(expanded) = self.expand_trigonometric(&expression)? {
                     let simplified = self.simplify_symbolic_tree(&expanded)?;
@@ -6061,7 +6118,9 @@ impl<W: Write> Interpreter<W> {
         expression: &Rc<SymbolicExpr>,
     ) -> ExecResult<Option<Rc<SymbolicExpr>>> {
         use BinaryOp::{Add, Mul, Sub};
-        const MAX_ANGLE_MULTIPLE: i64 = 12;
+        // A degree-n Chebyshev polynomial has at most ceil((n+1)/2)
+        // nonzero terms. Bound output size rather than the recurrence depth.
+        const MAX_ANGLE_TERMS: usize = 64;
         let call = |function, argument: Rc<SymbolicExpr>| {
             Rc::new(SymbolicExpr::Call {
                 function,
@@ -6222,7 +6281,11 @@ impl<W: Write> Interpreter<W> {
                         );
                         let denominator = Self::symbolic_binary_raw(
                             Self::symbolic_integer(1),
-                            if plus { Sub } else { Add },
+                            if matches!(function, Builtin::Tanh) == plus {
+                                Add
+                            } else {
+                                Sub
+                            },
                             Self::symbolic_binary_raw(
                                 call(*function, Rc::clone(left)),
                                 Mul,
@@ -6238,9 +6301,9 @@ impl<W: Write> Interpreter<W> {
                 }
             }
         }
-        // Multiple angles expand into powers of the single angle through the
-        // addition recurrence, tracking the sine-like and cosine-like halves
-        // of the pair together.
+        // T_n(cos u) = cos(nu), U_(n-1)(cos u) sin u = sin(nu).
+        // The same pair works for cosh/sinh. Coefficient recurrence avoids
+        // the exponential expression duplication of repeated angle addition.
         if let SymbolicExpr::Call { function, args } = expression.as_ref() {
             if args.len() == 1
                 && matches!(
@@ -6263,11 +6326,12 @@ impl<W: Write> Interpreter<W> {
                         }
                         _ => return Ok(None),
                     };
-                    if coefficient.abs() > BigInt::from(MAX_ANGLE_MULTIPLE) {
+                    let Some(degree) = coefficient.abs().to_usize() else {
                         return Ok(None);
-                    }
-                    let steps = coefficient.abs().to_i64().unwrap_or(0);
-                    if steps < 2 {
+                    };
+                    let sine_like = matches!(function, Builtin::Sin | Builtin::Sinh);
+                    let term_count = if sine_like { (degree + 1) / 2 } else { degree / 2 + 1 };
+                    if degree < 2 || term_count > MAX_ANGLE_TERMS {
                         return Ok(None);
                     }
                     let hyperbolic = matches!(function, Builtin::Sinh | Builtin::Cosh);
@@ -6276,36 +6340,62 @@ impl<W: Write> Interpreter<W> {
                     } else {
                         (Builtin::Sin, Builtin::Cos)
                     };
-                    // Pair recurrences: s((n+1)u) = s(nu)cu + c(nu)su and
-                    // c((n+1)u) = c(nu)cu ∓ s(nu)su (minus for cosine,
-                    // plus for cosh).
-                    let s_u = call(sine_fn, Rc::clone(&base));
-                    let c_u = call(cosine_fn, Rc::clone(&base));
-                    let mut s = Rc::clone(&s_u);
-                    let mut c = Rc::clone(&c_u);
-                    for _ in 1..steps {
-                        let next_s = Self::symbolic_binary_raw(
-                            Self::symbolic_binary_raw(Rc::clone(&s), Mul, Rc::clone(&c_u)),
-                            Add,
-                            Self::symbolic_binary_raw(Rc::clone(&c), Mul, Rc::clone(&s_u)),
-                        );
-                        let next_c = Self::symbolic_binary_raw(
-                            Self::symbolic_binary_raw(Rc::clone(&c), Mul, Rc::clone(&c_u)),
-                            if hyperbolic || *function != Builtin::Cos {
-                                Add
-                            } else {
-                                Sub
-                            },
-                            Self::symbolic_binary_raw(Rc::clone(&s), Mul, Rc::clone(&s_u)),
-                        );
-                        s = next_s;
-                        c = next_c;
-                    }
-                    let mut result = if matches!(function, Builtin::Sin | Builtin::Sinh) {
-                        s
+                    let polynomial_degree = if sine_like { degree - 1 } else { degree };
+                    let mut previous = if sine_like {
+                        vec![BigInt::from(0)]
                     } else {
-                        c
+                        vec![BigInt::from(1)]
                     };
+                    let mut current = if sine_like {
+                        vec![BigInt::from(1)]
+                    } else {
+                        vec![BigInt::from(0), BigInt::from(1)]
+                    };
+                    for _ in 0..(polynomial_degree - usize::from(!sine_like)) {
+                        let mut next = vec![BigInt::from(0); current.len() + 1];
+                        for (power, value) in current.iter().enumerate() {
+                            next[power + 1] += value * 2;
+                        }
+                        for (power, value) in previous.iter().enumerate() {
+                            next[power] -= value;
+                        }
+                        previous = current;
+                        current = next;
+                    }
+                    let cosine = call(cosine_fn, Rc::clone(&base));
+                    let mut terms = Vec::new();
+                    for (power, value) in current.into_iter().enumerate() {
+                        if value.is_zero() {
+                            continue;
+                        }
+                        let mut term = if power == 0 {
+                            Self::symbolic_integer(1)
+                        } else if power == 1 {
+                            Rc::clone(&cosine)
+                        } else {
+                            Self::symbolic_binary_raw(
+                                Rc::clone(&cosine),
+                                BinaryOp::Pow,
+                                Self::symbolic_integer(power as i64),
+                            )
+                        };
+                        if value != BigInt::from(1) {
+                            term = Self::symbolic_binary_raw(
+                                Rc::new(SymbolicExpr::Number(Number::Integer(value))),
+                                Mul,
+                                term,
+                            );
+                        }
+                        terms.push(term);
+                    }
+                    let mut result = terms
+                        .into_iter()
+                        .reduce(|a, b| Self::symbolic_binary_raw(a, Add, b))
+                        .unwrap_or_else(|| Self::symbolic_integer(0));
+                    if sine_like {
+                        result =
+                            Self::symbolic_binary_raw(call(sine_fn, Rc::clone(&base)), Mul, result);
+                    }
                     if coefficient < BigInt::from(0)
                         && matches!(function, Builtin::Sin | Builtin::Sinh)
                     {
@@ -6319,6 +6409,68 @@ impl<W: Write> Interpreter<W> {
             }
         }
         Ok(None)
+    }
+
+    /// Half-angle square-root forms only when exact assumptions establish
+    /// the sign of the result. The conservative interval [-1, 1] is inside
+    /// the positive cosine half-angle region.
+    fn expand_half_angle(&self, expression: &Rc<SymbolicExpr>) -> Option<Rc<SymbolicExpr>> {
+        let SymbolicExpr::Call { function, args } = expression.as_ref() else {
+            return None;
+        };
+        if !matches!(function, Builtin::Sin | Builtin::Cos) {
+            return None;
+        }
+        let [half] = args.as_slice() else {
+            return None;
+        };
+        let SymbolicExpr::Binary {
+            left: angle,
+            op: BinaryOp::Div,
+            right,
+        } = half.as_ref()
+        else {
+            return None;
+        };
+        if !Self::is_symbolic_integer(right, 2) {
+            return None;
+        }
+        let negative = if *function == Builtin::Sin {
+            if self.symbolic_in_pi_interval(angle, 0, 1, 2, 1) {
+                false
+            } else if self.symbolic_in_pi_interval(angle, -2, 1, 0, 1) {
+                true
+            } else {
+                return None;
+            }
+        } else if self.symbolic_in_pi_interval(angle, -1, 1, 1, 1) {
+            false
+        } else if self.symbolic_in_pi_interval(angle, 1, 1, 3, 1) {
+            true
+        } else {
+            return None;
+        };
+        let numerator = Self::symbolic_binary_raw(
+            Self::symbolic_integer(1),
+            if *function == Builtin::Sin {
+                BinaryOp::Sub
+            } else {
+                BinaryOp::Add
+            },
+            Self::symbolic_call(Builtin::Cos, Rc::clone(angle)),
+        );
+        let radical = Self::symbolic_call(
+            Builtin::Sqrt,
+            Self::symbolic_binary_raw(numerator, BinaryOp::Div, Self::symbolic_integer(2)),
+        );
+        Some(if negative {
+            Rc::new(SymbolicExpr::Unary {
+                op: UnaryOp::Neg,
+                expr: radical,
+            })
+        } else {
+            radical
+        })
     }
 
     /// Rewrites a sum or difference of like trigonometric calls as a product:
@@ -7085,22 +7237,86 @@ impl<W: Write> Interpreter<W> {
         &self,
         expression: &Rc<SymbolicExpr>,
     ) -> ExecResult<Rc<SymbolicExpr>> {
+        let simplified = self.simplify_symbolic_tree_bounded(expression, 512)?;
+        let mut arena = HashMap::new();
+        Ok(Self::intern_symbolic_tree(&simplified, &mut arena))
+    }
+
+    /// Share equal nodes within one completed simplification result. The
+    /// arena owns its entries only for this pass; returned parents retain
+    /// shared children without growing interpreter state indefinitely.
+    fn intern_symbolic_tree(
+        expression: &Rc<SymbolicExpr>,
+        arena: &mut HashMap<String, Vec<Rc<SymbolicExpr>>>,
+    ) -> Rc<SymbolicExpr> {
+        let rebuilt = match expression.as_ref() {
+            SymbolicExpr::Unary { op, expr } => SymbolicExpr::Unary {
+                op: *op,
+                expr: Self::intern_symbolic_tree(expr, arena),
+            },
+            SymbolicExpr::Binary { left, op, right } => SymbolicExpr::Binary {
+                left: Self::intern_symbolic_tree(left, arena),
+                op: *op,
+                right: Self::intern_symbolic_tree(right, arena),
+            },
+            SymbolicExpr::Call { function, args } => SymbolicExpr::Call {
+                function: *function,
+                args: args
+                    .iter()
+                    .map(|arg| Self::intern_symbolic_tree(arg, arena))
+                    .collect(),
+            },
+            _ => expression.as_ref().clone(),
+        };
+        let key = match &rebuilt {
+            SymbolicExpr::Number(number) => format!("N:{number}"),
+            SymbolicExpr::Constant(constant) => format!("C:{constant:?}"),
+            SymbolicExpr::Variable(symbol) => format!("V:{symbol:?}"),
+            SymbolicExpr::Unary { op, expr } => format!("U:{op:?}:{:p}", Rc::as_ptr(expr)),
+            SymbolicExpr::Binary { left, op, right } => {
+                format!("B:{op:?}:{:p}:{:p}", Rc::as_ptr(left), Rc::as_ptr(right))
+            }
+            SymbolicExpr::Call { function, args } => {
+                let mut key = format!("F:{function:?}");
+                for arg in args {
+                    key.push_str(&format!(":{:p}", Rc::as_ptr(arg)));
+                }
+                key
+            }
+        };
+        let bucket = arena.entry(key).or_default();
+        if let Some(existing) = bucket.iter().find(|node| node.equals(&rebuilt)) {
+            return Rc::clone(existing);
+        }
+        let result = Rc::new(rebuilt);
+        bucket.push(Rc::clone(&result));
+        result
+    }
+
+    fn simplify_symbolic_tree_bounded(
+        &self,
+        expression: &Rc<SymbolicExpr>,
+        remaining: usize,
+    ) -> ExecResult<Rc<SymbolicExpr>> {
+        if remaining == 0 {
+            return Err(self.limit_error("symbolic simplification exceeded its depth budget"));
+        }
         match expression.as_ref() {
             SymbolicExpr::Unary { op, expr } => {
-                let inner = self.simplify_symbolic_tree(expr)?;
+                let inner = self.simplify_symbolic_tree_bounded(expr, remaining - 1)?;
                 self.apply_unary(*op, Self::symbolic_value(inner))
                     .and_then(|value| self.value_to_symbolic(value))
             }
             SymbolicExpr::Binary { left, op, right } => {
-                let left = self.simplify_symbolic_tree(left)?;
-                let right = self.simplify_symbolic_tree(right)?;
+                let left = self.simplify_symbolic_tree_bounded(left, remaining - 1)?;
+                let right = self.simplify_symbolic_tree_bounded(right, remaining - 1)?;
                 self.symbolic_binary(*op, Self::symbolic_value(left), Self::symbolic_value(right))
                     .and_then(|value| self.value_to_symbolic(value))
             }
             SymbolicExpr::Call { function, args } => {
                 let args = args
                     .iter()
-                    .map(|argument| self.simplify_symbolic_tree(argument))
+                    .map(|argument| self.simplify_symbolic_tree_bounded(argument, remaining - 1))
                     .collect::<ExecResult<Vec<_>>>()?
                     .into_iter()
                     .map(Self::symbolic_value)
@@ -7110,6 +7326,210 @@ impl<W: Write> Interpreter<W> {
             }
             _ => Ok(Rc::clone(expression)),
         }
+    }
+
+    fn symbolic_leaf_count(expression: &SymbolicExpr, ceiling: usize) -> usize {
+        match expression {
+            SymbolicExpr::Unary { expr, .. } => Self::symbolic_leaf_count(expr, ceiling),
+            SymbolicExpr::Binary { left, right, .. } => {
+                let left_count = Self::symbolic_leaf_count(left, ceiling);
+                if left_count > ceiling {
+                    return left_count;
+                }
+                left_count + Self::symbolic_leaf_count(right, ceiling - left_count)
+            }
+            SymbolicExpr::Call { args, .. } => {
+                1 + args.iter().fold(0, |count, arg| {
+                    if count > ceiling {
+                        count
+                    } else {
+                        count + Self::symbolic_leaf_count(arg, ceiling - count)
+                    }
+                })
+            }
+            _ => 1,
+        }
+    }
+
+    fn polynomial_search_safe(expression: &SymbolicExpr) -> bool {
+        match expression {
+            SymbolicExpr::Binary {
+                left,
+                op: BinaryOp::Pow,
+                right,
+            } => {
+                matches!(right.as_ref(), SymbolicExpr::Number(Number::Integer(value))
+                    if value >= &BigInt::from(0) && value <= &BigInt::from(8))
+                    && Self::symbolic_leaf_count(left, 6) <= 6
+                    && Self::polynomial_search_safe(left)
+            }
+            SymbolicExpr::Binary { left, right, .. } => {
+                Self::polynomial_search_safe(left) && Self::polynomial_search_safe(right)
+            }
+            SymbolicExpr::Unary { expr, .. } => Self::polynomial_search_safe(expr),
+            SymbolicExpr::Call { args, .. } => {
+                args.iter().all(|arg| Self::polynomial_search_safe(arg))
+            }
+            _ => true,
+        }
+    }
+
+    /// Bounded portfolio of reversible algebraic strategies. The baseline
+    /// always remains a candidate, so expansion cannot make the result more
+    /// complex merely because it was attempted.
+    fn full_simplify_symbolic(
+        &self,
+        expression: &Rc<SymbolicExpr>,
+    ) -> ExecResult<Rc<SymbolicExpr>> {
+        const MAX_LEAVES: usize = 512;
+        let baseline = self.simplify_symbolic_tree(expression)?;
+        if Self::symbolic_leaf_count(&baseline, MAX_LEAVES) > MAX_LEAVES {
+            return Ok(baseline);
+        }
+        let mut candidates = Vec::with_capacity(6);
+        if let Some(expanded) = self.expand_function_identity(&baseline)? {
+            candidates.push(expanded);
+        }
+        if let Some(expanded) = self.expand_trigonometric(&baseline)? {
+            candidates.push(expanded);
+        }
+        if let Some(expanded) = self.expand_half_angle(&baseline) {
+            candidates.push(expanded);
+        }
+        if let Some(factored) = self.trig_sum_to_product(&baseline)? {
+            candidates.push(factored);
+        }
+        if Self::symbolic_leaf_count(&baseline, 48) <= 48 && Self::polynomial_search_safe(&baseline)
+        {
+            if let Some(polynomial) = Polynomial::from_expression(&baseline, &self.symbols) {
+                candidates.push(polynomial.factored_expression());
+                candidates.push(polynomial.expanded_expression());
+            }
+        }
+        let mut best = baseline;
+        let mut best_count = Self::symbolic_leaf_count(&best, MAX_LEAVES);
+        for candidate in candidates {
+            if Self::symbolic_leaf_count(&candidate, MAX_LEAVES) > MAX_LEAVES {
+                continue;
+            }
+            let candidate = self.simplify_symbolic_tree(&candidate)?;
+            let count = Self::symbolic_leaf_count(&candidate, MAX_LEAVES);
+            if count < best_count {
+                best = candidate;
+                best_count = count;
+            }
+        }
+        Ok(best)
+    }
+
+    /// Explicit logarithm transforms. Every split/combine is guarded by
+    /// positive real arguments, and the traversal has a finite depth budget.
+    fn transform_logs(
+        &self,
+        expression: &Rc<SymbolicExpr>,
+        direction: Builtin,
+        budget: usize,
+    ) -> Rc<SymbolicExpr> {
+        if budget == 0 {
+            return Rc::clone(expression);
+        }
+        let rebuilt = match expression.as_ref() {
+            SymbolicExpr::Unary { op, expr } => Rc::new(SymbolicExpr::Unary {
+                op: *op,
+                expr: self.transform_logs(expr, direction, budget - 1),
+            }),
+            SymbolicExpr::Binary { left, op, right } => Rc::new(SymbolicExpr::Binary {
+                left: self.transform_logs(left, direction, budget - 1),
+                op: *op,
+                right: self.transform_logs(right, direction, budget - 1),
+            }),
+            SymbolicExpr::Call { function, args } => Rc::new(SymbolicExpr::Call {
+                function: *function,
+                args: args
+                    .iter()
+                    .map(|arg| self.transform_logs(arg, direction, budget - 1))
+                    .collect(),
+            }),
+            _ => Rc::clone(expression),
+        };
+        let is_log = |function: Builtin| {
+            matches!(
+                function,
+                Builtin::Ln | Builtin::Log | Builtin::Log10 | Builtin::Log2
+            )
+        };
+        if direction == Builtin::LogExpand {
+            if let SymbolicExpr::Call { function, args } = rebuilt.as_ref() {
+                if is_log(*function) {
+                    if let [argument] = args.as_slice() {
+                        if let SymbolicExpr::Binary { left, op, right } = argument.as_ref() {
+                            if matches!(op, BinaryOp::Mul | BinaryOp::Div)
+                                && self.symbolic_positive(left)
+                                && self.symbolic_positive(right)
+                            {
+                                return Self::symbolic_binary_raw(
+                                    Self::symbolic_call(*function, Rc::clone(left)),
+                                    if *op == BinaryOp::Mul {
+                                        BinaryOp::Add
+                                    } else {
+                                        BinaryOp::Sub
+                                    },
+                                    Self::symbolic_call(*function, Rc::clone(right)),
+                                );
+                            }
+                            if *op == BinaryOp::Pow
+                                && self.symbolic_positive(left)
+                                && self.symbolic_real(right)
+                            {
+                                return Self::symbolic_binary_raw(
+                                    Rc::clone(right),
+                                    BinaryOp::Mul,
+                                    Self::symbolic_call(*function, Rc::clone(left)),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        } else if direction == Builtin::LogCombine {
+            if let SymbolicExpr::Binary { left, op, right } = rebuilt.as_ref() {
+                if matches!(op, BinaryOp::Add | BinaryOp::Sub) {
+                    if let (
+                        SymbolicExpr::Call {
+                            function: left_fn,
+                            args: left_args,
+                        },
+                        SymbolicExpr::Call {
+                            function: right_fn,
+                            args: right_args,
+                        },
+                    ) = (left.as_ref(), right.as_ref())
+                    {
+                        if left_fn == right_fn
+                            && is_log(*left_fn)
+                            && left_args.len() == 1
+                            && right_args.len() == 1
+                            && self.symbolic_positive(&left_args[0])
+                            && self.symbolic_positive(&right_args[0])
+                        {
+                            return Self::symbolic_call(
+                                *left_fn,
+                                Self::symbolic_binary_raw(
+                                    Rc::clone(&left_args[0]),
+                                    if *op == BinaryOp::Add {
+                                        BinaryOp::Mul
+                                    } else {
+                                        BinaryOp::Div
+                                    },
+                                    Rc::clone(&right_args[0]),
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        rebuilt
     }
 
     fn symbolic_integer(value: i64) -> Rc<SymbolicExpr> {
@@ -7493,6 +7913,52 @@ impl<W: Write> Interpreter<W> {
                 Mul,
                 Rc::new(SymbolicExpr::Variable(variable)),
             );
+        }
+        // Gaussian primitive: exp(-(a*x+b)^2) integrates through erf.
+        // The identity is entire, so it does not need a real-domain branch
+        // assumption; the linear coefficient only needs to be nonzero.
+        if let SymbolicExpr::Call {
+            function: Builtin::Exp,
+            args,
+        } = expression.as_ref()
+        {
+            if let [exponent] = args.as_slice() {
+                if let SymbolicExpr::Unary {
+                    op: UnaryOp::Neg,
+                    expr: square,
+                } = exponent.as_ref()
+                {
+                    if let SymbolicExpr::Binary {
+                        left: argument,
+                        op: Pow,
+                        right,
+                    } = square.as_ref()
+                    {
+                        if Self::is_symbolic_integer(right, 2) {
+                            if let Some(coefficient) = Self::linear_coefficient(argument, variable)
+                            {
+                                let numerator = Self::symbolic_binary_raw(
+                                    Self::symbolic_call(
+                                        Builtin::Sqrt,
+                                        Rc::new(SymbolicExpr::Constant(MathConstant::Pi)),
+                                    ),
+                                    Mul,
+                                    Self::symbolic_call(Builtin::Erf, Rc::clone(argument)),
+                                );
+                                return Self::symbolic_binary_raw(
+                                    numerator,
+                                    Div,
+                                    Self::symbolic_binary_raw(
+                                        Self::symbolic_integer(2),
+                                        Mul,
+                                        coefficient,
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
         }
         if let Some((function, argument)) = Self::squared_unary_call(expression) {
             if let Some(coefficient) = Self::linear_coefficient(&argument, variable) {
@@ -8766,6 +9232,29 @@ impl<W: Write> Interpreter<W> {
         if let Some(value) = self.exact_symbolic_function(builtin, &symbolic_args)? {
             return Ok(value);
         }
+        if builtin == Builtin::Atan2 {
+            if let [sine, cosine] = symbolic_args.as_slice() {
+                if let (
+                    SymbolicExpr::Call {
+                        function: Builtin::Sin,
+                        args: sine_args,
+                    },
+                    SymbolicExpr::Call {
+                        function: Builtin::Cos,
+                        args: cosine_args,
+                    },
+                ) = (sine.as_ref(), cosine.as_ref())
+                {
+                    if sine_args.len() == 1
+                        && cosine_args.len() == 1
+                        && sine_args[0].equals(&cosine_args[0])
+                        && self.symbolic_in_pi_interval(&sine_args[0], -99, 100, 1, 1)
+                    {
+                        return Ok(Self::symbolic_value(Rc::clone(&sine_args[0])));
+                    }
+                }
+            }
+        }
         let argument = symbolic_args.first().cloned();
         if let Some(argument) = argument {
             if matches!(builtin, Builtin::Ln | Builtin::Log) {
@@ -8790,7 +9279,7 @@ impl<W: Write> Interpreter<W> {
                     right: exponent,
                 } = argument.as_ref()
                 {
-                    if self.symbolic_positive(base) {
+                    if self.symbolic_positive(base) && self.symbolic_real(exponent) {
                         return Ok(Self::symbolic_value(Self::symbolic_binary_raw(
                             Rc::clone(exponent),
                             BinaryOp::Mul,
@@ -8822,6 +9311,24 @@ impl<W: Write> Interpreter<W> {
                 args: inner_args,
             } = argument.as_ref()
             {
+                if inner_args.len() == 1 {
+                    let principal = match (builtin, inner) {
+                        (Builtin::Asin, Builtin::Sin) => {
+                            self.symbolic_in_pi_interval(&inner_args[0], -1, 2, 1, 2)
+                        }
+                        (Builtin::Atan, Builtin::Tan) => {
+                            self.symbolic_in_pi_interval(&inner_args[0], -49, 100, 49, 100)
+                                || self.symbolic_in_rational_interval(&inner_args[0], -1, 1)
+                        }
+                        (Builtin::Acos, Builtin::Cos) => {
+                            self.symbolic_in_pi_interval(&inner_args[0], 0, 1, 1, 1)
+                        }
+                        _ => false,
+                    };
+                    if principal {
+                        return Ok(Self::symbolic_value(Rc::clone(&inner_args[0])));
+                    }
+                }
                 let inverse_pair = inner_args.len() == 1
                     && matches!(
                         (builtin, inner),
@@ -8867,6 +9374,11 @@ impl<W: Write> Interpreter<W> {
                 }
             }
             if builtin == Builtin::Sqrt {
+                if let Some(denested) = self.denest_quadratic_sqrt(&argument) {
+                    return Ok(Self::symbolic_value(
+                        self.simplify_symbolic_tree(&denested)?,
+                    ));
+                }
                 if let SymbolicExpr::Binary {
                     left,
                     op: BinaryOp::Pow,
@@ -8914,6 +9426,256 @@ impl<W: Write> Interpreter<W> {
             function: builtin,
             args: symbolic_args,
         })))
+    }
+
+    /// Denest sqrt(a + b*sqrt(c)) when the resulting two radicands are
+    /// nonnegative rationals. No floating approximation or branch choice is
+    /// involved: the larger radicand comes first, making the negative case
+    /// the nonnegative principal square root.
+    fn denest_quadratic_sqrt(&self, argument: &Rc<SymbolicExpr>) -> Option<Rc<SymbolicExpr>> {
+        fn rational(expression: &SymbolicExpr) -> Option<BigRational> {
+            match expression {
+                SymbolicExpr::Number(number) => number.try_to_rational(),
+                SymbolicExpr::Unary {
+                    op: UnaryOp::Neg,
+                    expr,
+                } => Some(-rational(expr)?),
+                _ => None,
+            }
+        }
+        fn radical_term(expression: &SymbolicExpr) -> Option<(BigRational, BigRational)> {
+            let radical = |expression: &SymbolicExpr| {
+                if let SymbolicExpr::Call {
+                    function: Builtin::Sqrt,
+                    args,
+                } = expression
+                {
+                    if let [radicand] = args.as_slice() {
+                        return rational(radicand);
+                    }
+                }
+                None
+            };
+            if let Some(c) = radical(expression) {
+                return Some((BigRational::one(), c));
+            }
+            match expression {
+                SymbolicExpr::Binary {
+                    left,
+                    op: BinaryOp::Mul,
+                    right,
+                } => {
+                    if let (Some(b), Some(c)) = (rational(left), radical(right)) {
+                        return Some((b, c));
+                    }
+                    Some((rational(right)?, radical(left)?))
+                }
+                SymbolicExpr::Unary {
+                    op: UnaryOp::Neg,
+                    expr,
+                } => {
+                    let (b, c) = radical_term(expr)?;
+                    Some((-b, c))
+                }
+                _ => None,
+            }
+        }
+        fn exact_sqrt(value: &BigRational) -> Option<BigRational> {
+            if value.is_negative() {
+                return None;
+            }
+            let numerator = value.numer().sqrt();
+            let denominator = value.denom().sqrt();
+            (numerator.clone() * &numerator == *value.numer()
+                && denominator.clone() * &denominator == *value.denom())
+            .then(|| BigRational::new(numerator, denominator))
+        }
+        let SymbolicExpr::Binary { left, op, right } = argument.as_ref() else {
+            return None;
+        };
+        let (a, b, c) = match op {
+            BinaryOp::Add => {
+                if let (Some(a), Some((b, c))) = (rational(left), radical_term(right)) {
+                    (a, b, c)
+                } else {
+                    let a = rational(right)?;
+                    let (b, c) = radical_term(left)?;
+                    (a, b, c)
+                }
+            }
+            BinaryOp::Sub => {
+                let a = rational(left)?;
+                let (b, c) = radical_term(right)?;
+                (a, -b, c)
+            }
+            _ => return None,
+        };
+        if b.is_zero() || !c.is_positive() {
+            return None;
+        }
+        let discriminant = &a * &a - &b * &b * &c;
+        let root = exact_sqrt(&discriminant)?;
+        let two = BigRational::from_integer(BigInt::from(2));
+        let larger = (&a + &root) / &two;
+        let smaller = (&a - &root) / &two;
+        if larger.is_negative() || smaller.is_negative() {
+            return None;
+        }
+        let number =
+            |value: BigRational| Rc::new(SymbolicExpr::Number(Number::from_rational(value)));
+        let first = Self::symbolic_call(Builtin::Sqrt, number(larger));
+        let second = Self::symbolic_call(Builtin::Sqrt, number(smaller));
+        Some(Self::symbolic_binary_raw(
+            first,
+            if b.is_positive() {
+                BinaryOp::Add
+            } else {
+                BinaryOp::Sub
+            },
+            second,
+        ))
+    }
+
+    /// Rationalize a denominator a ± b*sqrt(c) with exact rational a,b,c.
+    fn rationalize_radical_fraction(
+        &self,
+        expression: &Rc<SymbolicExpr>,
+    ) -> Option<Rc<SymbolicExpr>> {
+        fn rational(expression: &SymbolicExpr) -> Option<BigRational> {
+            if let SymbolicExpr::Number(number) = expression {
+                number.try_to_rational()
+            } else {
+                None
+            }
+        }
+        fn radical(expression: &SymbolicExpr) -> Option<(BigRational, BigRational)> {
+            let root = |expression: &SymbolicExpr| {
+                if let SymbolicExpr::Call {
+                    function: Builtin::Sqrt,
+                    args,
+                } = expression
+                {
+                    if let [radicand] = args.as_slice() {
+                        return rational(radicand);
+                    }
+                }
+                None
+            };
+            if let Some(c) = root(expression) {
+                return Some((BigRational::one(), c));
+            }
+            if let SymbolicExpr::Binary {
+                left,
+                op: BinaryOp::Mul,
+                right,
+            } = expression
+            {
+                if let (Some(b), Some(c)) = (rational(left), root(right)) {
+                    return Some((b, c));
+                }
+                if let (Some(c), Some(b)) = (root(left), rational(right)) {
+                    return Some((b, c));
+                }
+            }
+            None
+        }
+        let SymbolicExpr::Binary {
+            left: numerator,
+            op: BinaryOp::Div,
+            right: denominator,
+        } = expression.as_ref()
+        else {
+            return None;
+        };
+        let SymbolicExpr::Binary { left, op, right } = denominator.as_ref() else {
+            return None;
+        };
+        if matches!(op, BinaryOp::Add | BinaryOp::Sub) {
+            if let (
+                Some((left_coefficient, left_radicand)),
+                Some((right_coefficient, right_radicand)),
+            ) = (radical(left), radical(right))
+            {
+                if left_radicand.is_negative() || right_radicand.is_negative() {
+                    return None;
+                }
+                let difference = &left_coefficient * &left_coefficient * left_radicand
+                    - &right_coefficient * &right_coefficient * right_radicand;
+                if difference.is_zero() {
+                    return None;
+                }
+                let signed_conjugate = if difference.is_negative() && *op == BinaryOp::Add {
+                    Self::symbolic_binary_raw(Rc::clone(right), BinaryOp::Sub, Rc::clone(left))
+                } else {
+                    let conjugate = Self::symbolic_binary_raw(
+                        Rc::clone(left),
+                        if *op == BinaryOp::Add {
+                            BinaryOp::Sub
+                        } else {
+                            BinaryOp::Add
+                        },
+                        Rc::clone(right),
+                    );
+                    if difference.is_negative() {
+                        Rc::new(SymbolicExpr::Unary {
+                            op: UnaryOp::Neg,
+                            expr: conjugate,
+                        })
+                    } else {
+                        conjugate
+                    }
+                };
+                return Some(Self::symbolic_binary_raw(
+                    Self::symbolic_binary_raw(
+                        Rc::clone(numerator),
+                        BinaryOp::Mul,
+                        signed_conjugate,
+                    ),
+                    BinaryOp::Div,
+                    Rc::new(SymbolicExpr::Number(Number::from_rational(
+                        difference.abs(),
+                    ))),
+                ));
+            }
+        }
+        let a = rational(left)?;
+        let (b, c) = radical(right)?;
+        if !matches!(op, BinaryOp::Add | BinaryOp::Sub) || c.is_negative() {
+            return None;
+        }
+        let reduced_denominator = &a * &a - &b * &b * &c;
+        if reduced_denominator.is_zero() {
+            return None;
+        }
+        let negative_denominator = reduced_denominator.is_negative();
+        let conjugate = if negative_denominator && *op == BinaryOp::Add {
+            Self::symbolic_binary_raw(Rc::clone(right), BinaryOp::Sub, Rc::clone(left))
+        } else {
+            let ordinary = Self::symbolic_binary_raw(
+                Rc::clone(left),
+                if *op == BinaryOp::Add {
+                    BinaryOp::Sub
+                } else {
+                    BinaryOp::Add
+                },
+                Rc::clone(right),
+            );
+            if negative_denominator {
+                Rc::new(SymbolicExpr::Unary {
+                    op: UnaryOp::Neg,
+                    expr: ordinary,
+                })
+            } else {
+                ordinary
+            }
+        };
+        Some(Self::symbolic_binary_raw(
+            Self::symbolic_binary_raw(Rc::clone(numerator), BinaryOp::Mul, conjugate),
+            BinaryOp::Div,
+            Rc::new(SymbolicExpr::Number(Number::from_rational(
+                reduced_denominator.abs(),
+            ))),
+        ))
     }
 
     fn exact_symbolic_function(
@@ -9275,6 +10037,163 @@ impl<W: Write> Interpreter<W> {
                 expr,
             } => self.symbolic_positive(expr),
             _ => false,
+        }
+    }
+
+    /// A deliberately conservative principal-range proof. The rational
+    /// interval [-1, 1] sits strictly inside asin/atan/atan2's angle range;
+    /// [0, 1] sits inside acos's. Only exact numeric facts can establish it.
+    fn symbolic_in_rational_interval(
+        &self,
+        expression: &SymbolicExpr,
+        lower: i64,
+        upper: i64,
+    ) -> bool {
+        let lower = Number::Integer(BigInt::from(lower));
+        let upper = Number::Integer(BigInt::from(upper));
+        if let SymbolicExpr::Number(number) = expression {
+            return number.compare(&lower).is_some_and(|order| !order.is_lt())
+                && number.compare(&upper).is_some_and(|order| !order.is_gt());
+        }
+        let SymbolicExpr::Variable(symbol) = expression else {
+            return false;
+        };
+        let mut lower_known = false;
+        let mut upper_known = false;
+        for fact in self.constraints.borrow().iter() {
+            match fact {
+                ConstraintFact::RealCompare {
+                    symbol: found,
+                    bound,
+                    op,
+                } if found == symbol => {
+                    let SymbolicExpr::Number(number) = bound.as_ref() else {
+                        continue;
+                    };
+                    if matches!(op, BinaryOp::Lt | BinaryOp::Le)
+                        && number.compare(&lower).is_some_and(|order| !order.is_lt())
+                    {
+                        lower_known = true;
+                    }
+                    if matches!(op, BinaryOp::Gt | BinaryOp::Ge)
+                        && number.compare(&upper).is_some_and(|order| !order.is_gt())
+                    {
+                        upper_known = true;
+                    }
+                }
+                ConstraintFact::Equal {
+                    symbol: found,
+                    value,
+                } if found == symbol => {
+                    if let SymbolicExpr::Number(number) = value.as_ref() {
+                        if number.compare(&lower).is_some_and(|order| !order.is_lt())
+                            && number.compare(&upper).is_some_and(|order| !order.is_gt())
+                        {
+                            return true;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        lower_known && upper_known
+    }
+
+    /// Prove an angle lies in a closed interval measured in multiples of pi.
+    /// Numeric bounds are compared using the certified enclosure 3 < pi < 22/7;
+    /// exact multiples of pi compare by their rational coefficients.
+    fn symbolic_in_pi_interval(
+        &self,
+        expression: &SymbolicExpr,
+        lower_num: i64,
+        lower_den: i64,
+        upper_num: i64,
+        upper_den: i64,
+    ) -> bool {
+        let lower = BigRational::new(BigInt::from(lower_num), BigInt::from(lower_den));
+        let upper = BigRational::new(BigInt::from(upper_num), BigInt::from(upper_den));
+        let enclosure = |expr: &SymbolicExpr| -> Option<(BigRational, BigRational)> {
+            if let Some(factor) = Self::pi_multiple(expr) {
+                let three = BigRational::from_integer(BigInt::from(3));
+                let high = BigRational::new(BigInt::from(22), BigInt::from(7));
+                return Some(if factor.is_negative() {
+                    (&factor * high, factor * three)
+                } else {
+                    (&factor * three, factor * high)
+                });
+            }
+            if let SymbolicExpr::Number(number) = expr {
+                let value = number.try_to_rational()?;
+                return Some((value.clone(), value));
+            }
+            None
+        };
+        let at_least = |bound: &SymbolicExpr, target: &BigRational| {
+            if Self::pi_multiple(bound).is_some_and(|factor| factor >= *target) {
+                return true;
+            }
+            let (bound_low, _) = match enclosure(bound) {
+                Some(bounds) => bounds,
+                None => return false,
+            };
+            let (_, target_high) = enclosure(&Self::symbolic_pi_multiple(target)).unwrap();
+            bound_low >= target_high
+        };
+        let at_most = |bound: &SymbolicExpr, target: &BigRational| {
+            if Self::pi_multiple(bound).is_some_and(|factor| factor <= *target) {
+                return true;
+            }
+            let (_, bound_high) = match enclosure(bound) {
+                Some(bounds) => bounds,
+                None => return false,
+            };
+            let (target_low, _) = enclosure(&Self::symbolic_pi_multiple(target)).unwrap();
+            bound_high <= target_low
+        };
+        if at_least(expression, &lower) && at_most(expression, &upper) {
+            return true;
+        }
+        let SymbolicExpr::Variable(symbol) = expression else {
+            return false;
+        };
+        let mut lower_known = false;
+        let mut upper_known = false;
+        for fact in self.constraints.borrow().iter() {
+            match fact {
+                ConstraintFact::RealCompare {
+                    symbol: found,
+                    bound,
+                    op,
+                } if found == symbol => {
+                    if matches!(op, BinaryOp::Lt | BinaryOp::Le) && at_least(bound, &lower) {
+                        lower_known = true;
+                    }
+                    if matches!(op, BinaryOp::Gt | BinaryOp::Ge) && at_most(bound, &upper) {
+                        upper_known = true;
+                    }
+                }
+                ConstraintFact::Equal {
+                    symbol: found,
+                    value,
+                } if found == symbol => {
+                    if at_least(value, &lower) && at_most(value, &upper) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        lower_known && upper_known
+    }
+
+    fn symbolic_pi_multiple(factor: &BigRational) -> SymbolicExpr {
+        if factor.is_zero() {
+            return SymbolicExpr::Number(Number::Integer(BigInt::from(0)));
+        }
+        SymbolicExpr::Binary {
+            left: Rc::new(SymbolicExpr::Number(Number::Rational(factor.clone()))),
+            op: BinaryOp::Mul,
+            right: Rc::new(SymbolicExpr::Constant(MathConstant::Pi)),
         }
     }
 
@@ -10529,6 +11448,49 @@ impl<W: Write> Interpreter<W> {
         let Number::Integer(integer_exponent) = exponent else {
             if base.is_exact() && exponent.is_exact() {
                 if let Number::Rational(rational_exponent) = &exponent {
+                    if base.is_negative() && rational_exponent.denom() != &BigInt::from(1) {
+                        // Exact negative rational powers use the principal
+                        // complex branch. A real odd root would give the
+                        // wrong value for (-1)^(1/3).
+                        if rational_exponent == &BigRational::new(1.into(), 2.into()) {
+                            let magnitude = base.abs();
+                            let root =
+                                self.call_builtin(Builtin::Sqrt, vec![Value::Number(magnitude)])?;
+                            let imaginary = Value::Number(Number::Complex(ComplexNumber::new(
+                                BigDecimal::from(0),
+                                BigDecimal::from(1),
+                            )));
+                            return self.apply_binary(BinaryOp::Mul, root, imaginary);
+                        }
+                        if let Some((sine, cosine)) =
+                            Self::exact_sine_cosine(rational_exponent.clone())
+                        {
+                            let magnitude = self.power(
+                                Value::Number(base.abs()),
+                                Value::Number(exponent.clone()),
+                            )?;
+                            let magnitude = self.value_to_symbolic(magnitude)?;
+                            let imaginary_unit = Rc::new(SymbolicExpr::Number(Number::Complex(
+                                ComplexNumber::new(BigDecimal::from(0), BigDecimal::from(1)),
+                            )));
+                            let phase = Self::symbolic_binary_raw(
+                                cosine,
+                                BinaryOp::Add,
+                                Self::symbolic_binary_raw(sine, BinaryOp::Mul, imaginary_unit),
+                            );
+                            let result = if Self::symbolic_is_one(&magnitude) {
+                                phase
+                            } else {
+                                Self::symbolic_binary_raw(magnitude, BinaryOp::Mul, phase)
+                            };
+                            return Ok(Self::symbolic_value(self.simplify_symbolic_tree(&result)?));
+                        }
+                        return Ok(Self::symbolic_value(Rc::new(SymbolicExpr::Binary {
+                            left: Rc::new(SymbolicExpr::Number(base)),
+                            op: BinaryOp::Pow,
+                            right: Rc::new(SymbolicExpr::Number(exponent)),
+                        })));
+                    }
                     if let (Some(degree), Some(power)) = (
                         rational_exponent.denom().to_u32(),
                         rational_exponent.numer().to_i64(),
@@ -11151,15 +12113,30 @@ impl<W: Write> Interpreter<W> {
             } else {
                 None
             };
-            if let Some((Builtin::Tan, argument)) = tangent {
-                return Ok(Self::symbolic_value(Rc::new(SymbolicExpr::Binary {
-                    left: Rc::new(SymbolicExpr::Call {
-                        function: Builtin::Sec,
-                        args: vec![argument],
-                    }),
-                    op: BinaryOp::Pow,
-                    right: Self::symbolic_integer(2),
-                })));
+            if op == BinaryOp::Add {
+                if let Some((Builtin::Tan, argument)) = tangent {
+                    return Ok(Self::symbolic_value(Rc::new(SymbolicExpr::Binary {
+                        left: Rc::new(SymbolicExpr::Call {
+                            function: Builtin::Sec,
+                            args: vec![argument],
+                        }),
+                        op: BinaryOp::Pow,
+                        right: Self::symbolic_integer(2),
+                    })));
+                }
+            }
+            if op == BinaryOp::Sub && Self::symbolic_is_one(&left) {
+                if let Some((Builtin::Tanh, argument)) = Self::squared_unary_call(&right) {
+                    return Ok(Self::symbolic_value(Self::symbolic_binary_raw(
+                        Self::symbolic_integer(1),
+                        BinaryOp::Div,
+                        Self::symbolic_binary_raw(
+                            Self::symbolic_call(Builtin::Cosh, argument),
+                            BinaryOp::Pow,
+                            Self::symbolic_integer(2),
+                        ),
+                    )));
+                }
             }
         }
 

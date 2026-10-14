@@ -43,31 +43,48 @@ Legend: `[ ]` todo, `[x]` done.
 
 ### 1.2 Trigonometry and hyperbolic identities
 
-- [ ] Sum-to-product and product-to-sum rewrites
-      (`sin(a)cos(b) -> (sin(a+b) + sin(a-b))/2` and friends).
+- [x] Sum-to-product and product-to-sum rewrites for pairs of sine/cosine
+      calls (`factor` and `expand`, respectively); hyperbolic product forms
+      also expand.
 - [ ] Power-reduction and general multiple-angle formulas
       (`sin(x)^2 -> (1 - cos(2x))/2`, `cos(n*x)` expansion for integer `n`).
+      Squares reduce under `expand`; sine, cosine, sinh, and cosh now use
+      compact Chebyshev polynomials for integer multiples through a 64-term
+      output budget. Higher powers and unbounded expansions remain.
 - [ ] Half-angle formulas with correct sign handling under assumptions.
-- [ ] Hyperbolic identities: `cosh(x)^2 - sinh(x)^2 -> 1`,
-      `1 - tanh(x)^2 -> sech(x)^2` (once `sech`/`csch` exist, see 2.6),
-      double-angle and addition formulas.
-- [ ] Inverse-function simplifications under assumptions
-      (`sin(asin(x)) -> x` for `x in [-1, 1]`, `asin(sin(x))` only on the
-      principal branch), `atan2`-aware forms.
+      `expand(sin(x/2))` and `expand(cos(x/2))` now use signed radical forms
+      when exact bounds place `x` in `[-1, 1]` or branch intervals expressed
+      in multiples of pi, including the negative cosine half-angle branch.
+- [ ] Hyperbolic identities: `cosh(x)^2 - sinh(x)^2 -> 1` and
+      `1 - tanh(x)^2 -> 1/cosh(x)^2` now simplify, with double-angle and
+      addition expansions. `sech`/`csch` names and wider normalization remain.
+- [ ] Inverse-function simplifications under assumptions. Principal-range
+      rewrites now cover `asin(sin(x))`, `atan(tan(x))`, and
+      `atan2(sin(x),cos(x))` when exact bounds prove `-1 <= x <= 1`, plus
+      `acos(cos(x))` on `0 <= x <= 1`. Exact pi bounds now prove the wider
+      principal intervals; unresolved cases near tangent branch endpoints
+      still stay symbolic.
 
 ### 1.3 Exponentials, logarithms, and radicals
 
-- [ ] `log(a^n) -> n*log(a)` under `a > 0` (currently refused without
-      assumptions; make the assumption path complete and tested).
-- [ ] `log(a) + log(b) -> log(a*b)` and its inverse (`logcombine`/`logexpand`
-      as explicit, separately controllable transforms).
-- [ ] Radicals: denesting (`sqrt(3 + 2*sqrt(2)) -> 1 + sqrt(2)`), collecting
-      `sqrt(a)*sqrt(b) -> sqrt(a*b)` only under valid sign assumptions,
-      rationalizing denominators (`1/(1 + sqrt(2))`).
+- [x] `log(a^n) -> n*log(a)` under `a > 0` and real `n`; the assumption path
+      is tested and complex exponents retain the principal branch.
+- [x] `log(a) + log(b) -> log(a*b)` and its inverse through explicit,
+      separately controllable `logcombine`/`logexpand` transforms, guarded
+      by positive arguments.
+- [ ] Radicals: exact quadratic denesting now handles
+      `sqrt(3 + 2*sqrt(2)) -> 1 + sqrt(2)`, sign-guarded root collection
+      exists, and `rationalize` handles rational `a ± b*sqrt(c)` denominators.
+      Two rational-coefficient square-root terms in a denominator now also
+      rationalize. General nested radical towers and denominator forms remain.
 - [ ] Algebraic-number normalization: exact simplification of nested roots,
       minimal-polynomial based equality tests for radical expressions.
-- [ ] Canonical complex-number handling of fractional powers (principal branch
-      documented and tested at branch cuts).
+- [ ] Canonical complex-number handling of fractional powers. Exact negative
+      half powers now produce the principal imaginary value; other exact
+      negative fractional powers use exact principal roots of unity when the
+      angle is a supported rational multiple of pi (thirds, quarters, sixths);
+      other exact negative fractional powers remain symbolic. General exact
+      principal roots remain.
 
 ### 1.4 Polynomial and rational-function identities
 
@@ -132,13 +149,20 @@ Legend: `[ ]` todo, `[x]` done.
       output does not depend on rule order (guidance in
       `algebraic_identities.md`).
 - [ ] Expression arena with hash-consing so structural equality and common
-      subexpression reuse are cheap (guidance item 4).
-- [ ] Rewrite budget / termination measure on every automatic rule.
-- [ ] Complexity-function-driven `simplify` (leaf count or user-selectable)
-      with `full_simplify` trying `expand`/`factor`/`trigsimp`/`powsimp`
-      pipelines and keeping the smallest result.
-- [ ] Randomized numeric substitution testing for identities (zero, negative,
-      rational, high-precision decimal, complex boundary cases).
+      subexpression reuse are cheap (guidance item 4). Completed `simplify`
+      results now intern equal subexpressions within a bounded pass; a global
+      arena across all symbolic construction paths remains.
+- [ ] Rewrite budget / termination measure on every automatic rule. Recursive
+      tree simplification and explicit log transforms now have finite budgets;
+      remaining automatic paths need the same accounting.
+- [ ] Complexity-function-driven `simplify`: `full_simplify` now tries
+      bounded polynomial expand/factor, function-angle expansion, and
+      sum-to-product candidates and keeps the smallest by leaf count.
+      User-selectable cost and broader trigonometric/power pipelines remain.
+- [ ] Randomized numeric substitution testing for identities now covers a
+      deterministic set of signed rational trig inputs and complex points for
+      multiple-angle rewrites; high-precision and branch-boundary generators
+      remain.
 
 ---
 
@@ -184,8 +208,9 @@ Legend: `[ ]` todo, `[x]` done.
       constant-coefficient ODEs through second order; `dsolve_separable`
       returns supported implicit separable solutions. Broader separable forms
       and higher-order characteristic polynomials remain future extensions.
-- [ ] Risch-style structure theorems eventually; until then grow the rule
-      table (rational functions, erf/Gaussian forms, by-parts families).
+- [ ] Risch-style structure theorems eventually; the rule table now includes
+      affine Gaussian `erf` primitives alongside rational functions and
+      tabular by-parts families. A general decision procedure remains open.
 
 ### 2.3 Matrices and linear algebra
 
@@ -247,8 +272,8 @@ multi-series colors, auto y-fit.
       re-samples at interactive rates (the signature Desmos feature).
 - [ ] Editable function rows in the list (edit source in place; currently
       remove + re-add), with per-row color picker and show/hide toggle.
-- [ ] Click-drag probe that reports coordinates continuously while dragging
-      (currently click-to-pin only).
+- [x] Click-drag probe that reports coordinates continuously while dragging
+      from a curve; dragging elsewhere continues to pan.
 - [ ] Inequality plotting and shading (`y > sin(x)` region fill).
 - [ ] Implicit plots (`x^2 + y^2 = 25`) and implicit inequalities.
 - [ ] Parametric curves `(x(t), y(t))` and polar plots `r(θ)`.
@@ -257,7 +282,8 @@ multi-series colors, auto y-fit.
       lock, and a "home" key to reset the window.
 - [ ] Touchpad two-finger scrolling pans the window (currently the wheel only
       zooms; drag is the sole pan).
-- [ ] Keyboard accessibility: arrow keys pan, `+`/`-` zoom, tab focus order.
+- [x] Keyboard accessibility: focus the canvas by click or Tab; arrow keys pan,
+      `+`/`-` zoom, and Home resets the view.
 - [ ] Piecewise/discontinuity quality: asymptote detection drawn as dashed
       guides, hole markers for removable singularities.
 - [ ] Graph state persistence (functions + window) across app restarts.
@@ -284,9 +310,8 @@ multi-series colors, auto y-fit.
 - [ ] `sample_expression` (`src/plot.rs`, used by the document renderer) is
       not cancellable; wire the same `should_cancel` mechanism used by the
       graph sampler into document preview plots.
-- [ ] Error paths in `poll_graph_sampling` mark all functions stale when the
-      worker channel disconnects, but never retry; surface a visible status
-      and re-arm sampling.
+- [x] A disconnected graph worker marks functions stale, shows a status,
+      restarts after a short delay, and re-arms sampling.
 
 ### 4.2 Editor (features other IDEs treat as table stakes)
 
@@ -324,17 +349,14 @@ multi-series colors, auto y-fit.
 
 ### 4.5 Correctness polish noticed while working here
 
-- [ ] The graph probe is discarded whenever a fresh sampling batch is applied
-      (`apply_graph_batch`); Desmos keeps the tracked point attached to the
-      curve across re-samples — re-snap the pinned point to the new samples
-      instead of clearing it.
-- [ ] Graph coverage hysteresis uses fixed 15%/30% padding; make it scale with
-      sampling latency so very slow expressions get wider cached windows.
-- [ ] The `graph_sample_count` field is informational only; surface it (or
-      drop it) to avoid drift from the actual request count.
-- [ ] Greek-shortcut expansion in the graph input mutates the text outside the
-      widget's undo stack (the editor path adds undo entries manually); give
-      the graph input the same undo treatment.
+- [x] Re-snap the pinned graph probe to new samples after a sampling batch,
+      preserving critical-point classification when a matching point exists.
+- [x] Graph coverage padding scales with the measured sampling latency,
+      bounded from 30% to 120% of the visible x span.
+- [x] Drop the informational `graph_sample_count` field; each request and
+      result already carries its actual count.
+- [x] Greek-shortcut expansion in the graph input records an undo entry,
+      using the same text-widget state treatment as the editor.
 
 ---
 

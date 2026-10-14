@@ -14,6 +14,163 @@ fn runtime_error(source: &str) -> String {
 }
 
 #[test]
+fn trig_expansion_preserves_circular_and_hyperbolic_addition() {
+    assert_eq!(
+        output(
+            "print(abs(evalf(subs(expand(sin(3*x)), x, 0.7)) - evalf(sin(2.1))) < 0.000000000001);\
+             print(abs(evalf(subs(expand(cos(3*x)), x, 0.7)) - evalf(cos(2.1))) < 0.000000000001);\
+             print(abs(evalf(subs(subs(expand(tanh(x+y)), x, 0.4), y, 0.2)) - evalf(tanh(0.6))) < 0.000000000001);\
+             print(abs(evalf(subs(subs(expand(tanh(x-y)), x, 0.4), y, 0.2)) - evalf(tanh(0.2))) < 0.000000000001);"
+        ),
+        "true\ntrue\ntrue\ntrue\n"
+    );
+}
+
+#[test]
+fn guarded_logs_and_radical_denesting_keep_real_branches() {
+    assert_eq!(
+        output("print(sqrt(3+2*sqrt(2))); print(sqrt(3-2*sqrt(2)));"),
+        "1 + sqrt(2)\nsqrt(2) - 1\n"
+    );
+    assert_eq!(output("print(logexpand(ln(x*y)));"), "ln(x * y)\n");
+    assert_eq!(
+        output("assume_positive(x); assume_positive(y); print(logexpand(ln(x*y))); print(logcombine(ln(x)+ln(y)));"),
+        "ln(x) + ln(y)\nln(x * y)\n"
+    );
+    assert_eq!(
+        output("assume_positive(x); print(ln(x^n)); assume_real(n); print(ln(x^n));"),
+        "ln(x ^ n)\nn * ln(x)\n"
+    );
+}
+
+#[test]
+fn inverse_trig_rewrites_need_principal_range_facts() {
+    assert_eq!(output("print(asin(sin(x)));"), "asin(sin(x))\n");
+    assert_eq!(
+        output("assume(x >= -1); assume(x <= 1); print(asin(sin(x))); print(atan(tan(x))); print(atan2(sin(x),cos(x)));"),
+        "x\nx\nx\n"
+    );
+}
+
+#[test]
+fn gaussian_integrals_use_erf_and_differentiate_back() {
+    assert_eq!(
+        output("print(integral(exp(-x^2),x));"),
+        "erf(x) * sqrt(pi) / 2\n"
+    );
+    assert_eq!(
+        output("print(abs(evalf(subs(derivative(integral(exp(-(2*x+1)^2),x),x),x,0.3)) - evalf(exp(-(2*0.3+1)^2))) < 0.000000001);"),
+        "true\n"
+    );
+}
+
+#[test]
+fn exact_negative_fractional_powers_respect_principal_branch() {
+    assert_eq!(output("print((-1)^(1/2)); print((-4)^(1/2));"), "i\n2i\n");
+    assert_eq!(output("print((-1)^(1/3));"), "1/2 + i * (sqrt(3) / 2)\n");
+    assert_eq!(
+        output("print(abs(evalf((-1)^(1/3)) - (0.5 + 0.8660254037844386*i)) < 0.000000001);"),
+        "true\n"
+    );
+    assert_eq!(output("print(type_of(evalf((-1)^(1/3))));"), "complex\n");
+}
+
+#[test]
+fn explicit_rationalization_removes_quadratic_radical_denominators() {
+    let result = output("print(rationalize(1/(1+sqrt(2))));");
+    assert_eq!(result, "sqrt(2) - 1\n");
+    assert_eq!(
+        output("print(rationalize(1/(x+sqrt(2))));"),
+        "1 / (sqrt(2) + x)\n"
+    );
+    assert_eq!(
+        output("print(rationalize(1/(sqrt(2)+sqrt(3))));"),
+        "sqrt(3) - sqrt(2)\n"
+    );
+}
+
+#[test]
+fn full_simplify_keeps_the_smallest_bounded_candidate() {
+    assert_eq!(output("print(full_simplify(sin(x)^2+cos(x)^2));"), "1\n");
+    assert_eq!(output("print(full_simplify((x+1)^2));"), "(x + 1) ^ 2\n");
+}
+
+#[test]
+fn generated_trig_rewrites_agree_at_signed_rational_points() {
+    let mut seed = 0x4d595df4d0f33173_u64;
+    for _ in 0..20 {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+        let x = (seed % 25) as i64 - 12;
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+        let y = (seed % 25) as i64 - 12;
+        let source = format!(
+            "print(abs(evalf(subs(subs(expand(sin(x)*cos(y)),x,({x}/7)),y,({y}/7))) - evalf(sin({x}/7)*cos({y}/7))) < 0.000000001);"
+        );
+        assert_eq!(output(&source), "true\n", "x={x}/7, y={y}/7");
+    }
+}
+
+#[test]
+fn multiple_angle_rewrites_agree_at_complex_points() {
+    for real in [-3, -1, 1, 3] {
+        for imaginary in [-2, 2] {
+            let point = format!("({real}/7+{imaginary}/9*i)");
+            let source = format!(
+                "print(abs(evalf(subs(expand(sin(13*x)),x,{point}))-evalf(sin(13*{point})))<0.00000001);"
+            );
+            assert_eq!(output(&source), "true\n", "point={point}");
+        }
+    }
+}
+
+#[test]
+fn half_angle_expansion_uses_proven_signs() {
+    assert_eq!(output("print(expand(sin(x/2)));"), "sin(x / 2)\n");
+    assert_eq!(
+        output("assume(x>=0); assume(x<=1); print(expand(sin(x/2))); print(expand(cos(x/2)));"),
+        "sqrt((1 - cos(x)) / 2)\nsqrt((1 + cos(x)) / 2)\n"
+    );
+    assert_eq!(
+        output("assume(x>=-1); assume(x<=0); print(expand(sin(x/2)));"),
+        "-sqrt((1 - cos(x)) / 2)\n"
+    );
+}
+
+#[test]
+fn angle_rewrites_use_exact_pi_bounds_and_branch_signs() {
+    assert_eq!(
+        output("assume(x>=0); assume(x<=pi); print(asin(sin(x))); print(acos(cos(x))); print(expand(cos(x/2)));"),
+        "asin(sin(x))\nx\nsqrt((1 + cos(x)) / 2)\n"
+    );
+    assert_eq!(
+        output(
+            "assume(x>=-pi/2); assume(x<=pi/2); print(asin(sin(x))); print(atan2(sin(x),cos(x)));"
+        ),
+        "x\nx\n"
+    );
+    assert_eq!(
+        output("assume(x>=pi); assume(x<=2*pi); print(expand(cos(x/2))); print(expand(sin(x/2)));"),
+        "-sqrt((1 + cos(x)) / 2)\nsqrt((1 - cos(x)) / 2)\n"
+    );
+}
+
+#[test]
+fn multiple_angles_beyond_twelve_use_compact_polynomials() {
+    assert_eq!(
+        output("print(abs(evalf(subs(expand(cos(13*x)),x,0.2))-evalf(cos(2.6)))<0.00000001); print(abs(evalf(subs(expand(sin(20*x)),x,0.2))-evalf(sin(4)))<0.00000001);"),
+        "true\ntrue\n"
+    );
+}
+
+#[test]
+fn tangent_identities_do_not_confuse_subtraction() {
+    assert_eq!(
+        output("print(1-tan(x)^2); print(1-tanh(x)^2);"),
+        "1 - tan(x) ^ 2\n1 / cosh(x) ^ 2\n"
+    );
+}
+
+#[test]
 fn symbolic_geometric_sum_closes_over_symbolic_bounds() {
     assert_eq!(output("print(sum(2^k, k, 0, n));"), "2 ^ (n + 1) - 1\n");
     assert_eq!(output("print(sum(1^k, k, 2, n));"), "n - 1\n");
