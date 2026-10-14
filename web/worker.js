@@ -1,9 +1,11 @@
-import init, { worker_evaluate } from "./pkg/scas.js";
-
-const ready = init();
+let ready;
 self.onmessage = async (event) => {
   try {
-    await ready;
+    ready ??= import("./pkg/scas.js").then(async ({ default: init, worker_evaluate }) => {
+      await init();
+      return worker_evaluate;
+    });
+    const worker_evaluate = await ready;
     self.postMessage(worker_evaluate(event.data));
   } catch (error) {
     let generation = 0;

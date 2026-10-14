@@ -32,6 +32,14 @@ Run the native IDE, with an editor, live mathematical preview, Problems and Outp
 cargo run --features gui --bin scas-gui
 ```
 
+If the Linux IDE opens but stops responding during startup, try software OpenGL:
+
+```sh
+LIBGL_ALWAYS_SOFTWARE=1 cargo run --features gui --bin scas-gui
+```
+
+This can work around a graphics driver stall; rendering may be slower.
+
 Build the browser IDE (Rust `wasm32-unknown-unknown` target and matching `wasm-bindgen-cli` 0.2.100 required):
 
 ```sh
