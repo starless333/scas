@@ -261,7 +261,14 @@ impl WebHandle {
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.runner.app_mut::<WebApp>().is_some_and(|app| app.dirty)
+        self.runner.app_mut::<WebApp>().is_some_and(|app| {
+            app.dirty
+                || app
+                    .documents
+                    .iter()
+                    .enumerate()
+                    .any(|(index, document)| index != app.active_document && document.dirty)
+        })
     }
 }
 
@@ -501,7 +508,7 @@ fn paint_line_numbers(
             egui::pos2(separator, clip.bottom()),
         ),
         0.0,
-        theme.ui.editor.0,
+        theme.ui.background.0,
     );
     let mut line = 0;
     let mut first_row = true;
@@ -732,6 +739,12 @@ enum Tab {
     Plot,
 }
 
+struct OpenDocument {
+    name: String,
+    source: String,
+    dirty: bool,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BottomTab {
     Output,
@@ -769,6 +782,10 @@ struct WebApp {
     document: Option<Document>,
     tex: String,
     tab: Tab,
+    documents: Vec<OpenDocument>,
+    active_document: usize,
+    pending_close: Option<usize>,
+    reveal_tab: bool,
     plot_expression: String,
     plot_series: Vec<WebSeries>,
     plot_error: Option<String>,
@@ -810,6 +827,7 @@ struct WebApp {
     bottom_tab: BottomTab,
     highlight_source: String,
     highlight_font_size_bits: u32,
+    highlight_theme: usize,
     highlight_job: LayoutJob,
     editor_font_size: f32,
     themes: Vec<Theme>,
@@ -819,7 +837,6 @@ struct WebApp {
     line_numbers: LineNumberMode,
     auto_greek: bool,
     dirty: bool,
-    pending_new: bool,
     settings_open: bool,
     save_as_open: bool,
     save_as_name: String,
@@ -933,7 +950,7 @@ impl WebApp {
         });
         let mut app = Self {
             context,
-            source,
+            source: source.clone(),
             output: String::new(),
             error: None,
             output_error: None,
@@ -941,6 +958,14 @@ impl WebApp {
             document: initial_preview,
             tex: initial_tex,
             tab: Tab::Document,
+            documents: vec![OpenDocument {
+                name: source_name.to_owned(),
+                source: source.clone(),
+                dirty,
+            }],
+            active_document: 0,
+            pending_close: None,
+            reveal_tab: false,
             plot_expression: "sin(x)".to_owned(),
             plot_series: Vec::new(),
             plot_error: None,
@@ -982,6 +1007,7 @@ impl WebApp {
             bottom_tab: BottomTab::Output,
             highlight_source: String::new(),
             highlight_font_size_bits: 0,
+            highlight_theme: usize::MAX,
             highlight_job: LayoutJob::default(),
             editor_font_size,
             themes,
@@ -991,7 +1017,6 @@ impl WebApp {
             line_numbers,
             auto_greek,
             dirty,
-            pending_new: false,
             settings_open: false,
             save_as_open: false,
             save_as_name: "document.scas".to_owned(),
@@ -1021,35 +1046,144 @@ impl WebApp {
     }
 
     fn load_source_named(&mut self, name: String, source: String) {
-        self.source = source;
-        self.source_name = name
+        let name = name
             .rsplit(['/', '\\'])
             .next()
             .filter(|name| !name.is_empty())
             .unwrap_or("imported.scas")
             .to_owned();
+        if let Some(index) = self
+            .documents
+            .iter()
+            .position(|document| document.name == name)
+        {
+            self.select_document(index);
+            return;
+        }
+        self.store_active_document();
+        self.source = source;
+        self.source_name = name;
+        self.documents.push(OpenDocument {
+            name: self.source_name.clone(),
+            source: self.source.clone(),
+            dirty: false,
+        });
+        self.active_document = self.documents.len() - 1;
+        self.reveal_tab = true;
         self.tab = Tab::Document;
         self.dirty = false;
         self.highlight_source.clear();
+        self.preview_json = "[]".to_owned();
+        self.tex.clear();
+        self.document = None;
+        self.error = None;
         self.save_draft();
         self.request("preview");
     }
 
     fn new_file(&mut self) {
-        if self.dirty {
-            self.pending_new = true;
-        } else {
-            self.new_file_unchecked();
+        self.store_active_document();
+        let mut name = "Untitled".to_owned();
+        let mut suffix = 2;
+        while self.documents.iter().any(|document| document.name == name) {
+            name = format!("Untitled-{suffix}");
+            suffix += 1;
+        }
+        self.documents.push(OpenDocument {
+            name: name.clone(),
+            source: STARTER.to_owned(),
+            dirty: false,
+        });
+        self.active_document = self.documents.len() - 1;
+        self.reveal_tab = true;
+        self.source = STARTER.to_owned();
+        self.source_name = name;
+        self.tab = Tab::Document;
+        self.dirty = false;
+        self.highlight_source.clear();
+        self.preview_json = "[]".to_owned();
+        self.tex.clear();
+        self.document = None;
+        self.error = None;
+        self.save_draft();
+        self.request("preview");
+    }
+
+    fn store_active_document(&mut self) {
+        if let Some(document) = self.documents.get_mut(self.active_document) {
+            document.name.clone_from(&self.source_name);
+            document.source.clone_from(&self.source);
+            document.dirty = self.dirty;
         }
     }
 
-    fn new_file_unchecked(&mut self) {
-        self.source = STARTER.to_owned();
-        self.source_name = "Untitled".to_owned();
+    fn select_document(&mut self, index: usize) {
+        if index == self.active_document || index >= self.documents.len() {
+            self.tab = Tab::Document;
+            return;
+        }
+        self.store_active_document();
+        let document = &self.documents[index];
+        self.source.clone_from(&document.source);
+        self.source_name.clone_from(&document.name);
+        self.dirty = document.dirty;
+        self.active_document = index;
         self.tab = Tab::Document;
-        self.dirty = false;
-        self.pending_new = false;
+        self.reveal_tab = true;
         self.highlight_source.clear();
+        self.preview_json = "[]".to_owned();
+        self.tex.clear();
+        self.document = None;
+        self.error = None;
+        self.cursor_char_index = 0;
+        self.cursor_line = 1;
+        self.cursor_column = 1;
+        self.save_draft();
+        self.request("preview");
+    }
+
+    fn close_document(&mut self, index: usize) {
+        if index >= self.documents.len() {
+            return;
+        }
+        self.store_active_document();
+        if self.documents[index].dirty {
+            self.select_document(index);
+            self.pending_close = Some(index);
+        } else {
+            self.close_document_unchecked(index);
+        }
+    }
+
+    fn close_document_unchecked(&mut self, index: usize) {
+        self.documents.remove(index);
+        self.pending_close = None;
+        if self.documents.is_empty() {
+            self.documents.push(OpenDocument {
+                name: "Untitled".to_owned(),
+                source: STARTER.to_owned(),
+                dirty: false,
+            });
+        }
+        let next = if index == self.active_document {
+            index.min(self.documents.len() - 1)
+        } else if index < self.active_document {
+            self.active_document - 1
+        } else {
+            self.active_document
+        };
+        let document = &self.documents[next];
+        self.source.clone_from(&document.source);
+        self.source_name.clone_from(&document.name);
+        self.dirty = document.dirty;
+        self.active_document = next;
+        self.tab = Tab::Document;
+        self.reveal_tab = true;
+        self.highlight_source.clear();
+        self.preview_json = "[]".to_owned();
+        self.tex.clear();
+        self.document = None;
+        self.error = None;
         self.save_draft();
         self.request("preview");
     }
@@ -1960,8 +2094,15 @@ impl WebApp {
                 });
             });
         let muted = theme.ui.muted.0;
-        let composer_height = if ui.available_width() < 600.0 {
+        let narrow_repl = ui.available_width() < 600.0;
+        let completion_count =
+            editor_assist::completions(&self.repl_input, self.repl_input.chars().count()).len;
+        let composer_height = if narrow_repl && completion_count > 0 {
+            318.0
+        } else if narrow_repl {
             206.0
+        } else if completion_count > 0 {
+            248.0
         } else {
             192.0
         };
@@ -2017,6 +2158,41 @@ impl WebApp {
                     }
                     self.repl_history_index = None;
                 }
+                let repl_completions = editor_assist::completions(
+                    &self.repl_input,
+                    self.repl_input.chars().count(),
+                );
+                let mut chosen_completion = None;
+                if repl_completions.len > 0 {
+                    ui.add_space(5.0);
+                    ui.label(
+                        RichText::new("Suggestions")
+                            .size(11.0)
+                            .strong()
+                            .color(muted),
+                    );
+                    ui.horizontal_wrapped(|ui| {
+                        for completion in repl_completions.iter() {
+                            if ui
+                                .add_sized(
+                                    [132.0, if narrow_repl { 44.0 } else { 30.0 }],
+                                    egui::Button::new(completion.label),
+                                )
+                                .on_hover_text(completion.detail)
+                                .clicked()
+                            {
+                                chosen_completion = Some(completion);
+                            }
+                        }
+                    });
+                }
+                if let Some(completion) = chosen_completion {
+                    let insertion = completion.insertion.text().replace("$0", "");
+                    let start = char_to_byte(&self.repl_input, repl_completions.start_char);
+                    self.repl_input.replace_range(start.., &insertion);
+                    self.repl_history_index = None;
+                    response.request_focus();
+                }
                 if response.has_focus() {
                     let tab = ui.input_mut(|input| {
                         input.consume_key(egui::Modifiers::NONE, egui::Key::Tab)
@@ -2039,13 +2215,10 @@ impl WebApp {
                         }
                     }
                     if tab {
-                        let matches = editor_assist::completions(
-                            &self.repl_input,
-                            self.repl_input.chars().count(),
-                        );
-                        if let Some(completion) = matches.first() {
+                        if let Some(completion) = repl_completions.first() {
                             let insertion = completion.insertion.text().replace("$0", "");
-                            let start = char_to_byte(&self.repl_input, matches.start_char);
+                            let start =
+                                char_to_byte(&self.repl_input, repl_completions.start_char);
                             self.repl_input.replace_range(start.., &insertion);
                         }
                     }
@@ -2209,8 +2382,10 @@ impl WebApp {
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(context, |ui| {
                 ui.label("Save the current document as a .scas file");
-                let response =
-                    ui.add_sized([420.0, 25.0], TextEdit::singleline(&mut self.save_as_name));
+                let response = ui.add_sized(
+                    [(context.screen_rect().width() - 48.0).min(420.0), 25.0],
+                    TextEdit::singleline(&mut self.save_as_name),
+                );
                 if !response.has_focus() {
                     response.request_focus();
                 }
@@ -2240,39 +2415,46 @@ impl WebApp {
                 self.save_draft();
                 self.status = format!("Saved {name}");
                 self.save_as_open = false;
-                if self.pending_new {
-                    self.new_file_unchecked();
+                if let Some(index) = self.pending_close.take() {
+                    self.close_document_unchecked(index);
+                    return;
                 }
             }
         }
     }
 
-    fn show_unsaved_changes(&mut self, context: &egui::Context) {
-        if !self.pending_new || self.save_as_open {
+    fn show_close_document(&mut self, context: &egui::Context) {
+        let Some(index) = self.pending_close else {
+            return;
+        };
+        if self.save_as_open {
             return;
         }
-        egui::Window::new("Unsaved changes")
+        egui::Window::new("Unsaved file")
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(context, |ui| {
-                ui.label("Save changes to this document?");
+                ui.label(format!(
+                    "Save changes to {} before closing?",
+                    self.source_name
+                ));
                 ui.horizontal(|ui| {
                     if ui.button("Save").clicked() {
-                        if self.source_name == "Untitled" {
-                            self.save_as_name = "document.scas".to_owned();
-                            self.save_as_open = true;
-                        } else {
+                        if self.source_name.ends_with(".scas") {
                             download_file(&self.source_name, &self.source, "text/plain");
                             self.dirty = false;
-                            self.new_file_unchecked();
+                            self.close_document_unchecked(index);
+                        } else {
+                            self.save_as_name = "document.scas".to_owned();
+                            self.save_as_open = true;
                         }
                     }
                     if ui.button("Discard").clicked() {
-                        self.new_file_unchecked();
+                        self.close_document_unchecked(index);
                     }
                     if ui.button("Cancel").clicked() {
-                        self.pending_new = false;
+                        self.pending_close = None;
                     }
                 });
             });
@@ -2462,7 +2644,7 @@ impl WebApp {
                 ui.close_menu();
             }
             if ui.button("Save  Ctrl+S").clicked() {
-                if self.source_name == "Untitled" {
+                if !self.source_name.ends_with(".scas") {
                     self.save_as_name = "document.scas".to_owned();
                     self.save_as_open = true;
                 } else {
@@ -2512,12 +2694,108 @@ impl WebApp {
     }
 }
 
+impl WebApp {
+    fn show_document_toolbar(&mut self, ui: &mut egui::Ui, theme: &Theme) {
+        let panel = theme.ui.panel.0;
+        egui::Frame::none().fill(panel).show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.menu_button(
+                        RichText::new('\u{ea7c}').font(FontId::new(
+                            16.0,
+                            FontFamily::Name("VS Code Codicons".into()),
+                        )),
+                        |ui| {
+                            if ui.button("Show Explorer").clicked() {
+                                self.explorer_open = true;
+                                ui.close_menu();
+                            }
+                            if ui.button("Show Preview").clicked() {
+                                self.preview_open = true;
+                                ui.close_menu();
+                            }
+                            if ui.button("Show Output").clicked() {
+                                self.output_open = true;
+                                ui.close_menu();
+                            }
+                        },
+                    );
+                    if web_icon_button(ui, '\u{ebf4}', "Toggle mathematical preview", &theme)
+                        .clicked()
+                    {
+                        self.preview_open = !self.preview_open;
+                    }
+                    if web_icon_button(ui, '\u{eb2c}', "Run active workspace · Ctrl+Enter", &theme)
+                        .clicked()
+                    {
+                        self.request("run");
+                        self.output_open = true;
+                    }
+                    ui.menu_button("Ω", |ui| {
+                        for (symbol, insertion) in
+                            [("π", "π"), ("θ", "θ"), ("λ", "λ"), ("∫", "integral(")]
+                        {
+                            if ui.button(symbol).clicked() {
+                                self.insert_editor_text(insertion);
+                                ui.close_menu();
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text("Insert a mathematical symbol");
+                    ui.menu_button("{}", |ui| {
+                        for (label, detail, insertion) in [
+                            (
+                                "Document block",
+                                "multi-line documented calculation",
+                                "\\{\n    $0\n\\}\n",
+                            ),
+                            (
+                                "Display result",
+                                "render one dynamic result",
+                                "\\[ $0 => \\]",
+                            ),
+                            ("Function", "block function", "fn name(args) {\n    $0\n}"),
+                            (
+                                "If / else",
+                                "conditional branches",
+                                "if condition {\n    $0\n} else {\n    \n}",
+                            ),
+                            (
+                                "For loop",
+                                "counted loop",
+                                "for let i = 0; i < n; i += 1 {\n    $0\n}",
+                            ),
+                            ("Matrix", "2 × 2 matrix", "[$0, 0; 0, 1]"),
+                            ("Document RREF", "show every row operation", "rref($0) =>;"),
+                            (
+                                "Solve system",
+                                "step-by-step linear solve",
+                                "solve_linear_steps($0, b)",
+                            ),
+                        ] {
+                            if ui.button(label).on_hover_text(detail).clicked() {
+                                self.insert_editor_text(insertion);
+                                ui.close_menu();
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text("Insert a code snippet");
+                });
+            });
+        });
+    }
+}
+
 impl eframe::App for WebApp {
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
 
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
+        let prior_tab = self.tab;
         self.poll(context);
         if self.first_frame {
             if context.screen_rect().width() < 1100.0 {
@@ -2537,6 +2815,7 @@ impl eframe::App for WebApp {
         let theme = self.themes[self.selected_theme].clone();
         if self.highlight_source != self.source
             || self.highlight_font_size_bits != effective_editor_font_size.to_bits()
+            || self.highlight_theme != self.selected_theme
         {
             if self.highlight_source != self.source {
                 self.hover_key = None;
@@ -2546,6 +2825,7 @@ impl eframe::App for WebApp {
             self.highlight_job = highlight_source(&self.source, editor_font.clone(), &theme);
             self.highlight_source.clone_from(&self.source);
             self.highlight_font_size_bits = effective_editor_font_size.to_bits();
+            self.highlight_theme = self.selected_theme;
         }
         let now = context.input(|input| input.time);
         if self.pending
@@ -2630,7 +2910,7 @@ impl eframe::App for WebApp {
         } else if context
             .input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::S))
         {
-            if self.source_name == "Untitled" {
+            if !self.source_name.ends_with(".scas") {
                 self.save_as_open = true;
             } else {
                 download_file(&self.source_name, &self.source, "text/plain");
@@ -2665,7 +2945,7 @@ impl eframe::App for WebApp {
         }
 
         egui::TopBottomPanel::top("web-title-bar")
-            .exact_height(38.0)
+            .exact_height(if narrow { 44.0 } else { 38.0 })
             .frame(
                 egui::Frame::none()
                     .fill(theme.title_bar_color())
@@ -2675,12 +2955,12 @@ impl eframe::App for WebApp {
                 let available = ui.available_width();
                 let compact = available < 700.0;
                 let left_width = if compact {
-                    160.0
+                    92.0
                 } else {
                     (available * 0.32).clamp(410.0, 690.0)
                 };
                 let center_width = if compact {
-                    (available - left_width - 90.0).max(80.0)
+                    (available - left_width - 42.0).max(80.0)
                 } else {
                     (available * 0.38).clamp(350.0, 970.0)
                 };
@@ -2695,6 +2975,9 @@ impl eframe::App for WebApp {
                             let button_frame = ui.visuals().button_frame;
                             ui.visuals_mut().button_frame = false;
                             self.file_menu(ui);
+                            if compact {
+                                return;
+                            }
                             ui.menu_button("Edit", |ui| {
                                 if ui
                                     .checkbox(&mut self.auto_greek, "Greek shortcuts")
@@ -2803,6 +3086,13 @@ impl eframe::App for WebApp {
                         },
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if compact {
+                            if web_icon_button(ui, '\u{eaf0}', "Toggle Explorer", &theme).clicked()
+                            {
+                                self.explorer_open = !self.explorer_open;
+                            }
+                            return;
+                        }
                         if web_icon_button(ui, '\u{ebf4}', "Toggle preview", &theme).clicked() {
                             self.preview_open = !self.preview_open;
                         }
@@ -2855,76 +3145,78 @@ impl eframe::App for WebApp {
                     });
                 });
             });
-        egui::SidePanel::left("web-activity")
-            .exact_width(46.0)
-            .resizable(false)
-            .frame(
-                egui::Frame::none()
-                    .fill(theme.activity_bar_color())
-                    .stroke(border)
-                    .inner_margin(egui::Margin::symmetric(3.0, 6.0)),
-            )
-            .show(context, |ui| {
-                ui.vertical_centered(|ui| {
-                    if web_activity_button(
-                        ui,
-                        '\u{eaf0}',
-                        self.explorer_open,
-                        "Explorer · Ctrl+B",
-                        &theme,
-                    )
-                    .clicked()
-                    {
-                        self.explorer_open = !self.explorer_open;
-                    }
-                    if web_activity_button(
-                        ui,
-                        '\u{ea6d}',
-                        self.quick_open,
-                        "Quick Open · Ctrl+P",
-                        &theme,
-                    )
-                    .clicked()
-                    {
-                        self.quick_open = true;
-                    }
-                    if web_activity_button(
-                        ui,
-                        '\u{ea85}',
-                        self.tab == Tab::Repl,
-                        "Interactive REPL",
-                        &theme,
-                    )
-                    .clicked()
-                    {
-                        self.tab = Tab::Repl;
-                    }
-                    if web_activity_button(
-                        ui,
-                        '\u{ebe2}',
-                        self.tab == Tab::Plot,
-                        "Graphing",
-                        &theme,
-                    )
-                    .clicked()
-                    {
-                        self.tab = Tab::Plot;
-                    }
+        if !narrow {
+            egui::SidePanel::left("web-activity")
+                .exact_width(46.0)
+                .resizable(false)
+                .frame(
+                    egui::Frame::none()
+                        .fill(theme.activity_bar_color())
+                        .stroke(border)
+                        .inner_margin(egui::Margin::symmetric(3.0, 6.0)),
+                )
+                .show(context, |ui| {
+                    ui.vertical_centered(|ui| {
+                        if web_activity_button(
+                            ui,
+                            '\u{eaf0}',
+                            self.explorer_open,
+                            "Explorer · Ctrl+B",
+                            &theme,
+                        )
+                        .clicked()
+                        {
+                            self.explorer_open = !self.explorer_open;
+                        }
+                        if web_activity_button(
+                            ui,
+                            '\u{ea6d}',
+                            self.quick_open,
+                            "Quick Open · Ctrl+P",
+                            &theme,
+                        )
+                        .clicked()
+                        {
+                            self.quick_open = true;
+                        }
+                        if web_activity_button(
+                            ui,
+                            '\u{ea85}',
+                            self.tab == Tab::Repl,
+                            "Interactive REPL",
+                            &theme,
+                        )
+                        .clicked()
+                        {
+                            self.tab = Tab::Repl;
+                        }
+                        if web_activity_button(
+                            ui,
+                            '\u{ebe2}',
+                            self.tab == Tab::Plot,
+                            "Graphing",
+                            &theme,
+                        )
+                        .clicked()
+                        {
+                            self.tab = Tab::Plot;
+                        }
+                    });
+                    ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+                        if web_activity_button(
+                            ui,
+                            '\u{eb51}',
+                            self.settings_open,
+                            "Editor settings",
+                            &theme,
+                        )
+                        .clicked()
+                        {
+                            self.settings_open = true;
+                        }
+                    });
                 });
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
-                    if web_activity_button(
-                        ui,
-                        '\u{eb51}',
-                        self.settings_open,
-                        "Editor settings",
-                        &theme,
-                    )
-                    .clicked()
-                    {
-                        self.settings_open = true;
-                    }
-                });
-            });
+        }
         if self.explorer_open {
             egui::SidePanel::left("web-explorer")
                 .default_width(300.0)
@@ -3033,14 +3325,16 @@ impl eframe::App for WebApp {
                             if expanded && folder == "examples" {
                                 ui.indent("web-examples", |ui| {
                                     if ui.button("Starter.scas").clicked() {
-                                        self.load_source(STARTER.to_owned());
-                                        self.source_name = "Starter.scas".to_owned();
-                                        self.tab = Tab::Document;
+                                        self.load_source_named(
+                                            "Starter.scas".to_owned(),
+                                            STARTER.to_owned(),
+                                        );
                                     }
                                     if ui.button("MIT 18.06.scas").clicked() {
-                                        self.load_source(MIT_EXAMPLE.to_owned());
-                                        self.source_name = "MIT 18.06.scas".to_owned();
-                                        self.tab = Tab::Document;
+                                        self.load_source_named(
+                                            "MIT 18.06.scas".to_owned(),
+                                            MIT_EXAMPLE.to_owned(),
+                                        );
                                     }
                                 });
                             }
@@ -3056,6 +3350,178 @@ impl eframe::App for WebApp {
                     });
                 });
         }
+        if self.tab == Tab::Document && self.preview_open {
+            preview_visible = true;
+            if !narrow {
+                let explorer_width = if self.explorer_open {
+                    egui::containers::panel::PanelState::load(
+                        context,
+                        egui::Id::new("web-explorer"),
+                    )
+                    .map_or(300.0, |state| state.size().x)
+                } else {
+                    0.0
+                };
+                let (preview_width, preview_max_width) =
+                    preview_widths(context.screen_rect().width(), explorer_width);
+                let preview_width = self
+                    .preview_width
+                    .unwrap_or(preview_width)
+                    .clamp(MIN_PREVIEW_WIDTH, preview_max_width);
+                egui::SidePanel::right("web-preview")
+                    .resizable(false)
+                    .exact_width(preview_width)
+                    .frame(
+                        egui::Frame::none()
+                            .fill(panel)
+                            .stroke(border)
+                            .inner_margin(egui::Margin::symmetric(10.0, 7.0)),
+                    )
+                    .show(context, |ui| self.preview_panel(ui, context));
+            }
+        }
+        egui::TopBottomPanel::top("web-workspace-tabs")
+            .exact_height(if narrow { 48.0 } else { 34.0 })
+            .frame(
+                egui::Frame::none()
+                    .fill(panel)
+                    .inner_margin(egui::Margin::symmetric(2.0, 0.0)),
+            )
+            .show(context, |ui| {
+                let mut selected_document = None;
+                let mut closed_document = None;
+                let reveal_tab = self.reveal_tab;
+                let row = ui.available_rect_before_wrap();
+                let action_width = if self.tab == Tab::Document {
+                    190.0_f32.min((row.width() - 80.0).max(0.0))
+                } else {
+                    0.0
+                };
+                let tabs_rect = egui::Rect::from_min_max(
+                    row.min,
+                    egui::pos2(row.max.x - action_width, row.max.y),
+                );
+                ui.allocate_ui_at_rect(tabs_rect, |ui| {
+                    egui::ScrollArea::horizontal()
+                        .id_source("web-open-tabs-scroll")
+                        .animated(false)
+                        .stick_to_right(true)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 1.0;
+                                for (index, document) in self.documents.iter().enumerate() {
+                                    let active =
+                                        self.tab == Tab::Document && index == self.active_document;
+                                    let name = if index == self.active_document {
+                                        &self.source_name
+                                    } else {
+                                        &document.name
+                                    };
+                                    let dirty = if index == self.active_document {
+                                        self.dirty
+                                    } else {
+                                        document.dirty
+                                    };
+                                    let tab_response = egui::Frame::none()
+                                        .fill(if active { dark } else { panel })
+                                        .inner_margin(egui::Margin::symmetric(10.0, 3.0))
+                                        .show(ui, |ui| {
+                                            ui.horizontal_centered(|ui| {
+                                                ui.spacing_mut().item_spacing.x = 6.0;
+                                                ui.set_min_height(if narrow { 41.0 } else { 27.0 });
+                                                ui.label(
+                                                    RichText::new("SC")
+                                                        .strong()
+                                                        .size(10.0)
+                                                        .color(theme.ui.accent.0),
+                                                );
+                                                if ui
+                                                    .add(
+                                                        egui::Button::new(format!(
+                                                            "{}{}",
+                                                            name,
+                                                            if dirty { "  •" } else { "" }
+                                                        ))
+                                                        .frame(false),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    selected_document = Some(index);
+                                                }
+                                                if ui
+                                                    .add(
+                                                        egui::Button::new("×")
+                                                            .frame(false)
+                                                            .min_size(egui::vec2(
+                                                                if narrow { 32.0 } else { 18.0 },
+                                                                if narrow { 40.0 } else { 22.0 },
+                                                            )),
+                                                    )
+                                                    .on_hover_text("Close file")
+                                                    .clicked()
+                                                {
+                                                    closed_document = Some(index);
+                                                }
+                                            });
+                                        });
+                                    if active && reveal_tab {
+                                        ui.scroll_to_rect(
+                                            tab_response.response.rect,
+                                            Some(egui::Align::Center),
+                                        );
+                                    }
+                                    if active {
+                                        let rect = tab_response.response.rect;
+                                        ui.painter().rect_filled(
+                                            egui::Rect::from_min_max(
+                                                egui::pos2(rect.left(), rect.bottom() - 2.0),
+                                                rect.right_bottom(),
+                                            ),
+                                            0.0,
+                                            theme.ui.accent.0,
+                                        );
+                                    }
+                                }
+                                for (tab, label) in [(Tab::Repl, "REPL"), (Tab::Plot, "Graphing")] {
+                                    let tab_response = egui::Frame::none()
+                                        .fill(if self.tab == tab { dark } else { panel })
+                                        .inner_margin(egui::Margin::symmetric(12.0, 3.0))
+                                        .show(ui, |ui| {
+                                            ui.set_min_height(if narrow { 41.0 } else { 27.0 });
+                                            if ui
+                                                .add(egui::Button::new(label).frame(false))
+                                                .clicked()
+                                            {
+                                                self.tab = tab;
+                                            }
+                                        });
+                                    if self.tab == tab && reveal_tab {
+                                        ui.scroll_to_rect(
+                                            tab_response.response.rect,
+                                            Some(egui::Align::Center),
+                                        );
+                                    }
+                                }
+                            });
+                        });
+                });
+                if self.tab == Tab::Document {
+                    let actions_rect =
+                        egui::Rect::from_min_max(egui::pos2(tabs_rect.max.x, row.min.y), row.max);
+                    ui.allocate_ui_at_rect(actions_rect, |ui| {
+                        self.show_document_toolbar(ui, &theme);
+                    });
+                }
+                self.reveal_tab = false;
+                if let Some(index) = selected_document {
+                    self.select_document(index);
+                }
+                if let Some(index) = closed_document {
+                    self.close_document(index);
+                }
+            });
+
         if self.tab == Tab::Document {
             if self.output_open {
                 egui::TopBottomPanel::bottom("web-output")
@@ -3200,186 +3666,9 @@ impl eframe::App for WebApp {
                         });
                     });
             }
-            if self.preview_open {
-                preview_visible = true;
-                if !narrow {
-                    let explorer_width = if self.explorer_open {
-                        egui::containers::panel::PanelState::load(
-                            context,
-                            egui::Id::new("web-explorer"),
-                        )
-                        .map_or(300.0, |state| state.size().x)
-                    } else {
-                        0.0
-                    };
-                    let (preview_width, preview_max_width) =
-                        preview_widths(context.screen_rect().width(), explorer_width);
-                    let preview_width = self
-                        .preview_width
-                        .unwrap_or(preview_width)
-                        .clamp(MIN_PREVIEW_WIDTH, preview_max_width);
-                    egui::SidePanel::right("web-preview")
-                        .resizable(false)
-                        .exact_width(preview_width)
-                        .frame(
-                            egui::Frame::none()
-                                .fill(panel)
-                                .stroke(border)
-                                .inner_margin(egui::Margin::symmetric(10.0, 7.0)),
-                        )
-                        .show(context, |ui| self.preview_panel(ui, context));
-                }
-            }
             egui::CentralPanel::default()
                 .frame(egui::Frame::none().fill(dark))
                 .show(context, |ui| {
-                    egui::Frame::none().fill(panel).show(ui, |ui| {
-                        ui.set_min_width(ui.available_width());
-                        ui.horizontal(|ui| {
-                            egui::Frame::none()
-                                .fill(dark)
-                                .inner_margin(egui::Margin::symmetric(10.0, 2.0))
-                                .show(ui, |ui| {
-                                    ui.horizontal_centered(|ui| {
-                                        ui.set_min_height(30.0);
-                                        ui.label(
-                                            RichText::new("SC")
-                                                .strong()
-                                                .size(12.0)
-                                                .color(theme.ui.accent.0),
-                                        );
-                                        ui.label(RichText::new(&self.source_name).size(12.0));
-                                        if web_icon_button(
-                                            ui,
-                                            '\u{ea76}',
-                                            "Reset to a new document",
-                                            &theme,
-                                        )
-                                        .clicked()
-                                        {
-                                            self.new_file();
-                                        }
-                                    });
-                                });
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    ui.menu_button(
-                                        RichText::new('\u{ea7c}').font(FontId::new(
-                                            16.0,
-                                            FontFamily::Name("VS Code Codicons".into()),
-                                        )),
-                                        |ui| {
-                                            if ui.button("Show Explorer").clicked() {
-                                                self.explorer_open = true;
-                                                ui.close_menu();
-                                            }
-                                            if ui.button("Show Preview").clicked() {
-                                                self.preview_open = true;
-                                                ui.close_menu();
-                                            }
-                                            if ui.button("Show Output").clicked() {
-                                                self.output_open = true;
-                                                ui.close_menu();
-                                            }
-                                        },
-                                    );
-                                    if web_icon_button(
-                                        ui,
-                                        '\u{ebf4}',
-                                        "Toggle mathematical preview",
-                                        &theme,
-                                    )
-                                    .clicked()
-                                    {
-                                        self.preview_open = !self.preview_open;
-                                    }
-                                    if web_icon_button(
-                                        ui,
-                                        '\u{eb2c}',
-                                        "Run active workspace · Ctrl+Enter",
-                                        &theme,
-                                    )
-                                    .clicked()
-                                    {
-                                        self.request("run");
-                                        self.output_open = true;
-                                    }
-                                    ui.menu_button("Ω", |ui| {
-                                        for (symbol, insertion) in
-                                            [("π", "π"), ("θ", "θ"), ("λ", "λ"), ("∫", "integral(")]
-                                        {
-                                            if ui.button(symbol).clicked() {
-                                                self.insert_editor_text(insertion);
-                                                ui.close_menu();
-                                            }
-                                        }
-                                    })
-                                    .response
-                                    .on_hover_text("Insert a mathematical symbol");
-                                    ui.menu_button("{}", |ui| {
-                                        for (label, detail, insertion) in [
-                                            (
-                                                "Document block",
-                                                "multi-line documented calculation",
-                                                "\\{\n    $0\n\\}\n",
-                                            ),
-                                            (
-                                                "Display result",
-                                                "render one dynamic result",
-                                                "\\[ $0 => \\]",
-                                            ),
-                                            (
-                                                "Function",
-                                                "block function",
-                                                "fn name(args) {\n    $0\n}",
-                                            ),
-                                            (
-                                                "If / else",
-                                                "conditional branches",
-                                                "if condition {\n    $0\n} else {\n    \n}",
-                                            ),
-                                            (
-                                                "For loop",
-                                                "counted loop",
-                                                "for let i = 0; i < n; i += 1 {\n    $0\n}",
-                                            ),
-                                            ("Matrix", "2 × 2 matrix", "[$0, 0; 0, 1]"),
-                                            (
-                                                "Document RREF",
-                                                "show every row operation",
-                                                "rref($0) =>;",
-                                            ),
-                                            (
-                                                "Solve system",
-                                                "step-by-step linear solve",
-                                                "solve_linear_steps($0, b)",
-                                            ),
-                                        ] {
-                                            if ui.button(label).on_hover_text(detail).clicked() {
-                                                self.insert_editor_text(insertion);
-                                                ui.close_menu();
-                                            }
-                                        }
-                                    })
-                                    .response
-                                    .on_hover_text("Insert a code snippet");
-                                },
-                            );
-                        });
-                    });
-                    ui.horizontal(|ui| {
-                        ui.add_space(18.0);
-                        ui.label(
-                            RichText::new("SC")
-                                .strong()
-                                .size(10.0)
-                                .color(theme.ui.accent.0),
-                        );
-                        ui.label(RichText::new(&self.source_name).size(12.0).color(muted));
-                        ui.label(RichText::new("› …").size(12.0).color(muted));
-                    });
-                    ui.add_space(4.0);
                     let completions = if editor_focused {
                         editor_assist::completions(&self.source, self.cursor_char_index)
                     } else {
@@ -3435,7 +3724,8 @@ impl eframe::App for WebApp {
                         self.source.lines().count(),
                         effective_editor_font_size,
                         self.line_numbers,
-                    );
+                    )
+                    .min((ui.available_width() - 96.0).max(0.0));
                     let output = egui::ScrollArea::both()
                         .show(ui, |ui| {
                             let output = TextEdit::multiline(&mut self.source)
@@ -3464,7 +3754,7 @@ impl eframe::App for WebApp {
                                 }
                                 self.reveal_cursor = false;
                             }
-                            if self.line_numbers != LineNumberMode::Off {
+                            if self.line_numbers != LineNumberMode::Off && gutter >= 24.0 {
                                 paint_line_numbers(
                                     ui,
                                     &output,
@@ -3755,10 +4045,10 @@ impl eframe::App for WebApp {
                 &self.tex,
                 self.error.as_deref().unwrap_or(""),
                 self.pending,
-                46.0,
-                38.0,
-                screen.width() - 46.0,
-                screen.height() - 64.0,
+                0.0,
+                44.0,
+                screen.width(),
+                screen.height() - 70.0,
                 context.pixels_per_point(),
                 false,
             );
@@ -3775,7 +4065,7 @@ impl eframe::App for WebApp {
         }
         self.show_settings(context);
         self.show_save_as(context);
-        self.show_unsaved_changes(context);
+        self.show_close_document(context);
         self.show_rename(context);
         if self.quick_open {
             let mut open = true;
@@ -3833,14 +4123,13 @@ impl eframe::App for WebApp {
             if let Some(index) = selected {
                 match index {
                     0 => {
-                        self.load_source(MIT_EXAMPLE.to_owned());
-                        "mit-18-06-session-22.scas".clone_into(&mut self.source_name);
-                        self.tab = Tab::Document;
+                        self.load_source_named(
+                            "mit-18-06-session-22.scas".to_owned(),
+                            MIT_EXAMPLE.to_owned(),
+                        );
                     }
                     1 => {
-                        self.load_source(STARTER.to_owned());
-                        "starter.scas".clone_into(&mut self.source_name);
-                        self.tab = Tab::Document;
+                        self.load_source_named("starter.scas".to_owned(), STARTER.to_owned());
                     }
                     2 => self.tab = Tab::Plot,
                     _ => self.tab = Tab::Repl,
@@ -3848,6 +4137,9 @@ impl eframe::App for WebApp {
                 self.quick_open = false;
                 self.quick_open_query.clear();
             }
+        }
+        if self.tab != prior_tab {
+            self.reveal_tab = true;
         }
     }
 }

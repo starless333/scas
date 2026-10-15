@@ -2,7 +2,7 @@
 //! No filesystem, process, or thread API is used here.
 
 use crate::ast::statement::FunctionBody;
-use crate::ast::StatementKind;
+use crate::ast::{Expr, ExprKind, StatementKind};
 use crate::document::{self, FragmentKind};
 use crate::interpreter::Interpreter;
 use crate::latex::LatexRenderer;
@@ -156,6 +156,13 @@ impl BrowserRepl {
             Ok(program) => program,
             Err(error) => return BrowserReplResult::error(error.render(&submission, "<repl>")),
         };
+        let indefinite_integral = !numerical
+            && program
+                .last()
+                .is_some_and(|statement| match &statement.kind {
+                    StatementKind::Expr(expression) => is_indefinite_integral(expression, &symbols),
+                    _ => false,
+                });
         let input_latex = if numerical {
             repl_source_latex(input, &self.symbols)
         } else {
@@ -168,8 +175,12 @@ impl BrowserRepl {
             String::from_utf8_lossy(&std::mem::take(self.interpreter.output_mut())).into_owned();
         match result {
             Ok(Some(value)) => {
-                let output = self.interpreter.display_value(&value);
-                let result_latex = LatexRenderer::new(self.interpreter.symbols()).value(&value);
+                let mut output = self.interpreter.display_value(&value);
+                let mut result_latex = LatexRenderer::new(self.interpreter.symbols()).value(&value);
+                if indefinite_integral {
+                    output.push_str(" + C");
+                    result_latex.push_str(" + C");
+                }
                 BrowserReplResult {
                     output,
                     printed,
@@ -256,6 +267,13 @@ impl BrowserRepl {
             Err(error) => BrowserReplResult::error(error),
         }
     }
+}
+
+fn is_indefinite_integral(expression: &Expr, symbols: &SymbolTable) -> bool {
+    let ExprKind::Call { callee, .. } = &expression.kind else {
+        return false;
+    };
+    matches!(callee.kind, ExprKind::Variable(symbol) if symbols.resolve(symbol) == "integral")
 }
 
 fn repl_program_latex(
@@ -894,6 +912,12 @@ mod tests {
         assert!(exact["error"].is_null(), "{exact}");
         assert!(exact["input_latex"].as_str().unwrap().contains("sqrt"));
         assert!(!exact["result_latex"].as_str().unwrap().is_empty());
+
+        let integral = request("repl", "integral(x, x)");
+        assert!(integral["output"].as_str().unwrap().ends_with(" + C"));
+        assert!(integral["result_latex"].as_str().unwrap().ends_with(" + C"));
+        let definite = request("repl", "definite_integral(x, x, 0, 1)");
+        assert!(!definite["output"].as_str().unwrap().contains(" + C"));
 
         let precision = request("repl", ":precision 12");
         assert_eq!(precision["output"], "decimal precision set to 12 digits");
