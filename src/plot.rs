@@ -1659,6 +1659,8 @@ pub fn execute_plot_command_with_range<W: Write>(
         base_directory,
         range_override,
         true,
+        COMMAND_SAMPLE_COUNT,
+        true,
     )
     .map(|(outcome, _)| outcome)
 }
@@ -1682,6 +1684,32 @@ pub fn execute_plot_command_in_memory<W: Write>(
         Path::new(""),
         range_override,
         false,
+        COMMAND_SAMPLE_COUNT,
+        true,
+    )
+}
+
+/// Sample for an interactive canvas. The caller renders only the current
+/// viewport, so producing an ASCII graph and an intermediate SVG is wasted
+/// work. The sample count can grow with prefetched horizontal coverage.
+pub fn sample_plot_command_in_memory<W: Write>(
+    interpreter: &mut Interpreter<W>,
+    symbols: &mut SymbolTable,
+    rest: &str,
+    range_override: Option<(f64, f64)>,
+    sample_count: usize,
+) -> Result<(PlotOutcome, Option<String>), String> {
+    execute_plot_command_impl(
+        interpreter,
+        symbols,
+        rest,
+        0,
+        0,
+        Path::new(""),
+        range_override,
+        false,
+        sample_count,
+        false,
     )
 }
 
@@ -1694,6 +1722,8 @@ fn execute_plot_command_impl<W: Write>(
     base_directory: &Path,
     range_override: Option<(f64, f64)>,
     write_file: bool,
+    sample_count: usize,
+    render_output: bool,
 ) -> Result<(PlotOutcome, Option<String>), String> {
     let (svg_mode, terminal_mode, rest) = if rest == "svg" {
         (true, false, "")
@@ -1739,7 +1769,7 @@ fn execute_plot_command_impl<W: Write>(
             source,
             x_min,
             x_max,
-            COMMAND_SAMPLE_COUNT,
+            sample_count,
         )?);
     }
 
@@ -1763,9 +1793,13 @@ fn execute_plot_command_impl<W: Write>(
             _ => return Err("plot y range needs both bounds: y from A to B".to_owned()),
         }
     }
-    let ascii = render_ascii(&series, &bounds, ascii_width, ascii_height);
-    let svg =
-        (svg_mode || !terminal_mode).then(|| render_svg(&series, &bounds, SVG_WIDTH, SVG_HEIGHT));
+    let ascii = if render_output {
+        render_ascii(&series, &bounds, ascii_width, ascii_height)
+    } else {
+        String::new()
+    };
+    let svg = (render_output && (svg_mode || !terminal_mode))
+        .then(|| render_svg(&series, &bounds, SVG_WIDTH, SVG_HEIGHT));
     let mut wrote_file = None;
     if write_file {
         if let Some(target) = &command.redirect {

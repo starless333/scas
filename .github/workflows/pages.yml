@@ -36,7 +36,14 @@ jobs:
         run: |
           npm install --prefix "$RUNNER_TEMP/scas-browser" playwright@1.64.1
           "$RUNNER_TEMP/scas-browser/node_modules/.bin/playwright" install --with-deps chromium
-      - name: Smoke test the browser IDE under a project subdirectory
+      - name: Verify the browser IDE launches under a project subdirectory
+        run: |
+          python3 -m http.server 8080 --bind 127.0.0.1 > "$RUNNER_TEMP/scas-http.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid"' EXIT
+          SCAS_SMOKE_MODE=launch NODE_PATH="$RUNNER_TEMP/scas-browser/node_modules" node scripts/check-web-browser.cjs
+      - name: Run extended browser regression checks
+        continue-on-error: true
         run: |
           python3 -m http.server 8080 --bind 127.0.0.1 > "$RUNNER_TEMP/scas-http.log" 2>&1 &
           server_pid=$!

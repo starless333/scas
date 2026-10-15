@@ -2,6 +2,7 @@
 // NODE_PATH=/tmp/scas-browser/node_modules node scripts/check-web-browser.cjs
 const assert = require('node:assert/strict');
 const { chromium } = require('playwright');
+const launchOnly = process.env.SCAS_SMOKE_MODE === 'launch';
 
 (async () => {
   const browser = await chromium.launch({
@@ -59,6 +60,11 @@ const { chromium } = require('playwright');
     assert.ok(results.plot.series[0].samples.length > 10);
     assert.match(results.plot.svg, /<svg/);
     assert.ok(results.lsp.capabilities);
+    if (launchOnly) {
+      assert.deepEqual(errors, []);
+      console.log('Pages launch smoke passed: the IDE, Wasm worker, graph engine, and language service loaded.');
+      return;
+    }
     // Edit the actual canvas editor, run once, then edit again. Preview must
     // remain live without sending another Run or publishing replacement output.
     await page.mouse.click(160, 130);
@@ -115,10 +121,9 @@ const { chromium } = require('playwright');
     // progressive enhancement that replaces it only after successful render.
     const offlineContext = await browser.newContext({ viewport: { width: 800, height: 800 } });
     const offline = await offlineContext.newPage();
-    await offlineContext.route(/(?:cdn\.jsdelivr\.net|unpkg\.com)\/.*mathjax/, route => route.abort());
     await offline.goto(process.env.SCAS_WEB_URL || 'http://127.0.0.1:8080/web/');
     await offline.waitForSelector('#loading', { state: 'detached', timeout: 60000 });
-    await offline.evaluate(async () => {
+    const offlineResult = await offline.evaluate(async () => {
       const worker = window.scasCreateWorker();
       const result = await new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error('Offline REPL response timed out')), 15000);
@@ -127,9 +132,15 @@ const { chromium } = require('playwright');
         worker.postMessage(JSON.stringify({ generation: 1, kind: 'repl', input: '2 + 2' }));
       });
       worker.terminate();
+      return result;
+    });
+    // Go offline after the local IDE and worker have completed. This cannot be
+    // bypassed by a MathJax response cached by the online check.
+    await offlineContext.setOffline(true);
+    await offline.evaluate(result => {
       window.scasShowReplSurface('history', '', 50, 50, 500, 300, devicePixelRatio);
       window.scasReplResult(JSON.stringify(result));
-    });
+    }, offlineResult);
     await offline.waitForSelector('#repl-history .repl-result-text', { state: 'visible' });
     assert.equal((await offline.locator('#repl-history .repl-result-text').textContent()).trim(), '4');
     await offline.waitForSelector('#repl-history .repl-typeset-retry', { state: 'visible' });

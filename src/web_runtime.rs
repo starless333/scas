@@ -689,36 +689,47 @@ fn plot_request(
             }
         }
     }
-    let range = view.and_then(|[x_min, x_max, _, _]| {
+    let visible_range = view.and_then(|[x_min, x_max, _, _]| {
         (x_min.is_finite()
             && x_max.is_finite()
             && x_min < x_max
             && (1e-6..=1e9).contains(&(x_max - x_min)))
         .then_some((x_min, x_max))
     });
-    if view.is_some() && range.is_none() {
+    if view.is_some() && visible_range.is_none() {
         return json!({ "generation": generation, "kind": "plot", "error": "Graph view is outside supported bounds" }).to_string();
     }
-    match plot::execute_plot_command_in_memory(
+    // Sample beyond the viewport so the next pan draws from ready points.
+    // Keep the visible bounds separate for axis labels and SVG export.
+    let range = visible_range.map(|(x_min, x_max)| {
+        let padding = (x_max - x_min) * 0.5;
+        let expanded = (x_min - padding, x_max + padding);
+        if expanded.0.is_finite() && expanded.1.is_finite() && expanded.1 - expanded.0 <= 1e9 {
+            expanded
+        } else {
+            (x_min, x_max)
+        }
+    });
+    match plot::sample_plot_command_in_memory(
         &mut interpreter,
         &mut symbols,
         expression,
-        64,
-        17,
         range,
+        if range != visible_range { 801 } else { 401 },
     ) {
         Ok((outcome, redirect)) => {
             if redirect.is_some() {
                 return json!({ "generation": generation, "kind": "plot", "error": "Use Download SVG in Graph view to save a browser plot" }).to_string();
             }
             let svg_bounds = if let Some([x_min, x_max, y_min, y_max]) = view {
-                if fit_y {
-                    outcome.bounds
-                } else if y_min.is_finite() && y_max.is_finite() && y_min < y_max {
-                    plot::PlotBounds::new(x_min, x_max, y_min, y_max)
-                } else {
-                    outcome.bounds
-                }
+                let (low, high) =
+                    if !fit_y && y_min.is_finite() && y_max.is_finite() && y_min < y_max {
+                        (y_min, y_max)
+                    } else {
+                        let visible = plot::auto_y_bounds(&outcome.series, x_min, x_max);
+                        (visible.y_min, visible.y_max)
+                    };
+                plot::PlotBounds::new(x_min, x_max, low, high)
             } else {
                 outcome.bounds
             };
@@ -737,9 +748,11 @@ fn plot_request(
                 "generation": generation,
                 "kind": "plot",
                 "series": series,
-                "bounds": [outcome.bounds.x_min, outcome.bounds.x_max, outcome.bounds.y_min, outcome.bounds.y_max],
+                "bounds": [svg_bounds.x_min, svg_bounds.x_max, svg_bounds.y_min, svg_bounds.y_max],
+                "sample_bounds": [outcome.bounds.x_min, outcome.bounds.x_max],
                 "svg": svg,
-            }).to_string()
+            })
+            .to_string()
         }
         Err(error) => {
             json!({ "generation": generation, "kind": "plot", "error": error }).to_string()
@@ -863,8 +876,11 @@ mod tests {
         ))
         .unwrap();
         let samples = response["series"][0]["samples"].as_array().unwrap();
-        assert_eq!(samples.first().unwrap()[0], 2.0);
-        assert_eq!(samples.last().unwrap()[0], 4.0);
+        assert_eq!(samples.first().unwrap()[0], 1.0);
+        assert_eq!(samples.last().unwrap()[0], 5.0);
+        assert!(samples.len() >= 801);
+        assert_eq!(response["bounds"], json!([2.0, 4.0, -1.0, 10.0]));
+        assert_eq!(response["sample_bounds"], json!([1.0, 5.0]));
         assert!(response["svg"].as_str().unwrap().contains("<svg"));
         assert!(response["error"].is_null());
     }

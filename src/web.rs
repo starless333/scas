@@ -794,6 +794,9 @@ struct WebApp {
     plot_custom_view: bool,
     plot_fit_y_pending: bool,
     plot_due: Option<f64>,
+    plot_pending: bool,
+    plot_force_due: bool,
+    plot_sample_bounds: Option<[f64; 2]>,
     plot_probe: Option<WebGraphProbe>,
     repl_input: String,
     repl_preview_source: String,
@@ -974,6 +977,9 @@ impl WebApp {
             plot_custom_view: false,
             plot_fit_y_pending: false,
             plot_due: None,
+            plot_pending: false,
+            plot_force_due: false,
+            plot_sample_bounds: None,
             plot_probe: None,
             repl_input: String::new(),
             repl_preview_source: String::new(),
@@ -1295,6 +1301,13 @@ impl WebApp {
     }
 
     fn request(&mut self, kind: &str) -> bool {
+        if kind == "plot" && self.plot_pending {
+            // The worker is single threaded. Keep just the latest desired view
+            // instead of queuing every intermediate pan behind old samples.
+            self.plot_due = Some(self.context.input(|input| input.time));
+            self.plot_force_due = true;
+            return true;
+        }
         if kind == "run" {
             self.due = None;
             self.output_open = true;
@@ -1340,7 +1353,11 @@ impl WebApp {
                         self.pending = true;
                         self.analysis_started_at = Some(self.context.input(|input| input.time));
                     }
-                    "plot" => self.plot_generation = self.generation,
+                    "plot" => {
+                        self.plot_generation = self.generation;
+                        self.plot_pending = true;
+                        self.plot_force_due = false;
+                    }
                     "repl" | "repl_numeric" => {
                         self.repl_generation = self.generation;
                         self.repl_pending = true;
@@ -1407,6 +1424,8 @@ impl WebApp {
         self.pending_pdf = false;
         self.repl_pending = false;
         self.plot_due = None;
+        self.plot_pending = false;
+        self.plot_force_due = false;
         self.hover_generation = 0;
         self.hover_value = None;
         match create_worker() {
@@ -1523,6 +1542,14 @@ impl WebApp {
                 continue;
             }
             if kind == "plot" {
+                self.plot_pending = false;
+                if self.plot_force_due {
+                    // A newer Plot, Fit y, or Reset command superseded this
+                    // result while the worker was busy.
+                    self.plot_due = Some(context.input(|input| input.time));
+                    context.request_repaint();
+                    continue;
+                }
                 self.plot_error = value["error"].as_str().map(str::to_owned);
                 if let Some(bounds) = value["bounds"].as_array() {
                     if bounds.len() == 4 {
@@ -1559,6 +1586,10 @@ impl WebApp {
                             }
                         })
                         .collect();
+                    self.plot_sample_bounds =
+                        value["sample_bounds"].as_array().and_then(|bounds| {
+                            Some([bounds.first()?.as_f64()?, bounds.get(1)?.as_f64()?])
+                        });
                     self.plot_probe = self
                         .plot_probe
                         .and_then(|probe| self.plot_series.get(probe.series_index).map(|_| probe));
@@ -1572,6 +1603,15 @@ impl WebApp {
                     "Ready"
                 }
                 .to_owned();
+                if self.plot_due.is_some()
+                    && (self.plot_force_due
+                        || (self.plot_error.is_none() && self.plot_needs_samples()))
+                {
+                    self.plot_due = Some(context.input(|input| input.time));
+                } else {
+                    self.plot_due = None;
+                    self.plot_force_due = false;
+                }
                 context.request_repaint();
                 continue;
             }
@@ -1693,13 +1733,26 @@ impl WebApp {
         PlotBounds::new(x_min, x_max, y_min, y_max)
     }
 
+    fn plot_needs_samples(&self) -> bool {
+        let Some([sample_min, sample_max]) = self.plot_sample_bounds else {
+            return true;
+        };
+        let [view_min, view_max, _, _] = self.plot_bounds;
+        let margin = (view_max - view_min) * 0.1;
+        sample_min > view_min - margin || sample_max < view_max + margin
+    }
+
     fn apply_plot_view(&mut self, view: PlotBounds, now: f64, context: &egui::Context) {
         self.plot_bounds = [view.x_min, view.x_max, view.y_min, view.y_max];
         self.plot_custom_view = true;
         self.plot_fit_y_pending = false;
         self.plot_svg.clear();
-        self.plot_due = Some(now + 0.14);
-        context.request_repaint_after(Duration::from_millis(150));
+        if self.plot_needs_samples() {
+            self.plot_due = Some(now);
+            context.request_repaint();
+        } else {
+            self.plot_due = None;
+        }
     }
 
     fn zoom_plot(
@@ -1821,7 +1874,7 @@ impl WebApp {
         let colors = graph_colors(theme);
         for (index, series) in self.plot_series.iter().enumerate() {
             let mut previous = None;
-            for &(x, y) in &series.samples {
+            for &(x, y) in &series.samples[visible_plot_samples(&series.samples, x_min, x_max)] {
                 let point = y.filter(|y| y.is_finite()).map(|y| map(x, y));
                 if let (Some(a), Some(b)) = (previous, point) {
                     curve_painter.line_segment(
@@ -1833,6 +1886,9 @@ impl WebApp {
             }
             let color = colors[index % colors.len()];
             for point in &series.critical_points {
+                if point.x < x_min || point.x > x_max {
+                    continue;
+                }
                 let center = map(point.x, point.y);
                 match point.kind {
                     plot::CriticalKind::Hole => {
@@ -1914,6 +1970,20 @@ fn plot_screen_point(bounds: &[f64; 4], rect: egui::Rect, x: f64, y: f64) -> egu
     )
 }
 
+fn visible_plot_samples(
+    samples: &[(f64, Option<f64>)],
+    x_min: f64,
+    x_max: f64,
+) -> std::ops::Range<usize> {
+    // Include one point on either side so lines crossing the clip boundary
+    // remain connected. Binary search avoids walking prefetched offscreen data.
+    let start = samples
+        .partition_point(|(x, _)| *x < x_min)
+        .saturating_sub(1);
+    let end = (samples.partition_point(|(x, _)| *x <= x_max) + 1).min(samples.len());
+    start..end
+}
+
 fn snap_web_graph_probe(
     pointer: egui::Pos2,
     bounds: &[f64; 4],
@@ -1922,8 +1992,12 @@ fn snap_web_graph_probe(
     max_distance: f32,
 ) -> Option<WebGraphProbe> {
     let mut best: Option<(f32, WebGraphProbe)> = None;
+    let [x_min, x_max, _, _] = *bounds;
     for (series_index, curve) in series.iter().enumerate() {
         for point in &curve.critical_points {
+            if point.x < x_min || point.x > x_max {
+                continue;
+            }
             let distance = pointer.distance(plot_screen_point(bounds, rect, point.x, point.y));
             if distance <= max_distance
                 && best
@@ -1946,7 +2020,7 @@ fn snap_web_graph_probe(
         return best.map(|(_, probe)| probe);
     }
     for (series_index, curve) in series.iter().enumerate() {
-        for &(x, y) in &curve.samples {
+        for &(x, y) in &curve.samples[visible_plot_samples(&curve.samples, x_min, x_max)] {
             let Some(y) = y.filter(|value| value.is_finite()) else {
                 continue;
             };
@@ -2850,8 +2924,10 @@ impl eframe::App for WebApp {
             }
         }
         if self.plot_due.is_some_and(|due| now >= due) {
-            self.plot_due = None;
-            self.request("plot");
+            if !self.plot_pending {
+                self.plot_due = None;
+                self.request("plot");
+            }
         }
         if context.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::B)) {
             self.explorer_open = !self.explorer_open;

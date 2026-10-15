@@ -21,9 +21,12 @@ publish.
 The build uses Cargo's `web-release` profile (release optimization, thin LTO,
 one codegen unit, stripped debug information). `scripts/check-web.py` validates
 local HTML links, JavaScript module paths, the Wasm header, and `.nojekyll`
-before upload. The workflow also runs Chromium against `/web/` to exercise
-project-subdirectory URLs, REPL definitions and error recovery, plotting/SVG,
-the language-service worker, and lazy MathJax loading.
+before upload. The workflow gates deployment on a Chromium launch check against
+`/web/`. That check verifies project-subdirectory URLs and boots the IDE, Wasm
+worker, graph engine, and language service without depending on an external
+CDN. The broader REPL, editor, and MathJax regression suite still runs, but is
+non-blocking so a third-party CDN failure cannot leave Pages stuck on an older
+deployment.
 
 Reproduce the deployment checks locally:
 
