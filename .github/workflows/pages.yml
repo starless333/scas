@@ -12,7 +12,7 @@ permissions:
 
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -22,12 +22,26 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
       - name: Check the shared language core
         run: cargo check --locked --lib --target wasm32-unknown-unknown
       - name: Install matching wasm-bindgen CLI
         run: cargo install wasm-bindgen-cli --version 0.2.100 --locked
       - name: Build browser IDE
         run: bash scripts/build-web.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install browser smoke test tools
+        run: |
+          npm install --prefix "$RUNNER_TEMP/scas-browser" playwright@1.64.1
+          "$RUNNER_TEMP/scas-browser/node_modules/.bin/playwright" install --with-deps chromium
+      - name: Smoke test the browser IDE under a project subdirectory
+        run: |
+          python3 -m http.server 8080 --bind 127.0.0.1 > "$RUNNER_TEMP/scas-http.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid"' EXIT
+          NODE_PATH="$RUNNER_TEMP/scas-browser/node_modules" node scripts/check-web-browser.cjs
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

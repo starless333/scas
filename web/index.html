@@ -8,12 +8,15 @@
   <title>SCAS · Browser IDE</title>
   <link rel="stylesheet" href="./site.css">
   <script>window.MathJax = { tex: { inlineMath: { '[+]': [['$', '$']] } }, startup: { typeset: false } };</script>
-  <script async src="https://cdn.jsdelivr.net/npm/mathjax@4.0.0/tex-chtml.js"></script>
   <script type="module" src="./app.js"></script>
 </head>
 <body>
   <main id="workspace">
     <canvas id="scas-canvas" aria-label="SCAS browser IDE"></canvas>
+    <section id="repl-history" aria-label="REPL calculation history" aria-live="polite" tabindex="0" hidden>
+      <div class="repl-empty"><h2>Start a calculation</h2><p>Definitions stay available for the session.</p><code>f(x) = x^2 - 2; f(3)</code></div>
+    </section>
+    <div id="repl-entry-preview" aria-label="Expression preview" hidden></div>
     <section id="math-preview" aria-label="Rendered document preview" hidden>
       <div class="preview-toolbar">
         <div><strong>DOCUMENT PREVIEW</strong> <span id="math-preview-state">LIVE</span></div>

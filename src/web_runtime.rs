@@ -425,7 +425,8 @@ pub fn process_request(request: &str) -> String {
                 parsed["fit_y"].as_bool().unwrap_or(false),
             )
         }
-        _ => run_request(source, generation, parsed["inputs"].as_array()),
+        "preview" => run_request(source, generation, None, true),
+        _ => run_request(source, generation, parsed["inputs"].as_array(), false),
     }
 }
 
@@ -507,17 +508,26 @@ fn notebook_request(request: &Value, source: &str, request_generation: u64) -> S
     })
 }
 
-fn run_request(source: &str, generation: u64, inputs: Option<&Vec<Value>>) -> String {
+fn run_request(
+    source: &str,
+    generation: u64,
+    inputs: Option<&Vec<Value>>,
+    preview: bool,
+) -> String {
     let mut diagnostics = source_diagnostics(source);
     let mut output = Vec::new();
-    let execution = execute_with_options(
-        source,
-        &mut output,
-        ExecutionOptions {
-            limits: browser_limits(),
-            decimal_precision: NonZeroU64::new(34).unwrap(),
-        },
-    );
+    let execution = if preview {
+        Ok(())
+    } else {
+        execute_with_options(
+            source,
+            &mut output,
+            ExecutionOptions {
+                limits: browser_limits(),
+                decimal_precision: NonZeroU64::new(34).unwrap(),
+            },
+        )
+    };
     let output = String::from_utf8_lossy(&output).into_owned();
     let execution_error = execution.err();
     let input_required = execution_error.as_ref().and_then(|error| {
@@ -526,6 +536,10 @@ fn run_request(source: &str, generation: u64, inputs: Option<&Vec<Value>>) -> St
             .strip_prefix("input required: ")
             .map(str::to_owned)
     });
+    if let Some(crate::ExecutionError::Runtime(error)) = &execution_error {
+        let span = error.span.unwrap_or_default();
+        diagnostics.push(json!({"line": span.line.max(1), "column": span.column.max(1), "message": error.message}));
+    }
     let runtime_error = execution_error.map(|error| error.render(source, "browser.scas"));
     // The document renderer evaluates independently and needs the same input answers.
     // It consumes its own queue so both output and preview see identical values.
@@ -566,7 +580,8 @@ fn run_request(source: &str, generation: u64, inputs: Option<&Vec<Value>>) -> St
             }));
             json!({
                 "generation": generation,
-                "output": output,
+                "kind": if preview { "preview" } else { "run" },
+                "output": if preview { None } else { Some(&output) },
                 "error": runtime_error,
                 "input_required": input_required,
                 "tex": document.latex(),
@@ -575,15 +590,24 @@ fn run_request(source: &str, generation: u64, inputs: Option<&Vec<Value>>) -> St
             })
             .to_string()
         }
-        Err(error) => json!({
-            "generation": generation,
-            "output": output,
-            "error": runtime_error.unwrap_or_else(|| error.render(source, "browser.scas")),
-            "input_required": input_required,
-            "fragments": [],
-            "diagnostics": diagnostics,
-        })
-        .to_string(),
+        Err(error) => {
+            if diagnostics.is_empty() {
+                if let crate::ExecutionError::Runtime(runtime) = &error {
+                    let span = runtime.span.unwrap_or_default();
+                    diagnostics.push(json!({"line": span.line.max(1), "column": span.column.max(1), "message": runtime.message}));
+                }
+            }
+            json!({
+                "generation": generation,
+                    "kind": if preview { "preview" } else { "run" },
+                "output": if preview { None } else { Some(&output) },
+                "error": runtime_error.unwrap_or_else(|| error.render(source, "browser.scas")),
+                "input_required": input_required,
+                "fragments": [],
+                "diagnostics": diagnostics,
+            })
+            .to_string()
+        }
     }
 }
 
@@ -941,6 +965,22 @@ mod tests {
     }
 
     #[test]
+    fn browser_preview_recovers_from_quote_only_declarations() {
+        let source = "/// A live, typeset result\nlet angle = π / 6;\n\\[ sin(angle) => \\]\nprint(sin(angle));\n\nlet \"\" = 1;\n\nlet X = 56';\n\nlet \"\"\"\" = 1;";
+        let response: Value = serde_json::from_str(&process_request(
+            &json!({ "kind": "preview", "generation": 10, "source": source }).to_string(),
+        ))
+        .unwrap();
+        let problems = response["diagnostics"].as_array().unwrap();
+
+        assert_eq!(response["kind"], "preview");
+        assert_eq!(problems.len(), 2, "{response}");
+        assert!(problems
+            .iter()
+            .all(|problem| problem["message"] == "expected a variable name"));
+    }
+
+    #[test]
     fn mit_example_builds_in_browser_worker_budget() {
         let response: Value = serde_json::from_str(&process_request(
             &json!({ "generation": 10, "source": MIT_EXAMPLE }).to_string(),
@@ -948,5 +988,30 @@ mod tests {
         .unwrap();
         assert!(response["error"].is_null(), "{response}");
         assert!(response["fragments"].as_array().unwrap().len() > 20);
+    }
+    #[test]
+    fn preview_does_not_publish_output_and_runtime_problems_have_locations() {
+        let request = |kind: &str, source: &str| -> Value {
+            serde_json::from_str(&process_request(
+                &json!({"kind": kind, "generation": 1, "source": source}).to_string(),
+            ))
+            .unwrap()
+        };
+        let preview = request("preview", "print(42);\n\\[ x^2 \\]");
+        assert_eq!(preview["kind"], "preview");
+        assert!(preview["output"].is_null());
+        assert!(!preview["fragments"].as_array().unwrap().is_empty());
+        assert_eq!(request("run", "print(42);")["output"], "42\n");
+        for kind in ["run", "preview"] {
+            let error = request(kind, "let x = 1;\nprint(1 / 0);");
+            assert!(
+                error["diagnostics"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|item| item["line"] == 2),
+                "{error}"
+            );
+        }
     }
 }

@@ -6330,7 +6330,11 @@ impl<W: Write> Interpreter<W> {
                         return Ok(None);
                     };
                     let sine_like = matches!(function, Builtin::Sin | Builtin::Sinh);
-                    let term_count = if sine_like { (degree + 1) / 2 } else { degree / 2 + 1 };
+                    let term_count = if sine_like {
+                        (degree + 1) / 2
+                    } else {
+                        degree / 2 + 1
+                    };
                     if degree < 2 || term_count > MAX_ANGLE_TERMS {
                         return Ok(None);
                     }
@@ -9225,6 +9229,12 @@ impl<W: Write> Interpreter<W> {
     }
 
     fn symbolic_builtin(&self, builtin: Builtin, args: Vec<Value>) -> ExecResult<Value> {
+        if builtin == Builtin::Log
+            && args.len() == 2
+            && matches!(&args[1], Value::Symbolic(base) if matches!(base.as_ref(), SymbolicExpr::Constant(MathConstant::E)))
+        {
+            return self.call_builtin(Builtin::Ln, vec![args[0].clone()]);
+        }
         let mut symbolic_args = Vec::with_capacity(args.len());
         for argument in args {
             symbolic_args.push(self.value_to_symbolic(argument)?);

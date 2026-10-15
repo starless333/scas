@@ -3,7 +3,7 @@
 use crate::ast::{BinaryOp, Expr, ExprKind, UnaryOp};
 use crate::interpreter::value::{Builtin, SymbolicExpr, Value};
 use crate::lexer::SymbolTable;
-use crate::number::Number;
+use crate::number::{MathConstant, Number};
 use num_traits::Signed;
 use std::collections::HashMap;
 use std::fs;
@@ -497,6 +497,12 @@ impl<'a> LatexRenderer<'a> {
                 self.write_expr(argument, 0, output);
                 output.push_str(r"\right)");
             }
+            ("log", [argument, base]) if matches!(&base.kind, ExprKind::Variable(name) if self.symbols.resolve(*name) == "e") =>
+            {
+                output.push_str(r"\ln\left(");
+                self.write_expr(argument, 0, output);
+                output.push_str(r"\right)");
+            }
             ("log", [argument, base]) => {
                 output.push_str(r"\log_{");
                 self.write_expr(base, 0, output);
@@ -761,6 +767,13 @@ impl<'a> LatexRenderer<'a> {
                     output.push_str(r"\sqrt[3]{");
                     self.write_symbolic(argument, 0, output);
                     output.push('}');
+                }
+                (Builtin::Log, [argument, base])
+                    if matches!(base.as_ref(), SymbolicExpr::Constant(MathConstant::E)) =>
+                {
+                    output.push_str(r"\ln\left(");
+                    self.write_symbolic(argument, 0, output);
+                    output.push_str(r"\right)");
                 }
                 (Builtin::Log, [argument, base]) => {
                     output.push_str(r"\log_{");
@@ -1062,6 +1075,7 @@ mod tests {
         assert_eq!(render("sqrt(x)"), r"\sqrt{x}");
         assert_eq!(render("cbrt(x)"), r"\sqrt[3]{x}");
         assert_eq!(render("log(x)"), r"\log\left(x\right)");
+        assert_eq!(render("log(x, e)"), r"\ln\left(x\right)");
         assert_eq!(render("log(x, b)"), r"\log_{b}\left(x\right)");
         assert_eq!(render("log10(x)"), r"\log_{10}\left(x\right)");
         assert_eq!(render("log2(x)"), r"\log_{2}\left(x\right)");

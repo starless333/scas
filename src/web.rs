@@ -26,13 +26,28 @@ use web_sys::{MessageEvent, Worker};
 #[allow(dead_code)]
 #[path = "bin/scas_gui/editor_assist.rs"]
 mod editor_assist;
-#[allow(dead_code)]
-#[path = "bin/scas_gui/math_preview.rs"]
-mod math_preview;
 #[path = "bin/scas_gui/theme.rs"]
 #[allow(dead_code)]
 mod theme;
 use theme::Theme;
+
+const PLOT_COLORS: [Color32; 3] = [
+    Color32::from_rgb(79, 156, 249),
+    Color32::from_rgb(249, 119, 127),
+    Color32::from_rgb(83, 196, 137),
+];
+
+fn graph_colors(theme: &Theme) -> [Color32; 3] {
+    if theme.dark {
+        PLOT_COLORS
+    } else {
+        [
+            Color32::from_rgb(0, 105, 190),
+            Color32::from_rgb(184, 35, 60),
+            Color32::from_rgb(22, 116, 67),
+        ]
+    }
+}
 
 const DEFAULT_EDITOR_FONT_SIZE: f32 = 27.0;
 const MIN_EDITOR_FONT_SIZE: f32 = 9.0;
@@ -40,6 +55,7 @@ const MAX_EDITOR_FONT_SIZE: f32 = 32.0;
 const MIN_EDITOR_WORKSPACE_WIDTH: f32 = 420.0;
 const MIN_PREVIEW_WIDTH: f32 = 220.0;
 const MAX_PREVIEW_WIDTH: f32 = 900.0;
+const ANALYSIS_TIMEOUT_SECONDS: f64 = 8.0;
 const GREEK: &[(&str, &str)] = &[
     ("\\Alpha", "Α"),
     ("\\Beta", "Β"),
@@ -134,6 +150,20 @@ extern "C" {
         pixels_per_point: f32,
         resizable: bool,
     );
+    #[wasm_bindgen(js_namespace = window, js_name = scasReplResult)]
+    fn receive_repl_result(result: &str);
+    #[wasm_bindgen(js_namespace = window, js_name = scasShowReplSurface)]
+    fn show_repl_surface(
+        surface: &str,
+        content: &str,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        pixels_per_point: f32,
+    );
+    #[wasm_bindgen(js_namespace = window, js_name = scasHideRepl)]
+    fn hide_repl();
     #[wasm_bindgen(js_namespace = window, js_name = scasHidePreview)]
     fn hide_preview();
 }
@@ -572,7 +602,7 @@ fn web_icon_button(ui: &mut egui::Ui, glyph: char, tooltip: &str, theme: &Theme)
     let (rect, response) = ui.allocate_exact_size(egui::vec2(27.0, 27.0), egui::Sense::click());
     if response.hovered() {
         ui.painter()
-            .rect_filled(rect, 2.0, theme.ui.muted.0.gamma_multiply(0.20));
+            .rect_filled(rect, 2.0, theme.ui.muted.0.gamma_multiply(0.12));
     }
     if response.has_focus() {
         ui.painter().rect_stroke(
@@ -729,66 +759,12 @@ struct WebProblem {
     message: String,
 }
 
-struct WebReplEntry {
-    input: String,
-    output: String,
-    error: Option<String>,
-    input_latex: Option<String>,
-    result_latex: Option<String>,
-    plot: Option<WebReplPlot>,
-}
-
-struct WebReplPlot {
-    series: Vec<WebSeries>,
-    bounds: [f64; 4],
-    ascii: String,
-    svg: String,
-    vector: bool,
-    download_name: Option<String>,
-}
-
-fn web_repl_plot(value: &Value) -> Option<WebReplPlot> {
-    let values = value["bounds"].as_array()?;
-    let bounds: [f64; 4] = values
-        .iter()
-        .map(Value::as_f64)
-        .collect::<Option<Vec<_>>>()?
-        .try_into()
-        .ok()?;
-    let series = value["series"]
-        .as_array()?
-        .iter()
-        .map(|series| {
-            let samples: Vec<(f64, Option<f64>)> = series["samples"]
-                .as_array()?
-                .iter()
-                .filter_map(|sample| {
-                    let sample = sample.as_array()?;
-                    Some((sample.first()?.as_f64()?, sample.get(1)?.as_f64()))
-                })
-                .collect();
-            Some(WebSeries {
-                label: series["label"].as_str()?.to_owned(),
-                critical_points: plot::detect_critical_points(&samples),
-                samples,
-            })
-        })
-        .collect::<Option<Vec<_>>>()?;
-    Some(WebReplPlot {
-        series,
-        bounds,
-        ascii: value["ascii"].as_str()?.to_owned(),
-        svg: value["svg"].as_str()?.to_owned(),
-        vector: value["vector"].as_bool().unwrap_or(false),
-        download_name: value["download_name"].as_str().map(str::to_owned),
-    })
-}
-
 struct WebApp {
     context: egui::Context,
     source: String,
     output: String,
     error: Option<String>,
+    output_error: Option<String>,
     problems: Vec<WebProblem>,
     document: Option<Document>,
     tex: String,
@@ -803,17 +779,20 @@ struct WebApp {
     plot_due: Option<f64>,
     plot_probe: Option<WebGraphProbe>,
     repl_input: String,
-    repl_entries: Vec<WebReplEntry>,
+    repl_preview_source: String,
+    repl_preview_latex: Option<String>,
     repl_history: Vec<String>,
     repl_history_index: Option<usize>,
     last_repl_submission: String,
     queued_inputs: Vec<String>,
     generation: u64,
     run_generation: u64,
+    preview_generation: u64,
     plot_generation: u64,
     repl_generation: u64,
     lsp_version: u64,
     pending: bool,
+    analysis_started_at: Option<f64>,
     pending_pdf: bool,
     repl_pending: bool,
     due: Option<f64>,
@@ -855,6 +834,7 @@ struct WebApp {
     hover_since: f64,
     hover_value: Option<String>,
     first_frame: bool,
+    reveal_cursor: bool,
     quick_open: bool,
     quick_open_query: String,
     explorer_root_open: bool,
@@ -956,6 +936,7 @@ impl WebApp {
             source,
             output: String::new(),
             error: None,
+            output_error: None,
             problems: Vec::new(),
             document: initial_preview,
             tex: initial_tex,
@@ -970,17 +951,20 @@ impl WebApp {
             plot_due: None,
             plot_probe: None,
             repl_input: String::new(),
-            repl_entries: Vec::new(),
+            repl_preview_source: String::new(),
+            repl_preview_latex: None,
             repl_history: Vec::new(),
             repl_history_index: None,
             last_repl_submission: String::new(),
             queued_inputs: Vec::new(),
             generation: 0,
             run_generation: 0,
+            preview_generation: 0,
             plot_generation: 0,
             repl_generation: 0,
             lsp_version: 0,
             pending: false,
+            analysis_started_at: None,
             pending_pdf: false,
             repl_pending: false,
             due: None,
@@ -1022,12 +1006,13 @@ impl WebApp {
             hover_since: 0.0,
             hover_value: None,
             first_frame: true,
+            reveal_cursor: false,
             quick_open: false,
             quick_open_query: String::new(),
             explorer_root_open: true,
             explorer_expanded: HashSet::new(),
         };
-        app.request("run");
+        app.request("preview");
         app
     }
 
@@ -1047,7 +1032,7 @@ impl WebApp {
         self.dirty = false;
         self.highlight_source.clear();
         self.save_draft();
-        self.request("run");
+        self.request("preview");
     }
 
     fn new_file(&mut self) {
@@ -1066,7 +1051,7 @@ impl WebApp {
         self.pending_new = false;
         self.highlight_source.clear();
         self.save_draft();
-        self.request("run");
+        self.request("preview");
     }
 
     fn import_data_file(&mut self, name: String, content: String) {
@@ -1111,6 +1096,7 @@ impl WebApp {
         TextEdit::store_state(&self.context, editor_id, state);
         self.context
             .memory_mut(|memory| memory.request_focus(editor_id));
+        self.reveal_cursor = true;
         self.cursor_char_index = index.min(self.source.chars().count());
         (self.cursor_line, self.cursor_column) =
             line_column_at_char(&self.source, self.cursor_char_index);
@@ -1175,8 +1161,13 @@ impl WebApp {
     }
 
     fn request(&mut self, kind: &str) -> bool {
-        self.generation = self.generation.wrapping_add(1);
         if kind == "run" {
+            self.due = None;
+            self.output_open = true;
+            self.bottom_tab = BottomTab::Output;
+        }
+        self.generation = self.generation.wrapping_add(1);
+        if matches!(kind, "run" | "preview") {
             self.lsp_version = self.lsp_version.wrapping_add(1);
             if let Some(worker) = &self.worker {
                 let uri = "file:///browser.scas";
@@ -1210,6 +1201,11 @@ impl WebApp {
                 .is_ok()
             {
                 match kind {
+                    "preview" => {
+                        self.preview_generation = self.generation;
+                        self.pending = true;
+                        self.analysis_started_at = Some(self.context.input(|input| input.time));
+                    }
                     "plot" => self.plot_generation = self.generation,
                     "repl" | "repl_numeric" => {
                         self.repl_generation = self.generation;
@@ -1218,7 +1214,13 @@ impl WebApp {
                     _ => {
                         self.run_generation = self.generation;
                         self.pending = true;
+                        self.analysis_started_at = Some(self.context.input(|input| input.time));
                     }
+                }
+                if matches!(kind, "run" | "preview") {
+                    self.context.request_repaint_after(Duration::from_secs_f64(
+                        ANALYSIS_TIMEOUT_SECONDS + 0.1,
+                    ));
                 }
                 (if kind == "plot" {
                     "Sampling plot…"
@@ -1262,10 +1264,12 @@ impl WebApp {
         }
         self.generation = self.generation.wrapping_add(1);
         self.run_generation = self.generation;
+        self.preview_generation = self.generation;
         self.plot_generation = self.generation;
         self.repl_generation = self.generation;
         self.lsp_version = 0;
         self.pending = false;
+        self.analysis_started_at = None;
         self.pending_pdf = false;
         self.repl_pending = false;
         self.plot_due = None;
@@ -1337,6 +1341,7 @@ impl WebApp {
             let latest = match kind {
                 "repl" => self.repl_generation,
                 "plot" => self.plot_generation,
+                "preview" => self.preview_generation,
                 _ => self.run_generation,
             };
             if value["generation"].as_u64() != Some(latest) {
@@ -1344,8 +1349,11 @@ impl WebApp {
             }
             if kind == "repl" {
                 self.repl_pending = false;
-            } else if kind == "run" {
+            } else if matches!(kind, "run" | "preview")
+                && latest >= self.run_generation.max(self.preview_generation)
+            {
                 self.pending = false;
+                self.analysis_started_at = None;
             }
             if let Some(prompt) = value["input_required"].as_str() {
                 if let Some(answer) = prompt_input(prompt) {
@@ -1367,38 +1375,16 @@ impl WebApp {
                 self.queued_inputs.clear();
             }
             if kind == "repl" {
-                if value["clear"].as_bool() == Some(true) {
-                    self.repl_entries.clear();
-                    self.status = "History cleared".to_owned();
-                    context.request_repaint();
-                    continue;
-                }
-                let mut output = value["printed"].as_str().unwrap_or("").to_owned();
-                if value["result_latex"].is_null() {
-                    output.push_str(value["output"].as_str().unwrap_or(""));
-                }
-                let entry = WebReplEntry {
-                    input: value["input"].as_str().unwrap_or("").to_owned(),
-                    output,
-                    error: value["error"].as_str().map(str::to_owned),
-                    input_latex: value["input_latex"].as_str().map(str::to_owned),
-                    result_latex: value["result_latex"].as_str().map(str::to_owned),
-                    plot: web_repl_plot(&value["plot"]),
-                };
-                if entry.input.trim() == ":reset" && entry.error.is_none() {
-                    self.repl_entries.clear();
+                receive_repl_result(&response);
+                if value["input"].as_str() == Some(":reset") && value["error"].is_null() {
                     self.repl_history.clear();
-                    self.status = "REPL session reset".to_owned();
-                    context.request_repaint();
-                    continue;
                 }
-                self.status = if entry.error.is_some() {
-                    "Needs attention"
-                } else {
+                self.status = if value["error"].is_null() {
                     "Ready"
+                } else {
+                    "Needs attention"
                 }
                 .to_owned();
-                self.repl_entries.push(entry);
                 context.request_repaint();
                 continue;
             }
@@ -1455,6 +1441,14 @@ impl WebApp {
                 context.request_repaint();
                 continue;
             }
+            if kind == "run" {
+                self.output = value["output"].as_str().unwrap_or("").to_owned();
+                self.output_error = value["error"].as_str().map(str::to_owned);
+            }
+            if latest < self.run_generation.max(self.preview_generation) {
+                context.request_repaint();
+                continue;
+            }
             self.error = value["error"].as_str().map(str::to_owned);
             self.problems = value["diagnostics"]
                 .as_array()
@@ -1469,9 +1463,6 @@ impl WebApp {
                         .collect()
                 })
                 .unwrap_or_default();
-            if let Some(output) = value["output"].as_str() {
-                output.clone_into(&mut self.output);
-            }
             if let Some(tex) = value["tex"].as_str() {
                 tex.clone_into(&mut self.tex);
             }
@@ -1591,8 +1582,13 @@ impl WebApp {
     }
 
     fn plot(&mut self, ui: &mut egui::Ui, theme: &Theme) {
-        let (rect, response) =
+        let (canvas_rect, response) =
             ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
+        // Keep tick labels and interaction hints outside the data area.
+        let rect = egui::Rect::from_min_max(
+            canvas_rect.min + egui::vec2(38.0, 12.0),
+            canvas_rect.max - egui::vec2(12.0, 38.0),
+        );
         let now = ui.input(|input| input.time);
         let drag = if response.dragged() {
             ui.input(|input| input.pointer.delta())
@@ -1622,8 +1618,8 @@ impl WebApp {
             let y_ratio = f64::from((pointer.y - rect.top()) / rect.height().max(1.0));
             self.zoom_plot(factor, x_ratio, y_ratio, now, ui.ctx());
         }
-        let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 0.0, theme.ui.background.0);
+        let painter = ui.painter_at(canvas_rect);
+        painter.rect_filled(canvas_rect, 0.0, theme.ui.background.0);
         let [x_min, x_max, y_min, y_max] = self.plot_bounds;
         let map = |x: f64, y: f64| {
             egui::pos2(
@@ -1631,8 +1627,14 @@ impl WebApp {
                 rect.bottom() - ((y - y_min) / (y_max - y_min)) as f32 * rect.height(),
             )
         };
-        let x_step = plot::nice_step(x_max - x_min, 10.0);
-        let y_step = plot::nice_step(y_max - y_min, 8.0);
+        let x_step = plot::nice_step(
+            x_max - x_min,
+            f64::from((rect.width() / 85.0).clamp(2.0, 12.0)),
+        );
+        let y_step = plot::nice_step(
+            y_max - y_min,
+            f64::from((rect.height() / 65.0).clamp(2.0, 10.0)),
+        );
         for (vertical, minimum, maximum, step) in
             [(true, x_min, x_max, x_step), (false, y_min, y_max, y_step)]
         {
@@ -1658,8 +1660,8 @@ impl WebApp {
                         stroke,
                     );
                     painter.text(
-                        egui::pos2(x + 3.0, rect.bottom() - 4.0),
-                        egui::Align2::LEFT_BOTTOM,
+                        egui::pos2(x, rect.bottom() + 6.0),
+                        egui::Align2::CENTER_TOP,
                         format_plot_tick(value, step),
                         FontId::monospace(10.0),
                         theme.ui.muted.0,
@@ -1671,8 +1673,8 @@ impl WebApp {
                         stroke,
                     );
                     painter.text(
-                        egui::pos2(rect.left() + 5.0, y - 3.0),
-                        egui::Align2::LEFT_BOTTOM,
+                        egui::pos2(rect.left() - 6.0, y),
+                        egui::Align2::RIGHT_CENTER,
                         format_plot_tick(value, step),
                         FontId::monospace(10.0),
                         theme.ui.muted.0,
@@ -1681,17 +1683,14 @@ impl WebApp {
                 value += step;
             }
         }
-        let colors = [
-            Color32::from_rgb(79, 156, 249),
-            Color32::from_rgb(249, 119, 127),
-            Color32::from_rgb(83, 196, 137),
-        ];
+        let curve_painter = painter.with_clip_rect(rect);
+        let colors = graph_colors(theme);
         for (index, series) in self.plot_series.iter().enumerate() {
             let mut previous = None;
             for &(x, y) in &series.samples {
                 let point = y.filter(|y| y.is_finite()).map(|y| map(x, y));
                 if let (Some(a), Some(b)) = (previous, point) {
-                    painter.line_segment(
+                    curve_painter.line_segment(
                         [a, b],
                         egui::Stroke::new(2.0_f32, colors[index % colors.len()]),
                     );
@@ -1703,11 +1702,11 @@ impl WebApp {
                 let center = map(point.x, point.y);
                 match point.kind {
                     plot::CriticalKind::Hole => {
-                        painter.circle_stroke(center, 4.5, egui::Stroke::new(1.6_f32, color));
+                        curve_painter.circle_stroke(center, 4.5, egui::Stroke::new(1.6_f32, color));
                     }
                     _ => {
-                        painter.circle_filled(center, 3.6, color);
-                        painter.circle_stroke(
+                        curve_painter.circle_filled(center, 3.6, color);
+                        curve_painter.circle_stroke(
                             center,
                             5.2,
                             egui::Stroke::new(1.0_f32, theme.ui.background.0),
@@ -1742,9 +1741,13 @@ impl WebApp {
             );
         }
         painter.text(
-            egui::pos2(rect.right() - 10.0, rect.bottom() - 10.0),
+            egui::pos2(canvas_rect.right() - 12.0, canvas_rect.bottom() - 4.0),
             egui::Align2::RIGHT_BOTTOM,
-            "Drag to pan · Scroll to zoom · Hover a point · Click to pin",
+            if rect.width() > 600.0 {
+                "Drag to pan · Pinch to zoom · Hover a point · Click to pin"
+            } else {
+                "Drag to pan · Pinch to zoom"
+            },
             FontId::proportional(11.0),
             theme.ui.muted.0,
         );
@@ -1887,152 +1890,6 @@ fn draw_web_graph_probe(
     );
 }
 
-fn show_repl_plot(ui: &mut egui::Ui, plot: &WebReplPlot, theme: &Theme, entry_index: usize) {
-    ui.add_space(6.0);
-    egui::Frame::none()
-        .fill(theme.ui.editor.0)
-        .inner_margin(egui::Margin::same(10.0))
-        .stroke(egui::Stroke::new(
-            1.0_f32,
-            theme.ui.muted.0.gamma_multiply(0.3),
-        ))
-        .show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(
-                    RichText::new(if plot.vector { "SVG PLOT" } else { "PLOT" })
-                        .strong()
-                        .size(10.0)
-                        .color(theme.ui.accent.0),
-                );
-                ui.label(
-                    RichText::new(format!(
-                        "x: {} … {}   y: {} … {}",
-                        plot::format_number(plot.bounds[0]),
-                        plot::format_number(plot.bounds[1]),
-                        plot::format_number(plot.bounds[2]),
-                        plot::format_number(plot.bounds[3]),
-                    ))
-                    .size(10.0)
-                    .color(theme.ui.muted.0),
-                );
-                let label = plot
-                    .download_name
-                    .as_deref()
-                    .map_or("Download SVG", |_| "Download file");
-                if ui.small_button(label).clicked() {
-                    let name = plot.download_name.as_deref().unwrap_or("scas-plot.svg");
-                    if name.to_ascii_lowercase().ends_with(".svg") || plot.download_name.is_none() {
-                        download_file(name, &plot.svg, "image/svg+xml");
-                    } else {
-                        download_file(name, &plot.ascii, "text/plain");
-                    }
-                }
-            });
-            if plot.vector || ui.available_width() < 480.0 {
-                show_repl_vector_plot(ui, plot, theme);
-            } else {
-                egui::ScrollArea::horizontal()
-                    .id_source(("web-repl-ascii-plot", entry_index))
-                    .show(ui, |ui| {
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(&plot.ascii)
-                                    .monospace()
-                                    .size(11.0)
-                                    .color(theme.ui.text.0),
-                            )
-                            .extend(),
-                        );
-                    });
-            }
-        });
-    ui.add_space(4.0);
-}
-
-fn show_repl_vector_plot(ui: &mut egui::Ui, plot: &WebReplPlot, theme: &Theme) {
-    let width = ui.available_width().min(800.0).max(1.0);
-    let height = (width * 0.45).clamp(180.0, 320.0);
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
-    let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 0.0, theme.ui.background.0);
-    let [x_min, x_max, y_min, y_max] = plot.bounds;
-    if ![x_min, x_max, y_min, y_max]
-        .iter()
-        .all(|value| value.is_finite())
-        || x_min >= x_max
-        || y_min >= y_max
-    {
-        return;
-    }
-    let graph = egui::Rect::from_min_max(
-        rect.min + egui::vec2(42.0, 12.0),
-        rect.max - egui::vec2(14.0, 28.0),
-    );
-    for (vertical, low, high) in [(true, x_min, x_max), (false, y_min, y_max)] {
-        let step = plot::nice_step(high - low, 6.0);
-        if !step.is_finite() || step <= 0.0 {
-            continue;
-        }
-        let mut tick = (low / step).ceil() * step;
-        for _ in 0..80 {
-            if tick > high {
-                break;
-            }
-            let color = theme
-                .ui
-                .muted
-                .0
-                .gamma_multiply(if tick.abs() < step * 1e-6 { 0.55 } else { 0.2 });
-            if vertical {
-                let x = plot_screen_point(&plot.bounds, graph, tick, y_min).x;
-                painter.line_segment(
-                    [egui::pos2(x, graph.top()), egui::pos2(x, graph.bottom())],
-                    egui::Stroke::new(1.0_f32, color),
-                );
-                painter.text(
-                    egui::pos2(x, graph.bottom() + 4.0),
-                    egui::Align2::CENTER_TOP,
-                    plot::format_number(tick),
-                    FontId::monospace(9.0),
-                    theme.ui.muted.0,
-                );
-            } else {
-                let y = plot_screen_point(&plot.bounds, graph, x_min, tick).y;
-                painter.line_segment(
-                    [egui::pos2(graph.left(), y), egui::pos2(graph.right(), y)],
-                    egui::Stroke::new(1.0_f32, color),
-                );
-                painter.text(
-                    egui::pos2(graph.left() - 5.0, y),
-                    egui::Align2::RIGHT_CENTER,
-                    plot::format_number(tick),
-                    FontId::monospace(9.0),
-                    theme.ui.muted.0,
-                );
-            }
-            tick += step;
-        }
-    }
-    let colors = [
-        Color32::from_rgb(79, 156, 249),
-        Color32::from_rgb(249, 119, 127),
-        Color32::from_rgb(83, 196, 137),
-    ];
-    for (index, series) in plot.series.iter().enumerate() {
-        let color = colors[index % colors.len()];
-        let mut previous = None;
-        for &(x, y) in &series.samples {
-            let point = y
-                .filter(|value| value.is_finite())
-                .map(|y| plot_screen_point(&plot.bounds, graph, x, y));
-            if let (Some(start), Some(end)) = (previous, point) {
-                painter.line_segment([start, end], egui::Stroke::new(1.8_f32, color));
-            }
-            previous = point;
-        }
-    }
-}
-
 impl WebApp {
     fn submit_repl(&mut self) {
         self.submit_repl_kind("repl");
@@ -2061,6 +1918,10 @@ impl WebApp {
     }
 
     fn show_repl(&mut self, ui: &mut egui::Ui, theme: &Theme) {
+        if self.repl_preview_source != self.repl_input {
+            self.repl_preview_latex = repl_expression_latex(&self.repl_input);
+            self.repl_preview_source.clone_from(&self.repl_input);
+        }
         let (enter_pressed, history_up, history_down) = ui.input(|input| {
             (
                 input.key_pressed(egui::Key::Enter)
@@ -2071,108 +1932,53 @@ impl WebApp {
                 input.key_pressed(egui::Key::ArrowDown),
             )
         });
-        egui::Frame::none().fill(theme.ui.panel.0).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.set_min_height(30.0);
-                ui.label(RichText::new("REPL").strong().size(12.0));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("Reset session").clicked() && !self.repl_pending {
-                        self.repl_input = ":reset".to_owned();
-                        self.submit_repl();
+        egui::Frame::none()
+            .fill(theme.ui.panel.0)
+            .inner_margin(egui::Margin::symmetric(16.0, 8.0))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.set_min_height(30.0);
+                    ui.label(
+                        RichText::new("REPL")
+                            .color(theme.ui.text.0)
+                            .strong()
+                            .size(16.0),
+                    );
+                    if self.repl_pending {
+                        ui.spinner();
+                        ui.label(RichText::new("Evaluating…").color(theme.ui.muted.0));
                     }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add_enabled(!self.repl_pending, egui::Button::new("Reset session"))
+                            .clicked()
+                        {
+                            ":reset".clone_into(&mut self.repl_input);
+                            self.submit_repl();
+                        }
+                    });
                 });
             });
-        });
         let muted = theme.ui.muted.0;
-        let history_height = (ui.available_height() - 224.0).max(32.0);
-        egui::ScrollArea::vertical()
-            .id_source("web-repl-history")
-            .max_height(history_height)
-            .auto_shrink([false, false])
-            .stick_to_bottom(true)
-            .show(ui, |ui| {
-                ui.set_min_width(ui.available_width());
-                if self.repl_entries.is_empty() {
-                    ui.add_space(28.0);
-                    ui.vertical_centered(|ui| {
-                        ui.label(RichText::new("Start a calculation").strong().size(18.0));
-                        ui.label(
-                            RichText::new(
-                                "Enter an expression below. Definitions stay available for the session.",
-                            )
-                            .size(12.0)
-                            .color(muted),
-                        );
-                        ui.add_space(6.0);
-                        ui.monospace("Try:  f(x) = x^2 - 2;   then   f(3)");
-                    });
-                }
-                for (index, entry) in self.repl_entries.iter().enumerate() {
-                    egui::Frame::none()
-                        .inner_margin(egui::Margin::symmetric(12.0, 12.0))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    RichText::new(format!("{}", index + 1))
-                                        .monospace()
-                                        .size(10.5)
-                                        .color(muted),
-                                );
-                                if let Some(latex) = &entry.input_latex {
-                                    math_preview::show_expression(
-                                        ui,
-                                        latex,
-                                        theme.ui.text.0,
-                                        20.0,
-                                    );
-                                } else {
-                                    ui.label(
-                                        RichText::new(&entry.input)
-                                            .monospace()
-                                            .size(14.0)
-                                            .color(theme.ui.text.0),
-                                    );
-                                }
-                            });
-                            if entry.input_latex.is_some() {
-                                ui.label(
-                                    RichText::new(&entry.input)
-                                        .monospace()
-                                        .size(9.5)
-                                        .color(muted),
-                                );
-                            }
-                            if let Some(latex) = &entry.result_latex {
-                                egui::Frame::none()
-                                    .fill(theme.ui.editor.0)
-                                    .inner_margin(egui::Margin::symmetric(10.0, 7.0))
-                                    .show(ui, |ui| {
-                                        math_preview::show_expression(
-                                            ui,
-                                            latex,
-                                            theme.ui.text.0,
-                                            21.0,
-                                        );
-                                    });
-                            }
-                            if !entry.output.trim().is_empty() {
-                                ui.label(
-                                    RichText::new(entry.output.trim_end())
-                                        .monospace()
-                                        .size(12.0),
-                                );
-                            }
-                            if let Some(plot) = &entry.plot {
-                                show_repl_plot(ui, plot, theme, index);
-                            }
-                            if let Some(error) = &entry.error {
-                                ui.colored_label(Color32::from_rgb(249, 119, 127), error);
-                            }
-                        });
-                    ui.separator();
-                    ui.add_space(8.0);
-                }
-            });
+        let composer_height = if ui.available_width() < 600.0 {
+            206.0
+        } else {
+            192.0
+        };
+        let history_height = (ui.available_height() - composer_height).max(32.0);
+        let (history_rect, _) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), history_height),
+            egui::Sense::hover(),
+        );
+        show_repl_surface(
+            "history",
+            "",
+            history_rect.left(),
+            history_rect.top(),
+            history_rect.width(),
+            history_rect.height(),
+            ui.ctx().pixels_per_point(),
+        );
 
         ui.add_space(8.0);
         let input_id = egui::Id::new("web-repl-input");
@@ -2180,60 +1986,30 @@ impl WebApp {
         egui::Frame::none()
             .fill(theme.ui.panel.0)
             .inner_margin(egui::Margin::symmetric(12.0, 12.0))
-            .stroke(egui::Stroke::new(
-                1.0_f32,
-                theme.ui.accent.0.gamma_multiply(0.65),
-            ))
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(
-                        RichText::new("LIVE MATH ENTRY")
-                            .strong()
-                            .size(10.5)
-                            .color(theme.ui.accent.0),
-                    );
+                    ui.label(RichText::new("Expression").color(theme.ui.text.0).strong().size(13.0));
                     ui.label(
                         RichText::new(
-                            "Enter evaluates · Ctrl+Enter evaluates numerically · ↑/↓ history · :plot draws a graph",
+                            "Enter to evaluate · Ctrl+Enter for a decimal · Up/Down for history",
                         )
-                        .size(10.5)
+                        .size(12.0)
                         .color(muted),
                     );
                 });
                 ui.add_space(5.0);
-                egui::Frame::none()
-                    .fill(theme.ui.editor.0)
-                    .inner_margin(egui::Margin::symmetric(10.0, 9.0))
-                    .show(ui, |ui| {
-                        ui.set_min_height(56.0);
-                        if self.repl_input.trim_start().starts_with(':') {
-                            ui.label(
-                                RichText::new("Command ready — press Enter to run")
-                                    .color(muted),
-                            );
-                        } else if let Some(latex) = repl_expression_latex(&self.repl_input) {
-                            math_preview::show_expression(ui, &latex, theme.ui.text.0, 26.0);
-                        } else if self.repl_input.trim().is_empty() {
-                            ui.label(
-                                RichText::new("Your expression will typeset here as you work")
-                                    .italics()
-                                    .color(muted),
-                            );
-                        } else {
-                            ui.label(
-                                RichText::new("Keep typing to complete the expression…")
-                                    .italics()
-                                    .color(muted),
-                            );
-                        }
-                    });
+                let (math_rect, _) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), 66.0), egui::Sense::hover());
+                let preview = json!({"latex": self.repl_preview_latex, "input": self.repl_input});
+                show_repl_surface("entry", &preview.to_string(), math_rect.left(), math_rect.top(),
+                    math_rect.width(), math_rect.height(), ui.ctx().pixels_per_point());
                 ui.add_space(4.0);
                 let response = ui.add(
                     TextEdit::singleline(&mut self.repl_input)
                         .id(input_id)
-                        .font(egui::TextStyle::Monospace)
+                        .font(FontId::monospace(16.0))
                         .desired_width(f32::INFINITY)
-                        .hint_text("Type SCAS math, for example integral(sin(x), x) or :plot sin(x)"),
+                        .hint_text("integral(sin(x), x)"),
                 );
                 if response.changed() {
                     if self.auto_greek {
@@ -2282,19 +2058,18 @@ impl WebApp {
                     if ui
                         .add_enabled(
                             !self.repl_pending && !self.repl_input.trim().is_empty(),
-                            egui::Button::new("Evaluate"),
+                            egui::Button::new(RichText::new("Evaluate").color(theme.contrast_on_accent()))
+                                .fill(theme.ui.accent.0)
+                                .min_size(egui::vec2(92.0, 30.0)),
                         )
                         .clicked()
                     {
                         submit = true;
                     }
-                    ui.label(
-                        RichText::new(
-                            "Commands: :help · :precision N · :plot sin(x) · :definitions · :history · :clear · :reset",
-                        )
-                        .size(10.5)
-                        .color(muted),
-                    );
+                    ui.menu_button("Commands", |ui| {
+                        ui.label("Enter a command in the expression field:");
+                        ui.monospace(":help\n:precision N\n:plot sin(x)\n:definitions\n:history\n:clear\n:reset");
+                    });
                 });
             });
         if submit {
@@ -2565,6 +2340,58 @@ impl WebApp {
             .request_repaint_after(Duration::from_millis(420));
     }
 
+    fn editor_selection_is_empty(&self, editor_id: egui::Id) -> bool {
+        TextEdit::load_state(&self.context, editor_id)
+            .and_then(|state| state.cursor.char_range())
+            .map_or(true, |range| range.primary.index == range.secondary.index)
+    }
+
+    fn delete_editor_line(&mut self, editor_id: egui::Id) {
+        let cursor = TextEdit::load_state(&self.context, editor_id)
+            .and_then(|state| state.cursor.char_range())
+            .map_or(self.cursor_char_index, |range| range.primary.index)
+            .min(self.source.chars().count());
+        let cursor_byte = char_to_byte(&self.source, cursor);
+        let mut start = self.source[..cursor_byte]
+            .rfind('\n')
+            .map_or(0, |index| index + 1);
+        let end = self.source[cursor_byte..]
+            .find('\n')
+            .map_or(self.source.len(), |index| cursor_byte + index + 1);
+
+        // Removing the final line also removes its separator so the previous
+        // line does not gain an unexpected blank line.
+        if end == self.source.len() && start > 0 {
+            start -= 1;
+            if start > 0 && self.source.as_bytes()[start - 1] == b'\r' {
+                start -= 1;
+            }
+        }
+
+        self.source.replace_range(start..end, "");
+        self.cursor_char_index = self.source[..start].chars().count();
+        let mut state = TextEdit::load_state(&self.context, editor_id).unwrap_or_default();
+        state
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::one(
+                egui::text::CCursor::new(self.cursor_char_index),
+            )));
+        TextEdit::store_state(&self.context, editor_id, state);
+        self.context
+            .memory_mut(|memory| memory.request_focus(editor_id));
+        (self.cursor_line, self.cursor_column) =
+            line_column_at_char(&self.source, self.cursor_char_index);
+        self.highlight_source.clear();
+        self.hover_key = None;
+        self.dirty = true;
+        self.save_draft();
+        self.due = Some(self.context.input(|input| input.time) + 0.4);
+        self.reveal_cursor = true;
+        self.status = "Deleted current line".to_owned();
+        self.context
+            .request_repaint_after(Duration::from_millis(420));
+    }
+
     fn insert_editor_text(&mut self, template: &str) {
         let byte = char_to_byte(&self.source, self.cursor_char_index);
         let text = template.replace("$0", "");
@@ -2613,7 +2440,7 @@ impl WebApp {
                 self.highlight_source.clear();
                 self.dirty = true;
                 self.save_draft();
-                self.request("run");
+                self.request("preview");
                 self.status = format!(
                     "Renamed {target} to {} ({count} locations)",
                     self.rename_input.trim()
@@ -2662,7 +2489,7 @@ impl WebApp {
             }
             if ui.button("Export PDF…").clicked() {
                 if self.pending || self.due.is_some() {
-                    self.pending_pdf = self.request("run");
+                    self.pending_pdf = self.request("preview");
                     self.due = None;
                 } else if self.error.is_some() {
                     self.status = "Fix document errors before exporting PDF".to_owned();
@@ -2721,9 +2548,26 @@ impl eframe::App for WebApp {
             self.highlight_font_size_bits = effective_editor_font_size.to_bits();
         }
         let now = context.input(|input| input.time);
+        if self.pending
+            && self
+                .analysis_started_at
+                .is_some_and(|started| now - started >= ANALYSIS_TIMEOUT_SECONDS)
+        {
+            self.interrupt_worker();
+            self.status =
+                "Live analysis timed out; worker restarted. Editing remains available.".to_owned();
+        }
         if self.due.is_some_and(|due| now >= due) {
-            self.due = None;
-            self.request("run");
+            if self.pending {
+                // Keep only the newest edit waiting for live analysis. Posting
+                // every intermediate buffer to the single worker can otherwise
+                // build an unbounded queue and make the IDE appear frozen.
+                self.due = Some(now + 0.1);
+                context.request_repaint_after(Duration::from_millis(110));
+            } else {
+                self.due = None;
+                self.request("preview");
+            }
         }
         if self.plot_due.is_some_and(|due| now >= due) {
             self.plot_due = None;
@@ -2741,6 +2585,20 @@ impl eframe::App for WebApp {
         let editor_id = egui::Id::new("web-source");
         let editor_focused = context.memory(|memory| memory.has_focus(editor_id));
         if editor_focused
+            && self.editor_selection_is_empty(editor_id)
+            && context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::X))
+        {
+            self.delete_editor_line(editor_id);
+        }
+        // egui ignores extra Shift for a NONE shortcut: consume Shift+F12 first.
+        if editor_focused
+            && context.input_mut(|input| input.consume_key(egui::Modifiers::SHIFT, egui::Key::F12))
+        {
+            self.references_target = self.symbol_at_cursor();
+            self.bottom_tab = BottomTab::References;
+            self.output_open = true;
+        }
+        if editor_focused
             && context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::F12))
         {
             if let Some(name) = self.symbol_at_cursor() {
@@ -2749,19 +2607,6 @@ impl eframe::App for WebApp {
                     self.jump_to_source(definition.line, definition.column);
                 } else {
                     self.status = "No unambiguous definition in this document".to_owned();
-                }
-            }
-        }
-        if editor_focused
-            && context.input_mut(|input| input.consume_key(egui::Modifiers::SHIFT, egui::Key::F12))
-        {
-            if let Some(name) = self.symbol_at_cursor() {
-                if SourceIndex::new(&self.source).definition(&name).is_some() {
-                    self.references_target = Some(name);
-                    self.bottom_tab = BottomTab::References;
-                    self.output_open = true;
-                } else {
-                    self.status = "No unambiguous references in this document".to_owned();
                 }
             }
         }
@@ -2883,6 +2728,12 @@ impl eframe::App for WebApp {
                                         self.quick_open = true;
                                         ui.close_menu();
                                     }
+                                    if ui.button("Find References  Shift+F12").clicked() {
+                                        self.references_target = self.symbol_at_cursor();
+                                        self.bottom_tab = BottomTab::References;
+                                        self.output_open = true;
+                                        ui.close_menu();
+                                    }
                                     if ui.button("Editor").clicked() {
                                         self.tab = Tab::Document;
                                         ui.close_menu();
@@ -2938,9 +2789,11 @@ impl eframe::App for WebApp {
                             if ui
                                 .add_sized(
                                     [center_width - 2.0, 26.0],
-                                    egui::Button::new(RichText::new("scas").size(12.0))
-                                        .fill(theme.ui.selection.0.gamma_multiply(0.45))
-                                        .stroke(border),
+                                    egui::Button::new(
+                                        RichText::new("scas").color(theme.ui.text.0).size(12.0),
+                                    )
+                                    .fill(theme.ui.selection.0.gamma_multiply(0.45))
+                                    .stroke(border),
                                 )
                                 .on_hover_text("Quick Open · Ctrl+P")
                                 .clicked()
@@ -3085,7 +2938,12 @@ impl eframe::App for WebApp {
                 )
                 .show(context, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("Explorer").strong().size(13.0));
+                        ui.label(
+                            RichText::new("Explorer")
+                                .color(theme.ui.text.0)
+                                .strong()
+                                .size(13.0),
+                        );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let button_frame = ui.visuals().button_frame;
                             ui.visuals_mut().button_frame = false;
@@ -3100,7 +2958,7 @@ impl eframe::App for WebApp {
                                         ui.close_menu();
                                     }
                                     if ui.button("Refresh Files").clicked() {
-                                        self.request("run");
+                                        self.request("preview");
                                         ui.close_menu();
                                     }
                                     if ui.button("Collapse Folders").clicked() {
@@ -3117,7 +2975,10 @@ impl eframe::App for WebApp {
                             self.explorer_root_open = !self.explorer_root_open;
                         }
                         if ui
-                            .selectable_label(false, RichText::new("scas").strong())
+                            .selectable_label(
+                                false,
+                                RichText::new("scas").color(theme.ui.text.0).strong(),
+                            )
                             .clicked()
                         {
                             self.explorer_root_open = !self.explorer_root_open;
@@ -3130,7 +2991,7 @@ impl eframe::App for WebApp {
                             if web_icon_button(ui, '\u{eb37}', "Refresh workspace", &theme)
                                 .clicked()
                             {
-                                self.request("run");
+                                self.request("preview");
                             }
                             if web_icon_button(ui, '\u{ea7f}', "New document", &theme).clicked() {
                                 self.new_file();
@@ -3232,6 +3093,9 @@ impl eframe::App for WebApp {
                                 .clicked()
                             {
                                 self.bottom_tab = BottomTab::References;
+                                if let Some(name) = self.symbol_at_cursor() {
+                                    self.references_target = Some(name);
+                                }
                             }
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
@@ -3244,14 +3108,19 @@ impl eframe::App for WebApp {
                             );
                         });
                         ui.separator();
-                        egui::ScrollArea::vertical().show(ui, |ui| match self.bottom_tab {
+                        let panel_height = ui.available_height();
+                        egui::ScrollArea::both()
+                            .id_source(("web-output-scroll", self.bottom_tab as u8))
+                            .max_height(panel_height)
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| match self.bottom_tab {
                             BottomTab::Output => {
                                 if !self.output.is_empty() {
-                                    ui.monospace(&self.output);
+                                    ui.add(egui::Label::new(RichText::new(&self.output).monospace()).selectable(true).extend());
                                 } else {
                                     ui.label(RichText::new("No output yet.").color(muted));
                                 }
-                                if let Some(error) = &self.error {
+                                if let Some(error) = &self.output_error {
                                     ui.colored_label(Color32::from_rgb(249, 119, 127), error);
                                 }
                             }
@@ -3280,17 +3149,31 @@ impl eframe::App for WebApp {
                                 }
                             }
                             BottomTab::References => {
+                                let mut query = self.references_target.clone().unwrap_or_default();
+                                ui.horizontal(|ui| {
+                                    ui.label("Symbol");
+                                    if ui.add(TextEdit::singleline(&mut query).desired_width(180.0).hint_text("e.g. f or total")).changed() {
+                                        self.references_target = (!query.trim().is_empty()).then(|| query.trim().to_owned());
+                                    }
+                                    if ui.button("Use editor cursor").clicked() {
+                                        self.references_target = self.symbol_at_cursor();
+                                    }
+                                });
                                 let Some(target) = self.references_target.as_deref() else {
                                     ui.label(
-                                        RichText::new("Press Shift+F12 on a symbol.").color(muted),
+                                        RichText::new("Enter a symbol above, or use Shift+F12 in the editor.").color(muted),
                                     );
                                     return;
                                 };
                                 let index = SourceIndex::new(&self.source);
-                                let references = index.references(target);
+                                let unique = index.definition(target).is_some();
+                                let references: Vec<_> = if unique { index.references(target) } else {
+                                    index.occurrences.iter().filter(|item| item.name == target).collect()
+                                };
+                                ui.label(RichText::new(format!("{} {} for {target}", references.len(), if unique { "references" } else { "name matches (across scopes)" })).color(muted));
                                 if references.is_empty() {
                                     ui.label(
-                                        RichText::new("No unambiguous references found.")
+                                        RichText::new("No occurrences found in this document. Check the symbol name.")
                                             .color(muted),
                                     );
                                 }
@@ -3301,12 +3184,13 @@ impl eframe::App for WebApp {
                                         "reference"
                                     };
                                     let label = format!(
-                                        "{}:{}:{}  {}  {}",
+                                        "{}:{}:{}  {}  {}    {}",
                                         self.source_name,
                                         occurrence.line,
                                         occurrence.column,
                                         target,
-                                        role
+                                        role,
+                                        self.source.lines().nth(occurrence.line.saturating_sub(1)).unwrap_or("").trim()
                                     );
                                     if ui.selectable_label(false, label).clicked() {
                                         jump_to = Some((occurrence.line, occurrence.column));
@@ -3570,6 +3454,16 @@ impl eframe::App for WebApp {
                                 .layouter(&mut layouter)
                                 .desired_rows(available_rows.max(12))
                                 .show(ui);
+                            if self.reveal_cursor {
+                                if let Some(cursor) = output.cursor_range {
+                                    let rect = output
+                                        .galley
+                                        .pos_from_cursor(&cursor.primary)
+                                        .translate(output.galley_pos.to_vec2());
+                                    ui.scroll_to_rect(rect, Some(egui::Align::Center));
+                                }
+                                self.reveal_cursor = false;
+                            }
                             if self.line_numbers != LineNumberMode::Off {
                                 paint_line_numbers(
                                     ui,
@@ -3754,19 +3648,39 @@ impl eframe::App for WebApp {
                 .show(context, |ui| self.show_repl(ui, &theme));
         } else {
             egui::TopBottomPanel::top("plot-controls")
-                .frame(egui::Frame::none().fill(panel))
+                .frame(
+                    egui::Frame::none()
+                        .fill(panel)
+                        .inner_margin(egui::Margin::symmetric(16.0, 12.0)),
+                )
                 .show(context, |ui| {
+                    ui.label(
+                        RichText::new("Graphing")
+                            .color(theme.ui.text.0)
+                            .strong()
+                            .size(16.0),
+                    );
+                    ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        ui.label("y =");
+                        ui.label(RichText::new("y =").monospace().size(16.0));
                         let expression = ui.add(
                             TextEdit::singleline(&mut self.plot_expression)
                                 .hint_text("sin(x) from -10 to 10 y from -2 to 2")
-                                .desired_width(430.0),
+                                .font(FontId::monospace(16.0))
+                                .desired_width((ui.available_width() - 76.0).max(60.0)),
                         );
                         if expression.changed() && self.auto_greek {
                             expand_greek_shortcuts(&mut self.plot_expression);
                         }
-                        if ui.button("Plot").clicked()
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new("Plot").color(theme.contrast_on_accent()),
+                                )
+                                .fill(theme.ui.accent.0)
+                                .min_size(egui::vec2(64.0, 28.0)),
+                            )
+                            .clicked()
                             || (expression.lost_focus()
                                 && ui.input(|input| input.key_pressed(egui::Key::Enter)))
                         {
@@ -3775,7 +3689,9 @@ impl eframe::App for WebApp {
                             self.plot_due = None;
                             self.request("plot");
                         }
-                        ui.separator();
+                    });
+                    ui.add_space(6.0);
+                    ui.horizontal_wrapped(|ui| {
                         if ui.button("+").on_hover_text("Zoom in").clicked() {
                             self.zoom_plot(0.75, 0.5, 0.5, now, context);
                         }
@@ -3809,8 +3725,23 @@ impl eframe::App for WebApp {
                     if let Some(error) = &self.plot_error {
                         ui.colored_label(Color32::from_rgb(249, 119, 127), error);
                     }
-                    for series in &self.plot_series {
-                        ui.label(RichText::new(&series.label).size(11.0));
+                    if !self.plot_series.is_empty() {
+                        ui.add_space(8.0);
+                        ui.horizontal_wrapped(|ui| {
+                            for (index, series) in self.plot_series.iter().enumerate() {
+                                let color = graph_colors(&theme)[index % PLOT_COLORS.len()];
+                                let (swatch, _) = ui.allocate_exact_size(
+                                    egui::vec2(18.0, 16.0),
+                                    egui::Sense::hover(),
+                                );
+                                ui.painter().line_segment(
+                                    [swatch.left_center(), swatch.right_center()],
+                                    egui::Stroke::new(2.5, color),
+                                );
+                                ui.label(RichText::new(&series.label).monospace().size(12.0));
+                                ui.add_space(12.0);
+                            }
+                        });
                     }
                 });
             egui::CentralPanel::default()
@@ -3834,6 +3765,13 @@ impl eframe::App for WebApp {
         }
         if !preview_visible {
             hide_preview();
+        }
+        if self.tab != Tab::Repl
+            || self.settings_open
+            || self.quick_open
+            || context.memory(|memory| memory.any_popup_open())
+        {
+            hide_repl();
         }
         self.show_settings(context);
         self.show_save_as(context);

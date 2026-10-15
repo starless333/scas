@@ -22,16 +22,58 @@ const previewSourceCode = document.getElementById("math-preview-source-code");
 document.getElementById("math-preview-close")?.addEventListener("click", () => window.scasClosePreview?.());
 let previewSource = null;
 let previewQueue = Promise.resolve();
-async function ensureMathJax() {
-  if (window.MathJax?.typesetPromise) return;
-  const script = document.querySelector('script[src*="mathjax"]');
-  if (window.MathJax?.startup?.promise) await window.MathJax.startup.promise;
-  else await new Promise((resolve, reject) => {
-    if (!script) return reject(new Error("MathJax script is missing"));
-    script.addEventListener("load", resolve, { once: true });
-    script.addEventListener("error", reject, { once: true });
+let mathJaxReady;
+const MATHJAX_SOURCES = [
+  "https://cdn.jsdelivr.net/npm/mathjax@4.0.0/tex-chtml.js",
+  "https://unpkg.com/mathjax@4.0.0/tex-chtml.js",
+];
+
+function loadMathJaxScript(source) {
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    const timeout = setTimeout(() => {
+      script.remove();
+      reject(new Error(`MathJax timed out from ${new URL(source).host}`));
+    }, 7000);
+    script.src = source;
+    script.async = true;
+    script.onload = () => {
+      clearTimeout(timeout);
+      resolve();
+    };
+    script.onerror = () => {
+      clearTimeout(timeout);
+      script.remove();
+      reject(new Error(`MathJax could not load from ${new URL(source).host}`));
+    };
+    document.head.append(script);
   });
-  if (!window.MathJax?.typesetPromise) throw new Error("MathJax is unavailable");
+}
+
+function ensureMathJax() {
+  if (window.MathJax?.typesetPromise && window.MathJax?.tex2chtmlPromise) return Promise.resolve();
+  // Share one lazy load between preview, print, and REPL. A second pinned
+  // origin avoids turning one blocked CDN into a blank mathematical surface.
+  mathJaxReady ??= (async () => {
+    let lastError;
+    for (const source of MATHJAX_SOURCES) {
+      try {
+        await loadMathJaxScript(source);
+        await window.MathJax?.startup?.promise;
+        if (!window.MathJax?.typesetPromise || !window.MathJax?.tex2chtmlPromise) {
+          throw new Error("MathJax is unavailable");
+        }
+        return;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError ?? new Error("MathJax could not load");
+  })().catch(error => {
+    mathJaxReady = undefined;
+    throw error;
+  });
+  return mathJaxReady;
 }
 let previewTex = "";
 let previewVersion = 0;
@@ -255,6 +297,7 @@ window.scasShowPreview = (fragmentsJson, tex, error, pending, x, y, width, heigh
     if (version !== previewVersion) return;
     fillPreview(fragments);
     await ensureMathJax();
+    if (version !== previewVersion) return;
     await window.MathJax.typesetPromise([previewContent]);
   }).catch((error) => {
     console.error("Math preview failed", error);
@@ -268,6 +311,160 @@ window.scasShowPreview = (fragmentsJson, tex, error, pending, x, y, width, heigh
 window.scasHidePreview = () => {
   if (!preview.hidden) preview.hidden = true;
   if (!previewResizer.hidden) previewResizer.hidden = true;
+};
+
+const replHistory = document.getElementById("repl-history");
+const replEntryPreview = document.getElementById("repl-entry-preview");
+let replPreviewSource;
+let replSequence = 0;
+let replTypesetQueue = Promise.resolve();
+const replPlotUrls = new Set();
+
+function typesetRepl(element, after = () => {}) {
+  replTypesetQueue = replTypesetQueue.catch(() => {}).then(async () => {
+    if (!element.isConnected) return;
+    await ensureMathJax();
+    if (!element.isConnected) return;
+    const targets = element.matches("[data-latex]")
+      ? [element]
+      : [...element.querySelectorAll("[data-latex]")];
+    for (const target of targets) {
+      const rendered = await window.MathJax.tex2chtmlPromise(target.dataset.latex, { display: true });
+      if (!target.isConnected) return;
+      target.replaceChildren(rendered);
+      target.dataset.typeset = "true";
+    }
+    element.classList.add("math-ready");
+    after();
+  }).catch(error => {
+    if (!element.isConnected) return;
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "repl-typeset-retry";
+    retry.textContent = "Math rendering unavailable. Retry";
+    retry.title = String(error);
+    retry.onclick = () => { retry.remove(); typesetRepl(element, after); };
+    element.append(retry);
+  });
+}
+
+function replMath(latex, className) {
+  const math = document.createElement("div");
+  math.className = className;
+  math.dataset.latex = latex;
+  math.textContent = latex;
+  return math;
+}
+
+window.scasReplResult = (json) => {
+  const result = JSON.parse(json);
+  // Results are generated while the REPL is active. Reveal the surface here
+  // as well as during layout so a response can never land in a hidden panel.
+  replHistory.hidden = false;
+  if (result.clear || (result.input?.trim() === ":reset" && !result.error)) {
+    window.MathJax?.typesetClear?.([replHistory]);
+    replHistory.replaceChildren();
+    for (const url of replPlotUrls) URL.revokeObjectURL(url);
+    replPlotUrls.clear();
+    replSequence = 0;
+    const empty = document.createElement("p");
+    empty.className = "repl-empty";
+    empty.textContent = result.input?.trim() === ":reset" ? "Session reset. Enter a new calculation below." : "History cleared. Your definitions are still available.";
+    replHistory.append(empty);
+    return;
+  }
+  const follow = replHistory.scrollHeight - replHistory.scrollTop - replHistory.clientHeight < 64;
+  replHistory.querySelector(".repl-empty")?.remove();
+  const entry = document.createElement("article");
+  entry.className = "repl-calculation";
+  entry.setAttribute("aria-label", `Calculation ${++replSequence}`);
+  const source = document.createElement("div");
+  source.className = "repl-source";
+  const number = document.createElement("span");
+  number.className = "repl-number";
+  number.textContent = String(replSequence);
+  const code = document.createElement("code");
+  code.textContent = result.input ?? "";
+  source.append(number, code);
+  entry.append(source);
+  if (result.input_latex) entry.append(replMath(result.input_latex, "repl-input-math"));
+  if (result.result_latex) entry.append(replMath(result.result_latex, "repl-result-math"));
+  if ((result.printed ?? "").trim()) {
+    const printed = document.createElement("pre");
+    printed.textContent = result.printed.trimEnd();
+    entry.append(printed);
+  }
+  if ((result.output ?? "").trim()) {
+    const output = document.createElement("pre");
+    output.className = "repl-result-text";
+    if (result.result_latex) output.classList.add("repl-math-fallback");
+    output.textContent = result.output.trimEnd();
+    entry.append(output);
+  }
+  if (result.plot) {
+    const plot = result.plot;
+    if (plot.vector && plot.svg) {
+      // An image document keeps SVG content isolated from the IDE's DOM.
+      const url = URL.createObjectURL(new Blob([plot.svg], {type:"image/svg+xml"}));
+      replPlotUrls.add(url);
+      const image = document.createElement("img");
+      image.src = url;
+      image.alt = `Plot of ${result.input}`;
+      image.className = "repl-plot";
+      entry.append(image);
+    } else if (plot.ascii) {
+      const ascii = document.createElement("pre");
+      ascii.textContent = plot.ascii;
+      entry.append(ascii);
+    }
+    if (plot.svg) {
+      const save = document.createElement("button");
+      save.type = "button";
+      save.textContent = "Download SVG";
+      save.onclick = () => window.scasDownload(plot.download_name || "scas-plot.svg", plot.svg, "image/svg+xml");
+      entry.append(save);
+    }
+  }
+  if (result.error) {
+    const error = document.createElement("pre");
+    error.className = "repl-error";
+    error.setAttribute("role", "alert");
+    error.textContent = result.error;
+    entry.append(error);
+  }
+  replHistory.append(entry);
+  const scroll = () => { if (follow) replHistory.scrollTop = replHistory.scrollHeight; };
+  scroll();
+  if (result.input_latex || result.result_latex) typesetRepl(entry, scroll);
+};
+
+window.scasShowReplSurface = (surface, content, x, y, width, height, pixelsPerPoint) => {
+  const element = surface === "history" ? replHistory : replEntryPreview;
+  const bounds = canvas.getBoundingClientRect();
+  const scale = pixelsPerPoint / (canvas.width / bounds.width);
+  for (const [property, value] of Object.entries({left: bounds.left + x * scale, top: bounds.top + y * scale, width: width * scale, height: height * scale})) {
+    const css = `${value}px`;
+    if (element.style[property] !== css) element.style[property] = css;
+  }
+  element.hidden = false;
+  if (surface !== "entry" || content === replPreviewSource) return;
+  replPreviewSource = content;
+  window.MathJax?.typesetClear?.([element]);
+  const { latex, input } = JSON.parse(content);
+  if (latex) {
+    const math = replMath(latex, "repl-live-math");
+    element.replaceChildren(math);
+    typesetRepl(math);
+  } else {
+    const hint = document.createElement("span");
+    hint.className = "repl-hint";
+    hint.textContent = input.trimStart().startsWith(":") ? "Command ready — press Enter to run" : input.trim() ? "Keep typing to complete the expression…" : "Your expression will typeset here as you work";
+    element.replaceChildren(hint);
+  }
+};
+window.scasHideRepl = () => {
+  replHistory.hidden = true;
+  replEntryPreview.hidden = true;
 };
 
 window.scasCreateWorker = () => new Worker(new URL("./worker.js", import.meta.url), { type: "module" });

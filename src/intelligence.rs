@@ -47,6 +47,27 @@ impl SourceIndex {
         let mut scanner = Scanner::new(source);
         let tokens = scanner.scan_tokens().clone();
         let symbols = scanner.into_symbols();
+        // The parser recognizes both `fn f(x)` and mathematical `f(x) = ...`.
+        // Use its declaration spans so a call in an equation is never guessed
+        // to be a definition by a token-only heuristic.
+        let declarations = Parser::new(tokens.clone()).parse_recovering().statements;
+        let function_starts: HashSet<usize> = declarations
+            .iter()
+            .filter_map(|statement| {
+                let StatementKind::Function { name, .. } = &statement.kind else {
+                    return None;
+                };
+                tokens
+                    .iter()
+                    .find(|token| {
+                        token.token_type == TokenType::Identifier
+                            && token.symbol == *name
+                            && token.byte_start >= statement.span.byte_start
+                            && token.byte_end <= statement.span.byte_end
+                    })
+                    .map(|token| token.byte_start)
+            })
+            .collect();
         let mut index = Self::default();
         let mut block_depth = 0usize;
         for (position, token) in tokens.iter().enumerate() {
@@ -61,11 +82,14 @@ impl SourceIndex {
                 continue;
             }
             let name = symbols.resolve(token.symbol).to_owned();
-            let is_definition = position > 0
-                && matches!(
-                    tokens[position - 1].token_type,
-                    TokenType::Let | TokenType::Fn
-                );
+            let is_function = function_starts.contains(&token.byte_start)
+                || (position > 0 && tokens[position - 1].token_type == TokenType::Fn);
+            let is_definition = is_function
+                || (position > 0
+                    && matches!(
+                        tokens[position - 1].token_type,
+                        TokenType::Let | TokenType::Fn
+                    ));
             if is_definition && block_depth > 0 {
                 index.scoped_names.insert(name.clone());
             }
@@ -76,7 +100,7 @@ impl SourceIndex {
                 column: token.column,
                 is_definition,
             });
-            if is_definition && tokens[position - 1].token_type == TokenType::Fn {
+            if is_function {
                 let mut parameters = Vec::new();
                 if tokens
                     .get(position + 1)
@@ -408,5 +432,14 @@ mod tests {
         assert_eq!(value, "7");
         let byte = source.find('*').unwrap();
         assert_eq!(evaluate_hover(source, byte).unwrap().1, "42");
+    }
+    #[test]
+    fn shorthand_functions_have_navigable_references() {
+        let source = "f(x) = x^2;\nlet y = f(3);\nprint(f(y));";
+        let index = SourceIndex::new(source);
+        assert_eq!(index.definition("f").unwrap().line, 1);
+        assert_eq!(index.references("f").len(), 3);
+        assert_eq!(index.user_functions().next().unwrap().parameters, ["x"]);
+        assert_eq!(index.rename("f", "square").unwrap().len(), 3);
     }
 }

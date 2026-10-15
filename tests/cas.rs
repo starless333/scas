@@ -1238,3 +1238,12 @@ fn standard_math_library_reports_poles_and_arity() {
         "sin expects 1 argument(s) but got 0",
     );
 }
+
+#[test]
+fn logarithm_base_e_normalizes_to_natural_log() {
+    assert_eq!(
+        output("print(log(x, e)); print(log(e, e)); print(log(1, e)); print(simplify(log(x, e)));"),
+        "ln(x)\n1\n0\nln(x)\n"
+    );
+    assert_eq!(output("let e = 10; print(log(100, e));"), "2\n");
+}

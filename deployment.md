@@ -12,10 +12,44 @@ In the repository's GitHub settings, set **Pages → Build and deployment →
 Source** to **GitHub Actions**. A push to `main`, or a manual run of the
 **Browser IDE** workflow, will publish the site.
 
-Only one workflow should deploy the `github-pages` environment. The current
-`pages.yml` and `docs.yml` workflows both deploy there and can overwrite each
-other. Keep `pages.yml` as the deployment workflow; the browser build already
-includes the documentation under `web/docs/`.
+Only `pages.yml` deploys the `github-pages` environment. The `docs.yml`
+workflow checks Rust API documentation and uploads it as a separate Actions
+artifact; it cannot overwrite the IDE. User documentation is included at
+`web/docs/`. Pages deployments are serialized without canceling an in-flight
+publish.
+
+The build uses Cargo's `web-release` profile (release optimization, thin LTO,
+one codegen unit, stripped debug information). `scripts/check-web.py` validates
+local HTML links, JavaScript module paths, the Wasm header, and `.nojekyll`
+before upload. The workflow also runs Chromium against `/web/` to exercise
+project-subdirectory URLs, REPL definitions and error recovery, plotting/SVG,
+the language-service worker, and lazy MathJax loading.
+
+Reproduce the deployment checks locally:
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.100 --locked
+bash scripts/build-web.sh
+python3 -m http.server 8080 --bind 127.0.0.1
+```
+
+In a second terminal:
+
+```sh
+npm install --prefix /tmp/scas-browser playwright@1.64.1
+/tmp/scas-browser/node_modules/.bin/playwright install chromium
+NODE_PATH=/tmp/scas-browser/node_modules node scripts/check-web-browser.cjs
+```
+
+Use `CHROMIUM_PATH=/usr/bin/chromium` to run an installed Chromium instead.
+Math typesetting uses pinned MathJax 4.0.0 from jsDelivr when preview or print
+is first opened, so that check needs internet access. The IDE, REPL, and graph
+engine run locally in Wasm.
+
+After pushing, check the **Browser IDE** workflow's build and deploy jobs and
+open the URL reported by its deploy job. Repository Pages settings and a hosted
+publish require GitHub access; local validation alone does not verify them.
 
 GitHub documents the custom Pages workflow and artifact requirements here:
 <https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages>.
@@ -55,10 +89,8 @@ Measured artifacts at the time of this document:
 | Item | Approximate size |
 | --- | ---: |
 | Local root `target/` cache | 17 GB |
-| Browser deployment directory | 8.96 MB raw |
-| Browser Wasm | 7.34 MB raw |
-| Browser Wasm with gzip | 2.55 MB |
-| Browser Wasm with Brotli | 2.12 MB |
+| Browser Wasm before web profile | 7.79 MB raw / 2.66 MB gzip |
+| Browser Wasm with web profile | approximately 7.16 MB raw / 2.57 MB gzip |
 | Release CLI | 5.34 MB |
 | Stripped release CLI | 4.73 MB |
 
@@ -112,13 +144,14 @@ targets, but they are not reasons to delay an initial static deployment.
 ## Deployment priority order
 
 1. Stop tracking `fuzz/target/` and ignore nested `target/` directories.
-2. Remove the duplicate GitHub Pages deployment so only `pages.yml` publishes.
-3. Enable release stripping and link-time optimization.
-4. Add `wasm-opt`, then compare download size and CAS performance before
-   keeping the optimization.
-5. Profile which crates and functions contribute most to the Wasm artifact.
-6. Only after profiling, consider consolidating the numeric backends or
+2. Profile which crates and functions contribute most to the Wasm artifact.
+3. Consider `wasm-opt`, comparing download size and CAS performance before
+   keeping any additional optimization.
+4. Only after profiling, consider consolidating the numeric backends or
    splitting the evaluation worker from the browser UI module.
+
+The duplicate Pages publisher and browser release-profile tuning are resolved.
+The native release profile remains independent of the browser profile.
 
 Cargo supports release symbol stripping, LTO, code-generation-unit controls,
 size optimization, and abort-on-panic through release profiles. Measure each

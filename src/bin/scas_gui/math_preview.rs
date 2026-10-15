@@ -75,10 +75,25 @@ pub fn show_document(
 
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub fn show_expression(ui: &mut egui::Ui, latex: &str, color: Color32, size: f32) {
+    // Retain expressions used in consecutive frames; unused entries expire.
+    // Arc avoids cloning the parsed tree on each hover, scroll or caret redraw.
+    type MathCache = egui::util::cache::FrameCache<std::sync::Arc<Math>, MathParser>;
+    let math = ui
+        .ctx()
+        .memory_mut(|memory| memory.caches.cache::<MathCache>().get(latex));
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 1.5;
-        render(ui, &parse(latex), size, color);
+        render(ui, &math, size, color);
     });
+}
+
+#[derive(Default)]
+struct MathParser;
+
+impl egui::util::cache::ComputerMut<&str, std::sync::Arc<Math>> for MathParser {
+    fn compute(&mut self, source: &str) -> std::sync::Arc<Math> {
+        std::sync::Arc::new(parse(source))
+    }
 }
 
 fn show_prose(ui: &mut egui::Ui, prose: &str, color: Color32, scale: f32) {

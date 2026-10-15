@@ -52,11 +52,19 @@ impl Parser {
         let mut statements = Vec::new();
         let mut errors = Vec::new();
         while !self.is_at_end() {
+            let statement_start = self.current;
             match self.statement() {
                 Ok(statement) => statements.push(statement),
                 Err(error) => {
                     errors.push(error);
                     self.synchronize();
+                    // Recovery must always make progress. Besides preventing an
+                    // editor analysis from spinning forever on a malformed
+                    // buffer, this makes the invariant explicit for future
+                    // statement forms whose error path may not consume a token.
+                    if self.current == statement_start && !self.is_at_end() {
+                        self.advance();
+                    }
                 }
             }
         }
@@ -985,6 +993,20 @@ mod tests {
             report.statements[1].kind,
             StatementKind::Let { .. }
         ));
+    }
+
+    #[test]
+    fn recovering_parse_terminates_for_quote_only_declarations() {
+        // Regression for a browser-editor freeze reported with this exact
+        // shape of partially edited source.
+        let source = "/// A live, typeset result\nlet angle = π / 6;\n\\[ sin(angle) => \\]\nprint(sin(angle));\n\nlet \"\" = 1;\n\nlet X = 56';\n\nlet \"\"\"\" = 1;";
+        let mut scanner = Scanner::new(source);
+        let tokens = scanner.scan_tokens().clone();
+        let report = Parser::new(tokens).parse_recovering();
+
+        assert_eq!(report.errors.len(), 2);
+        assert_eq!(report.errors[0].message, "expected a variable name");
+        assert_eq!(report.errors[1].message, "expected a variable name");
     }
 
     #[test]

@@ -57,3 +57,11 @@ required-features = ["lsp"]
 [[bench]]
 name = "baselines"
 harness = false
+
+# Keep native release behavior independent of browser download/startup tuning.
+[profile.web-release]
+inherits = "release"
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
+panic = "abort"
