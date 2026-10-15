@@ -95,7 +95,8 @@ const { chromium } = require('playwright');
       JSON.stringify([{kind:'display',latex:'\\[ x^2 \\]',span:{line:1}}]),
       'x^2', '', false, 50, 40, 600, 600, devicePixelRatio, false));
     await page.waitForSelector('#math-preview-content mjx-container', { state: 'attached', timeout: 60000 });
-    await page.mouse.click(22, 145);
+    // The compact browser shell exposes REPL as a top workspace tab.
+    await page.mouse.click(145, 68);
     await page.waitForSelector('#repl-entry-preview:not([hidden])', { state: 'visible' });
     const composer = await page.locator('#repl-entry-preview').boundingBox();
     await page.mouse.click(composer.x + 50, composer.y + composer.height + 15);
@@ -112,8 +113,9 @@ const { chromium } = require('playwright');
     // Math output must remain visible when both external MathJax origins are
     // unavailable. The text result is the durable answer; typesetting is a
     // progressive enhancement that replaces it only after successful render.
-    const offline = await browser.newPage({ viewport: { width: 800, height: 800 } });
-    await offline.route(/(?:cdn\.jsdelivr\.net|unpkg\.com)\/.*mathjax/, route => route.abort());
+    const offlineContext = await browser.newContext({ viewport: { width: 800, height: 800 } });
+    const offline = await offlineContext.newPage();
+    await offlineContext.route(/(?:cdn\.jsdelivr\.net|unpkg\.com)\/.*mathjax/, route => route.abort());
     await offline.goto(process.env.SCAS_WEB_URL || 'http://127.0.0.1:8080/web/');
     await offline.waitForSelector('#loading', { state: 'detached', timeout: 60000 });
     await offline.evaluate(async () => {
@@ -131,7 +133,7 @@ const { chromium } = require('playwright');
     await offline.waitForSelector('#repl-history .repl-result-text', { state: 'visible' });
     assert.equal((await offline.locator('#repl-history .repl-result-text').textContent()).trim(), '4');
     await offline.waitForSelector('#repl-history .repl-typeset-retry', { state: 'visible' });
-    await offline.close();
+    await offlineContext.close();
     assert.deepEqual(errors, []);
     console.log('Browser smoke passed: REPL output, online MathJax rendering, and offline text fallback are all visible.');
   } finally { await browser.close(); }
