@@ -101,6 +101,7 @@ const launchOnly = process.env.SCAS_SMOKE_MODE === 'launch';
       JSON.stringify([{kind:'display',latex:'\\[ x^2 \\]',span:{line:1}}]),
       'x^2', '', false, 50, 40, 600, 600, devicePixelRatio, false));
     await page.waitForSelector('#math-preview-content mjx-container', { state: 'attached', timeout: 60000 });
+    assert.equal(await page.locator('#math-preview-content mjx-container svg').count(), 1);
     // The compact browser shell exposes REPL as a top workspace tab.
     await page.mouse.click(145, 68);
     await page.waitForSelector('#repl-entry-preview:not([hidden])', { state: 'visible' });
@@ -108,9 +109,11 @@ const launchOnly = process.env.SCAS_SMOKE_MODE === 'launch';
     await page.mouse.click(composer.x + 50, composer.y + composer.height + 15);
     await page.keyboard.type('log(x, e)');
     await page.waitForSelector('#repl-entry-preview mjx-container', { state: 'visible' });
+    assert.equal(await page.locator('#repl-entry-preview mjx-container svg').count(), 1);
     assert.equal(await page.locator('#repl-entry-preview [data-typeset="true"]').count(), 1);
     await page.keyboard.press('Enter');
     await page.waitForSelector('#repl-history .repl-result-math mjx-container', { state: 'visible' });
+    assert.equal(await page.locator('#repl-history .repl-result-math mjx-container svg').count(), 1);
     assert.equal(await page.locator('#repl-history .repl-result-math[data-typeset="true"]').count(), 1);
     assert.equal(await page.locator('#repl-history .repl-calculation').last().getAttribute('class'), 'repl-calculation math-ready');
     assert.equal(await page.locator('#repl-history .repl-math-fallback').last().isHidden(), true);

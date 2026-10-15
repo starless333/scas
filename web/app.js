@@ -24,8 +24,8 @@ let previewSource = null;
 let previewQueue = Promise.resolve();
 let mathJaxReady;
 const MATHJAX_SOURCES = [
-  "https://cdn.jsdelivr.net/npm/mathjax@4.0.0/tex-chtml.js",
-  "https://unpkg.com/mathjax@4.0.0/tex-chtml.js",
+  "https://cdn.jsdelivr.net/npm/mathjax@4.0.0/tex-svg.js",
+  "https://unpkg.com/mathjax@4.0.0/tex-svg.js",
 ];
 
 function loadMathJaxScript(source) {
@@ -51,7 +51,7 @@ function loadMathJaxScript(source) {
 }
 
 function ensureMathJax() {
-  if (window.MathJax?.typesetPromise && window.MathJax?.tex2chtmlPromise) return Promise.resolve();
+  if (window.MathJax?.typesetPromise && window.MathJax?.tex2svgPromise) return Promise.resolve();
   // Share one lazy load between preview, print, and REPL. A second pinned
   // origin avoids turning one blocked CDN into a blank mathematical surface.
   mathJaxReady ??= (async () => {
@@ -60,7 +60,7 @@ function ensureMathJax() {
       try {
         await loadMathJaxScript(source);
         await window.MathJax?.startup?.promise;
-        if (!window.MathJax?.typesetPromise || !window.MathJax?.tex2chtmlPromise) {
+        if (!window.MathJax?.typesetPromise || !window.MathJax?.tex2svgPromise) {
           throw new Error("MathJax is unavailable");
         }
         return;
@@ -329,7 +329,7 @@ function typesetRepl(element, after = () => {}) {
       ? [element]
       : [...element.querySelectorAll("[data-latex]")];
     for (const target of targets) {
-      const rendered = await window.MathJax.tex2chtmlPromise(target.dataset.latex, { display: true });
+      const rendered = await window.MathJax.tex2svgPromise(target.dataset.latex, { display: true });
       if (!target.isConnected) return;
       target.replaceChildren(rendered);
       target.dataset.typeset = "true";

@@ -15,6 +15,7 @@ use eframe::egui::{
     text::{LayoutJob, TextFormat},
     Color32, FontData, FontDefinitions, FontFamily, FontId, RichText, TextEdit,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -745,6 +746,32 @@ struct OpenDocument {
     dirty: bool,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+struct WorkspaceFile {
+    path: String,
+    source: String,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct WorkspaceState {
+    folders: Vec<String>,
+    files: Vec<WorkspaceFile>,
+    active_file: Option<String>,
+    selected_folder: String,
+}
+
+fn workspace_parent(path: &str) -> &str {
+    path.rsplit_once('/').map_or("", |(parent, _)| parent)
+}
+
+fn workspace_label(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+fn valid_workspace_name(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\'])
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BottomTab {
     Output,
@@ -783,6 +810,7 @@ struct WebApp {
     tex: String,
     tab: Tab,
     documents: Vec<OpenDocument>,
+    workspace: WorkspaceState,
     active_document: usize,
     pending_close: Option<usize>,
     reveal_tab: bool,
@@ -895,6 +923,11 @@ impl WebApp {
             .unwrap_or(DEFAULT_EDITOR_FONT_SIZE)
             .clamp(MIN_EDITOR_FONT_SIZE, MAX_EDITOR_FONT_SIZE);
         let storage = web_sys::window().and_then(|window| window.local_storage().ok().flatten());
+        let workspace = storage
+            .as_ref()
+            .and_then(|storage| storage.get_item("scas.workspace.v1").ok().flatten())
+            .and_then(|value| serde_json::from_str::<WorkspaceState>(&value).ok())
+            .unwrap_or_default();
         let mut themes = Theme::bundled_themes();
         if let Some(custom) = storage
             .as_ref()
@@ -928,14 +961,26 @@ impl WebApp {
             .as_ref()
             .and_then(|storage| storage.get_item("scas.draftDirty").ok().flatten())
             .map_or(stored.is_some(), |value| value == "true");
-        let source_name = if shared.is_some() {
-            "shared.scas"
-        } else if stored.is_some() {
-            "untitled.scas"
+        let restored_file = if shared.is_none() {
+            workspace
+                .active_file
+                .as_ref()
+                .and_then(|path| workspace.files.iter().find(|file| &file.path == path))
+                .cloned()
         } else {
-            "Untitled"
+            None
         };
-        let source = shared.or(stored).unwrap_or_else(|| STARTER.to_owned());
+        let source_name = if shared.is_some() {
+            "shared.scas".to_owned()
+        } else if let Some(file) = &restored_file {
+            file.path.clone()
+        } else {
+            "Untitled".to_owned()
+        };
+        let source = shared
+            .or_else(|| restored_file.as_ref().map(|file| file.source.clone()))
+            .or(stored)
+            .unwrap_or_default();
         let initial_preview = if source_name == "Untitled" {
             document::build_live_with_limits(&source, crate::web_runtime::browser_limits()).ok()
         } else {
@@ -951,6 +996,17 @@ impl WebApp {
                 "span": { "line": fragment.span.line }
             })).collect::<Vec<_>>()).unwrap_or_else(|_| "[]".to_owned())
         });
+        let mut explorer_expanded = HashSet::new();
+        let mut folder = workspace
+            .active_file
+            .as_deref()
+            .map(workspace_parent)
+            .unwrap_or(&workspace.selected_folder);
+        while !folder.is_empty() {
+            explorer_expanded.insert(folder.to_owned());
+            folder = workspace_parent(folder);
+        }
+        let restored_workspace_file = restored_file.is_some();
         let mut app = Self {
             context,
             source: source.clone(),
@@ -962,10 +1018,15 @@ impl WebApp {
             tex: initial_tex,
             tab: Tab::Document,
             documents: vec![OpenDocument {
-                name: source_name.to_owned(),
+                name: source_name.clone(),
                 source: source.clone(),
-                dirty,
+                dirty: if restored_workspace_file {
+                    false
+                } else {
+                    dirty
+                },
             }],
+            workspace,
             active_document: 0,
             pending_close: None,
             reveal_tab: false,
@@ -1004,7 +1065,7 @@ impl WebApp {
             response_sender,
             responses,
             status,
-            source_name: source_name.to_owned(),
+            source_name,
             preview_json: initial_preview_json,
             explorer_open: true,
             preview_open: true,
@@ -1022,7 +1083,11 @@ impl WebApp {
             font_path: String::new(),
             line_numbers,
             auto_greek,
-            dirty,
+            dirty: if restored_workspace_file {
+                false
+            } else {
+                dirty
+            },
             settings_open: false,
             save_as_open: false,
             save_as_name: "document.scas".to_owned(),
@@ -1041,7 +1106,7 @@ impl WebApp {
             quick_open: false,
             quick_open_query: String::new(),
             explorer_root_open: true,
-            explorer_expanded: HashSet::new(),
+            explorer_expanded,
         };
         app.request("preview");
         app
@@ -1052,12 +1117,11 @@ impl WebApp {
     }
 
     fn load_source_named(&mut self, name: String, source: String) {
-        let name = name
-            .rsplit(['/', '\\'])
-            .next()
-            .filter(|name| !name.is_empty())
-            .unwrap_or("imported.scas")
-            .to_owned();
+        let name = if name.is_empty() {
+            "imported.scas".to_owned()
+        } else {
+            name
+        };
         if let Some(index) = self
             .documents
             .iter()
@@ -1065,6 +1129,17 @@ impl WebApp {
         {
             self.select_document(index);
             return;
+        }
+        if !self.workspace.files.iter().any(|file| file.path == name) {
+            self.workspace.files.push(WorkspaceFile {
+                path: name.clone(),
+                source: source.clone(),
+            });
+        }
+        let parent = workspace_parent(&name);
+        if parent.is_empty() || self.workspace.folders.iter().any(|folder| folder == parent) {
+            self.workspace.selected_folder = parent.to_owned();
+            self.explorer_expanded.insert(parent.to_owned());
         }
         self.store_active_document();
         self.source = source;
@@ -1088,31 +1163,62 @@ impl WebApp {
     }
 
     fn new_file(&mut self) {
-        self.store_active_document();
-        let mut name = "Untitled".to_owned();
-        let mut suffix = 2;
-        while self.documents.iter().any(|document| document.name == name) {
-            name = format!("Untitled-{suffix}");
-            suffix += 1;
+        let parent = self.workspace.selected_folder.clone();
+        self.new_file_in(&parent);
+    }
+
+    fn new_file_in(&mut self, parent: &str) {
+        let Some(input) = prompt_input("New file name") else {
+            return;
+        };
+        let input = input.trim();
+        if !valid_workspace_name(input) {
+            self.status = "Enter a file name without / or \\".to_owned();
+            return;
         }
-        self.documents.push(OpenDocument {
-            name: name.clone(),
-            source: STARTER.to_owned(),
-            dirty: false,
-        });
-        self.active_document = self.documents.len() - 1;
-        self.reveal_tab = true;
-        self.source = STARTER.to_owned();
-        self.source_name = name;
-        self.tab = Tab::Document;
-        self.dirty = false;
-        self.highlight_source.clear();
-        self.preview_json = "[]".to_owned();
-        self.tex.clear();
-        self.document = None;
-        self.error = None;
+        let name = if input.ends_with(".scas") {
+            input.to_owned()
+        } else {
+            format!("{input}.scas")
+        };
+        let path = if parent.is_empty() {
+            name
+        } else {
+            format!("{parent}/{name}")
+        };
+        if self.workspace.files.iter().any(|file| file.path == path) {
+            self.status = format!("{path} already exists");
+            return;
+        }
+        self.workspace.selected_folder = parent.to_owned();
+        self.explorer_root_open = true;
+        self.explorer_expanded.insert(parent.to_owned());
+        self.load_source_named(path, String::new());
+    }
+
+    fn new_folder_in(&mut self, parent: &str) {
+        let Some(input) = prompt_input("New folder name") else {
+            return;
+        };
+        let name = input.trim();
+        if !valid_workspace_name(name) {
+            self.status = "Enter a folder name without / or \\".to_owned();
+            return;
+        }
+        let path = if parent.is_empty() {
+            name.to_owned()
+        } else {
+            format!("{parent}/{name}")
+        };
+        if self.workspace.folders.iter().any(|folder| folder == &path) {
+            self.status = format!("{path} already exists");
+            return;
+        }
+        self.workspace.folders.push(path.clone());
+        self.workspace.selected_folder = path;
+        self.explorer_root_open = true;
+        self.explorer_expanded.insert(parent.to_owned());
         self.save_draft();
-        self.request("preview");
     }
 
     fn store_active_document(&mut self) {
@@ -1120,6 +1226,14 @@ impl WebApp {
             document.name.clone_from(&self.source_name);
             document.source.clone_from(&self.source);
             document.dirty = self.dirty;
+        }
+        if let Some(file) = self
+            .workspace
+            .files
+            .iter_mut()
+            .find(|file| file.path == self.source_name)
+        {
+            file.source.clone_from(&self.source);
         }
     }
 
@@ -1134,6 +1248,11 @@ impl WebApp {
         self.source_name.clone_from(&document.name);
         self.dirty = document.dirty;
         self.active_document = index;
+        let parent = workspace_parent(&self.source_name);
+        if parent.is_empty() || self.workspace.folders.iter().any(|folder| folder == parent) {
+            self.workspace.selected_folder = parent.to_owned();
+            self.explorer_expanded.insert(parent.to_owned());
+        }
         self.tab = Tab::Document;
         self.reveal_tab = true;
         self.highlight_source.clear();
@@ -1167,7 +1286,7 @@ impl WebApp {
         if self.documents.is_empty() {
             self.documents.push(OpenDocument {
                 name: "Untitled".to_owned(),
-                source: STARTER.to_owned(),
+                source: String::new(),
                 dirty: false,
             });
         }
@@ -1215,6 +1334,32 @@ impl WebApp {
         {
             let _ = storage.set_item("scas.draft", &self.source);
             let _ = storage.set_item("scas.draftDirty", if self.dirty { "true" } else { "false" });
+            let mut workspace = WorkspaceState {
+                folders: self.workspace.folders.clone(),
+                files: self.workspace.files.clone(),
+                active_file: None,
+                selected_folder: self.workspace.selected_folder.clone(),
+            };
+            for document in &self.documents {
+                if let Some(file) = workspace
+                    .files
+                    .iter_mut()
+                    .find(|file| file.path == document.name)
+                {
+                    file.source.clone_from(&document.source);
+                }
+            }
+            if let Some(file) = workspace
+                .files
+                .iter_mut()
+                .find(|file| file.path == self.source_name)
+            {
+                file.source.clone_from(&self.source);
+                workspace.active_file = Some(self.source_name.clone());
+            }
+            if let Ok(value) = serde_json::to_string(&workspace) {
+                let _ = storage.set_item("scas.workspace.v1", &value);
+            }
         }
     }
 
@@ -2478,16 +2623,62 @@ impl WebApp {
             if trimmed.is_empty() {
                 self.status = "Enter a file name".to_owned();
             } else {
+                if !valid_workspace_name(trimmed) {
+                    self.status = "Enter a file name without / or \\".to_owned();
+                    return;
+                }
                 let name = if trimmed.ends_with(".scas") {
                     trimmed.to_owned()
                 } else {
                     format!("{trimmed}.scas")
                 };
+                let parent = if self
+                    .workspace
+                    .files
+                    .iter()
+                    .any(|file| file.path == self.source_name)
+                {
+                    workspace_parent(&self.source_name)
+                } else {
+                    &self.workspace.selected_folder
+                };
+                let path = if parent.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{parent}/{name}")
+                };
+                if self
+                    .workspace
+                    .files
+                    .iter()
+                    .any(|file| file.path == path && file.path != self.source_name)
+                {
+                    self.status = format!("{path} already exists");
+                    return;
+                }
+                if let Some(file) = self
+                    .workspace
+                    .files
+                    .iter_mut()
+                    .find(|file| file.path == self.source_name)
+                {
+                    file.path.clone_from(&path);
+                    file.source.clone_from(&self.source);
+                } else {
+                    self.workspace.files.push(WorkspaceFile {
+                        path: path.clone(),
+                        source: self.source.clone(),
+                    });
+                }
                 download_file(&name, &self.source, "text/plain");
-                self.source_name = name.clone();
+                self.source_name = path.clone();
+                if let Some(document) = self.documents.get_mut(self.active_document) {
+                    document.name = path.clone();
+                    document.source.clone_from(&self.source);
+                }
                 self.dirty = false;
                 self.save_draft();
-                self.status = format!("Saved {name}");
+                self.status = format!("Saved {path}");
                 self.save_as_open = false;
                 if let Some(index) = self.pending_close.take() {
                     self.close_document_unchecked(index);
@@ -2516,7 +2707,11 @@ impl WebApp {
                 ui.horizontal(|ui| {
                     if ui.button("Save").clicked() {
                         if self.source_name.ends_with(".scas") {
-                            download_file(&self.source_name, &self.source, "text/plain");
+                            download_file(
+                                workspace_label(&self.source_name),
+                                &self.source,
+                                "text/plain",
+                            );
                             self.dirty = false;
                             self.close_document_unchecked(index);
                         } else {
@@ -2707,6 +2902,77 @@ impl WebApp {
         }
     }
 
+    fn workspace_tree(&mut self, ui: &mut egui::Ui, parent: &str, theme: &Theme) {
+        let mut folders: Vec<String> = self
+            .workspace
+            .folders
+            .iter()
+            .filter(|path| workspace_parent(path) == parent)
+            .cloned()
+            .collect();
+        folders.sort_by_key(|path| path.to_lowercase());
+        for path in folders {
+            let expanded = self.explorer_expanded.contains(&path);
+            ui.horizontal(|ui| {
+                if web_tree_disclosure(ui, !expanded, theme).clicked() {
+                    if expanded {
+                        self.explorer_expanded.remove(&path);
+                    } else {
+                        self.explorer_expanded.insert(path.clone());
+                    }
+                }
+                ui.label(
+                    RichText::new('\u{ea83}')
+                        .font(FontId::new(
+                            15.0,
+                            FontFamily::Name("VS Code Codicons".into()),
+                        ))
+                        .color(theme.ui.muted.0),
+                );
+                if ui
+                    .selectable_label(
+                        self.workspace.selected_folder == path,
+                        workspace_label(&path),
+                    )
+                    .clicked()
+                {
+                    self.workspace.selected_folder = path.clone();
+                    self.explorer_expanded.insert(path.clone());
+                    self.save_draft();
+                }
+                if web_icon_button(ui, '\u{ea7f}', "Add file to this folder", theme).clicked() {
+                    self.new_file_in(&path);
+                }
+            });
+            if self.explorer_expanded.contains(&path) {
+                ui.indent(format!("workspace-{path}"), |ui| {
+                    self.workspace_tree(ui, &path, theme)
+                });
+            }
+        }
+        let mut files: Vec<WorkspaceFile> = self
+            .workspace
+            .files
+            .iter()
+            .filter(|file| workspace_parent(&file.path) == parent)
+            .cloned()
+            .collect();
+        files.sort_by_key(|file| file.path.to_lowercase());
+        for file in files {
+            ui.horizontal(|ui| {
+                ui.add_space(20.0);
+                let selected = self.tab == Tab::Document && self.source_name == file.path;
+                if ui
+                    .selectable_label(selected, workspace_label(&file.path))
+                    .on_hover_text(&file.path)
+                    .clicked()
+                {
+                    self.load_source_named(file.path, file.source);
+                }
+            });
+        }
+    }
+
     fn file_menu(&mut self, ui: &mut egui::Ui) {
         ui.menu_button("File", |ui| {
             if ui.button("New File").clicked() {
@@ -2722,7 +2988,11 @@ impl WebApp {
                     self.save_as_name = "document.scas".to_owned();
                     self.save_as_open = true;
                 } else {
-                    download_file(&self.source_name, &self.source, "text/plain");
+                    download_file(
+                        workspace_label(&self.source_name),
+                        &self.source,
+                        "text/plain",
+                    );
                     self.dirty = false;
                     self.save_draft();
                     self.status = format!("Saved {}", self.source_name);
@@ -2731,7 +3001,7 @@ impl WebApp {
             }
             if ui.button("Save As…  Ctrl+Shift+S").clicked() {
                 self.save_as_name = if self.source_name.ends_with(".scas") {
-                    self.source_name.clone()
+                    workspace_label(&self.source_name).to_owned()
                 } else {
                     "document.scas".to_owned()
                 };
@@ -2978,7 +3248,7 @@ impl eframe::App for WebApp {
             )
         }) {
             self.save_as_name = if self.source_name.ends_with(".scas") {
-                self.source_name.clone()
+                workspace_label(&self.source_name).to_owned()
             } else {
                 "document.scas".to_owned()
             };
@@ -2989,7 +3259,11 @@ impl eframe::App for WebApp {
             if !self.source_name.ends_with(".scas") {
                 self.save_as_open = true;
             } else {
-                download_file(&self.source_name, &self.source, "text/plain");
+                download_file(
+                    workspace_label(&self.source_name),
+                    &self.source,
+                    "text/plain",
+                );
                 self.dirty = false;
                 self.save_draft();
                 self.status = format!("Saved {}", self.source_name);
@@ -3325,6 +3599,11 @@ impl eframe::App for WebApp {
                                         self.new_file();
                                         ui.close_menu();
                                     }
+                                    if ui.button("New Folder").clicked() {
+                                        let parent = self.workspace.selected_folder.clone();
+                                        self.new_folder_in(&parent);
+                                        ui.close_menu();
+                                    }
                                     if ui.button("Refresh Files").clicked() {
                                         self.request("preview");
                                         ui.close_menu();
@@ -3344,12 +3623,14 @@ impl eframe::App for WebApp {
                         }
                         if ui
                             .selectable_label(
-                                false,
-                                RichText::new("scas").color(theme.ui.text.0).strong(),
+                                self.workspace.selected_folder.is_empty(),
+                                RichText::new("Workspace").color(theme.ui.text.0).strong(),
                             )
                             .clicked()
                         {
-                            self.explorer_root_open = !self.explorer_root_open;
+                            self.workspace.selected_folder.clear();
+                            self.explorer_root_open = true;
+                            self.save_draft();
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if web_icon_button(ui, '\u{eac5}', "Collapse folders", &theme).clicked()
@@ -3364,56 +3645,21 @@ impl eframe::App for WebApp {
                             if web_icon_button(ui, '\u{ea7f}', "New document", &theme).clicked() {
                                 self.new_file();
                             }
+                            if web_icon_button(ui, '\u{ea83}', "New folder", &theme).clicked() {
+                                let parent = self.workspace.selected_folder.clone();
+                                self.new_folder_in(&parent);
+                            }
                         });
                     });
                     if self.explorer_root_open {
                         ui.spacing_mut().item_spacing.y = 5.0;
-                        for folder in [
-                            "assets", "benches", "docs", "examples", "scripts", "src", "stdlib",
-                            "tests", "themes", "web",
-                        ] {
-                            let expanded = self.explorer_expanded.contains(folder);
-                            ui.horizontal(|ui| {
-                                ui.add_space(7.0);
-                                if web_tree_disclosure(ui, !expanded, &theme).clicked() {
-                                    if expanded {
-                                        self.explorer_expanded.remove(folder);
-                                    } else {
-                                        self.explorer_expanded.insert(folder.to_owned());
-                                    }
-                                }
-                                ui.label(
-                                    RichText::new('\u{ea83}')
-                                        .font(FontId::new(
-                                            15.0,
-                                            FontFamily::Name("VS Code Codicons".into()),
-                                        ))
-                                        .color(muted),
-                                );
-                                if ui.selectable_label(false, folder).clicked() {
-                                    if expanded {
-                                        self.explorer_expanded.remove(folder);
-                                    } else {
-                                        self.explorer_expanded.insert(folder.to_owned());
-                                    }
-                                }
-                            });
-                            if expanded && folder == "examples" {
-                                ui.indent("web-examples", |ui| {
-                                    if ui.button("Starter.scas").clicked() {
-                                        self.load_source_named(
-                                            "Starter.scas".to_owned(),
-                                            STARTER.to_owned(),
-                                        );
-                                    }
-                                    if ui.button("MIT 18.06.scas").clicked() {
-                                        self.load_source_named(
-                                            "MIT 18.06.scas".to_owned(),
-                                            MIT_EXAMPLE.to_owned(),
-                                        );
-                                    }
-                                });
-                            }
+                        self.workspace_tree(ui, "", &theme);
+                        if self.workspace.folders.is_empty() && self.workspace.files.is_empty() {
+                            ui.label(
+                                RichText::new("No files yet. Add a file or folder.")
+                                    .color(muted)
+                                    .size(12.0),
+                            );
                         }
                     }
                     ui.add_space(7.0);
